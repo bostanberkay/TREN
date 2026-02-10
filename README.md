@@ -152,11 +152,17 @@ The relabel panel provides quick-access buttons for assigning or modifying label
 Available labels include:
 
 • TR=turkish
+
 • EN=english
-• MIXED=intra-word code-switching 
+
+• MIXED=intra-word code-switching
+
 • UID=unidentified item
+
 • NE=named entity
+
 • LANG3=language other than tr and en 
+
 • OTHER=numbers, punctuation marks, symbols, and non-lexical items
 
 Structural constraints are enforced for specific meta-rows, such as Matrix Language and Embedded Language rows, to prevent invalid label assignments.
