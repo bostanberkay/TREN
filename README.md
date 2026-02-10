@@ -48,7 +48,6 @@ If you encounter a security warning on first launch:
   <li>Confirm the prompt from macOS Gatekeeper.</li>
 </ul>
 
-
 ## Run from Source (Python)
 
 Alternatively, run the application directly from source or you may clone this repository.
@@ -84,5 +83,183 @@ pip install -r requirements.txt
 ### Bug Fixes
 • Resolved a critical launch issue causing the application to open twice on startup.  
 • Improved robustness of file and resource path resolution.
+
+
+
+# Documentation of TREN
+
+TREN is a semi-automatic corpus annotation application developed for the analysis of Turkish–English code-switching data, with a particular focus on intra-word code-switching and morphologically complex structures. The application combines automatic processing pipelines with interactive user supervision, allowing researchers to inspect, correct, and enrich annotations in a controlled environment.
+
+This documentation provides a detailed overview of the TREN interface, workflow, and underlying mechanisms. Its purpose is to guide users through the functionalities of the application, explain how annotation decisions are produced and modified, and clarify how analytical tools and computations operate within the system. The documentation is intended both for end users conducting linguistic analysis and for researchers interested in the technical design of the application.
+
+---
+
+## Main Window
+
+![Main window](images/main.png)
+
+The main window serves as the central workspace of the TREN application. It integrates text input, annotation output, and interactive controls into a single interface, enabling a smooth transition between automatic processing and manual inspection.
+
+### Layout Overview
+
+The interface is divided into three primary regions:
+
+• Input Panel (left)  
+• Annotation Grid (right)  
+• Control and Relabel Panel (bottom-right)  
+
+Each region is designed to support a specific stage of the annotation workflow.
+
+---
+
+### Input Panel
+
+The input panel is a free-text editor where users load or paste raw textual data containing code-switching phenomena. This panel represents the unprocessed input and remains editable throughout the annotation process.
+
+Key characteristics:
+
+• Displays the original text exactly as provided by the user.  
+• Serves as the source for tokenization and annotation.  
+• Supports direct text search and concordance highlighting.  
+• Is synchronized with auxiliary tools such as KWIC and sentence context views.  
+
+---
+
+### Annotation Grid
+
+The annotation grid presents the processed output in a table-based format, where each row corresponds to a token-level unit derived from the input text.
+
+Default columns include:
+
+• Token: the unique number attached to items.
+• Item: the surface form as it appears in the input. 
+• Label: a language or category label (e.g., TR, EN, MIXED, UID).  
+• Gloss: a morphological or explanatory gloss, when applicable. Automatic-glossing tool will be introduced in next sections. 
+
+The grid supports:
+
+• Keyboard-based navigation and selection.  
+• Direct cell editing and double-click editing.  
+• Multi-cell selection with copy, cut, and paste operations.  
+• Dynamic addition of user-defined annotation columns.  
+
+---
+
+### Relabel Panel
+
+The relabel panel provides quick-access buttons for assigning or modifying labels in the currently selected grid cell. This design minimizes manual typing and helps maintain labeling consistency across the dataset.
+
+Available labels include:
+
+• TR=turkish
+• EN=english
+• MIXED=intra-word code-switching 
+• UID=unidentified item
+• NE=named entity
+• LANG3=language other than tr and en 
+• OTHER=numbers, punctuation marks, symbols, and non-lexical items
+
+Structural constraints are enforced for specific meta-rows, such as Matrix Language and Embedded Language rows, to prevent invalid label assignments.
+
+---
+
+### Control Elements
+
+The toolbar at the top of the main window allows users to manage the annotation workflow.
+
+Core actions include:
+
+• Open: Loading input text.  
+• Run: Running the annotation pipeline.  
+• Save: Saving annotated output.  
+
+Feature toggles allow users to enable or disable optional components:
+
+• Token-level language identification.  
+• Matrix Language computation.  
+• Embedded Language computation.  
+• Named Entity Recognition.  
+
+---
+
+### Interaction Model
+
+The main window is designed around a semi-automatic interaction model.
+
+• Automatic processing produces an initial annotation layer.  
+• Users manually inspect and revise annotations as needed.  
+• Auxiliary tools operate directly on the same underlying data model.  
+
+This interaction model provides fine-grained control over annotation decisions while preserving computational efficiency.
+
+## Menu Bar
+
+The menu bar provides access to core application functions, project management utilities, annotation controls, and auxiliary analytical tools.
+
+---
+
+### File
+
+![File menu](images/ui-menu-file.png)
+
+The **File** menu contains basic actions for managing input and output during the annotation workflow.
+
+• **Open Input**: Load a raw text file into the input panel.  
+• **Run**: Execute the annotation pipeline on the current input text.  
+• **Save Output As**: Export the annotated data to disk.  
+• **Exit**: Close the application.
+
+---
+
+### Project
+
+![File menu](images/ui-menu-project.png)
+
+The **Project** menu is used to manage annotation sessions.
+
+• **New Project**: Start a new annotation project and clear the current workspace.  
+• **Open Project Save**: Load a previously saved project file (`.trenproj`).  
+• **Save Project Progress**: Save the current annotation state for later continuation.
+
+Project files store the input text, annotation data, configuration settings, and interface state.
+
+---
+
+### Annotation
+
+![File menu](images/ui-menu-annotation.png)
+
+The **Annotation** menu provides tools for manual editing and structural modification of the annotation grid.
+
+• **Add New Column**: Create a custom annotation column.  
+• **Cut / Copy / Paste**: Edit selected cells in the grid.  
+• **Insert Row Before**: Insert a new annotation row.  
+• **Remove Row**: Delete the selected annotation row.
+
+---
+
+### Edit Window
+
+The **Edit Window** menu provides access to an extended annotation interface for large-scale or fine-grained manual editing.
+
+![Tools menu](images/ui-full.png)
+
+• **View Full Edit Window**: Open a synchronized, full-size annotation grid in a separate window.
+
+The Full Edit Window mirrors the main annotation grid and remains fully synchronized with it, allowing users to perform extensive edits, multi-cell operations, and navigation on large datasets more comfortably.
+
+---
+
+### Tools
+
+![Tools menu](images/ui-menu-tools.png)
+
+The **Tools** menu provides access to auxiliary analytical and inspection windows.
+
+• **Auto-Glossing Tool**  
+• **Concordance (KWIC)**  
+• **Show Sentence (Context Viewer)**  
+• **Word Frequency List**
+
 
 
