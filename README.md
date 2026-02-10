@@ -327,7 +327,6 @@ The **Concordance (KWIC)** tool provides a keyword-in-context view over the inpu
   • **Left**: left context of the match.  
   • **KWIC**: the matched token or pattern.  
   • **Right**: right context of the match.  
-
 • Matches are ordered according to their position in the input text.  
 • The total number of matches is displayed at the bottom of the window.
 
@@ -364,14 +363,54 @@ This tool supports rapid contextual verification during manual annotation and re
 
 ![Word Frequency List](images/ui-frequency.png)
 
-The **Word Frequency List** provides a quantitative overview of token usage in the annotated data. Frequencies are computed from the current annotation state and can be filtered by label.
+The **Word Frequency List** window provides a frequency-based summary of tokens derived from the current annotation state. Frequencies are computed dynamically from the annotated data and reflect all manual edits made in the annotation grid.
 
-• Frequencies are calculated at the token level after basic normalization.  
-• Users can include or exclude tokens based on annotation labels (e.g., TR, EN, MIXED).  
-• The list displays total frequency counts and label-wise distributions.  
-• Double-clicking a token sends it directly to the Concordance (KWIC) tool.  
-• Results can be exported as a `.csv` file for further analysis.
+### Word Frequency List
 
-This tool supports exploratory corpus analysis and rapid inspection of distributional patterns.
+![Word Frequency List](images/ui-frequency.png)
+
+The **Word Frequency List** window provides a frequency-based summary of tokens derived from the current annotation state. Frequencies are computed dynamically from the annotated data and reflect all manual edits made in the annotation grid.
+
+### Frequency Computation
+
+• Tokens are normalized before counting to ensure consistent frequency estimation.  
+• Meta rows and non-token elements are excluded from frequency calculations.  
+• Frequencies are aggregated across the entire input text.
+
+```bash
+# Token filtering (exclude meta rows)
+T' = { t ∈ T | t is not a meta token }
+
+# Token normalization
+norm(t) = strip_punctuation(lowercase(t))
+
+# Total frequency
+f(w) = Σ I(norm(t_i) = w)
+
+# Label-conditioned frequency
+f(w | L) = Σ I(norm(t_i) = w ∧ label_i = L)
+
+# Total token count
+N = Σ_w f(w)
+
+# Sorting criterion
+sort by: (-f(w), w)
+```
+
+### Label-Based Filtering
+
+• Users can restrict frequency counts to specific annotation labels (e.g., TR, EN, MIXED, OTHER).  
+• Label filters allow focused inspection of language-specific or structurally relevant subsets.
+
+
+### Interaction and Export
+
+• Selecting a token and double-clicking (or pressing **Enter**) sends it to the Concordance (KWIC) tool.  
+• Frequency tables can be exported as `.csv` files for downstream statistical or corpus-based analyses.
+
+This tool supports both exploratory analysis and the preparation of frequency-based datasets.
+
+
+
 
 
