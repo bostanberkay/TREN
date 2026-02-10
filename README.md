@@ -83,4 +83,6 @@ pip install -r requirements.txt
 
 ### Bug Fixes
 • Resolved a critical launch issue causing the application to open twice on startup.  
-• Improved robustness of file and resource path resolution.  
+• Improved robustness of file and resource path resolution.
+
+
