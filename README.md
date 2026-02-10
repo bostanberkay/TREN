@@ -43,7 +43,6 @@ If you encounter a security warning on first launch:
   <li>Confirm the prompt from macOS Gatekeeper.</li>
 </ul>
 
----
 
 ## Run from Source (Python)
 
@@ -54,18 +53,16 @@ git clone https://github.com/bostanberkay/tren.git
 cd tren
 python cs_annotator_app.py
 
+```
 ### Requirements
 
 If you choose to run the application from source, you will need **Python 3.9 or higher** and the following Python packages:
 
-<ul>
-  <li>fasttext</li>
-  <li>stanza</li>
-  <li>tksheet</li>
-</ul>
+- fasttext  
+- stanza  
+- tksheet  
 
-All required dependencies are listed in the <code>requirements.txt</code> file. To install them automatically, run:
+All required dependencies are listed in the `requirements.txt` file. To install them automatically, run:
 
 ```bash
 pip install -r requirements.txt
-
