@@ -23,3 +23,49 @@ TREN is intended for use by researchers working on bilingual and multilingual la
 <p align="center">
   <img src="assets/tren_icon.png" alt="TREN icon" width="120">
 </p>
+
+## Installation
+
+TREN is currently available for macOS. Support for other operating systems will be added in future releases.
+
+### macOS
+
+<ol>
+  <li>Download the <code>.dmg</code> file from the GitHub Releases page.</li>
+  <li>Open the DMG and drag the <strong>TREN</strong> application into the <strong>Applications</strong> folder.</li>
+  <li>Launch the application from the Applications folder.</li>
+</ol>
+
+If you encounter a security warning on first launch:
+
+<ul>
+  <li>Right-click (or Ctrl-click) the <strong>TREN</strong> app and select <strong>Open</strong>.</li>
+  <li>Confirm the prompt from macOS Gatekeeper.</li>
+</ul>
+
+---
+
+## Run from Source (Python)
+
+Alternatively, run the application directly from source or you may clone this repository.
+
+```bash
+git clone https://github.com/bostanberkay/tren.git
+cd tren
+python cs_annotator_app.py
+
+### Requirements
+
+If you choose to run the application from source, you will need **Python 3.9 or higher** and the following Python packages:
+
+<ul>
+  <li>fasttext</li>
+  <li>stanza</li>
+  <li>tksheet</li>
+</ul>
+
+All required dependencies are listed in the <code>requirements.txt</code> file. To install them automatically, run:
+
+```bash
+pip install -r requirements.txt
+
