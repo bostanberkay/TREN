@@ -31,7 +31,12 @@ TREN is currently available for macOS. Support for other operating systems will 
 ### macOS
 
 <ol>
-  <li>Download the <code>.dmg</code> file from the GitHub Releases page.</li>
+ <li>
+  Download the <code>.dmg</code> file from the 
+  <a href="https://github.com/bostanberkay/TREN/releases" target="_blank">
+    GitHub Releases page
+  </a>.
+</li>
   <li>Open the DMG and drag the <strong>TREN</strong> application into the <strong>Applications</strong> folder.</li>
   <li>Launch the application from the Applications folder.</li>
 </ol>
@@ -49,7 +54,7 @@ If you encounter a security warning on first launch:
 Alternatively, run the application directly from source or you may clone this repository.
 
 ```bash
-git clone https://github.com/bostanberkay/tren.git
+git clone https://github.com/bostanberkay/TREN.git
 cd tren
 python cs_annotator_app.py
 
@@ -66,3 +71,16 @@ All required dependencies are listed in the `requirements.txt` file. To install 
 
 ```bash
 pip install -r requirements.txt
+```
+## Version Log
+
+### TREN v1.0.0 Initial Release
+• First public release of the TREN application.  
+• Stabilized application initialization and runtime behavior.  
+• Improved handling of resource paths for both packaged and source-based execution.  
+• Ensured consistent behavior between standalone `.app` execution and running from source.  
+• Verified macOS `.dmg` distribution and application packaging workflow.  
+
+### Bug Fixes
+• Resolved a critical launch issue causing the application to open twice on startup.  
+• Improved robustness of file and resource path resolution.  
