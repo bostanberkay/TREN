@@ -246,8 +246,6 @@ The **Annotation** menu provides tools for manual editing and structural modific
 
 ### Edit Window
 
-The **Edit Window** menu provides access to an extended annotation interface for large-scale or fine-grained manual editing.
-
 ![Tools menu](images/ui-full.png)
 
 • **View Full Edit Window**: Open a synchronized, full-size annotation grid in a separate window.
@@ -267,5 +265,113 @@ The **Tools** menu provides access to auxiliary analytical and inspection window
 • **Show Sentence (Context Viewer)**  
 • **Word Frequency List**
 
+## Auto-Glossing Tool
+
+![Auto-Glossing Tool](images/ui-autogloss.png)
+
+The **Auto-Glossing Tool** is an auxiliary window designed to support the annotation of **intra-word code-switching** items. It operates on tokens labeled as **MIXED** and allows users to assign or revise both **Label** and **Gloss** values in a focused workflow.
+
+### Scope and Data Selection
+
+• The tool collects items from the current annotation model that are labeled **MIXED**.  
+• Meta rows such as **SentenceID**, **MatrixLang**, and **EmbedLang** are excluded from the tool’s item list.  
+• Items are shown in the same visible order as the main annotation grid.
+
+### Interface Elements
+
+• **Status indicator**: shows the current position in the item list (e.g., `MIXED 3/27`).  
+• **SentenceID display**: shows the sentence identifier associated with the current token, when available.  
+• **Item field (read-only)**: displays the current token string.  
+• **Gloss field (editable)**: stores the morphological gloss assigned to the current token.  
+• **Auto-Gloss button**: generates a gloss suggestion for the current MIXED token.  
+• **Label field (editable)**: stores the label of the current token.  
+• **Label buttons**: quick assignment of labels (TR, EN, MIXED, UID, NE, LANG3, OTHER).  
+• **Leipzig Gloss Appendix**: opens a reference list of standard glossing abbreviations.
+
+### Navigation and Shortcuts
+
+• **◀ / ▶ buttons**: move to the previous or next item.  
+• **Left / Right arrow keys**: same as ◀ / ▶ navigation.  
+• **Cmd+Enter / Ctrl+Enter**: run **Auto-Gloss** for the current item.
+
+When navigating away from an item, the current **Label** and **Gloss** values are committed to the underlying annotation model.
+
+### Synchronization with the Main Grid
+
+• Changes made in the Auto-Glossing Tool are written back to the main data model.  
+• The corresponding **Label** and **Gloss** cells in the main grid are updated to reflect edits.  
+• The currently loaded item is also synchronized with the grid selection to support inspection in context.
+
+### Notes on Glossing
+
+• Gloss output is intended for morphologically interpretable intra-word structures.  
+• Glossing follows a Leipzig-style abbreviation inventory and is designed for consistency across the corpus.  
+• Users retain full control and may overwrite or refine automatic suggestions.
+
+## Concordance (KWIC)
+
+![Concordance (KWIC)](images/ui-kwic.png)
+
+The **Concordance (KWIC)** tool provides a keyword-in-context view over the input text, allowing users to examine the distribution and local contexts of tokens within the corpus. The tool operates directly on the raw input text while remaining synchronized with the annotation workflow.
+
+### Query Configuration
+
+• **Query field**: accepts a search string to be matched against the input text.  
+• **Context (chars)**: defines the number of characters displayed to the left and right of the match.  
+• **Case-insensitive**: enables case-insensitive matching.  
+• **Regex**: allows regular-expression based searches for advanced querying.
+
+### Result Display
+
+• Results are displayed in a three-column KWIC table:
+  • **Left**: left context of the match.  
+  • **KWIC**: the matched token or pattern.  
+  • **Right**: right context of the match.  
+
+• Matches are ordered according to their position in the input text.  
+• The total number of matches is displayed at the bottom of the window.
+
+### Interaction and Navigation
+
+• Selecting a KWIC row automatically highlights the corresponding span in the input panel.  
+• Double-clicking a row or pressing **Enter** jumps to the match in the input text.  
+• **Prev / Next** buttons allow sequential navigation between matches.  
+• Arrow keys can be used to move through the result list.
+
+### Highlighting and Synchronization
+
+• Matched spans are visually highlighted in the input panel.  
+• The input cursor is repositioned to the selected match to support contextual inspection.  
+• The tool does not modify annotations and is strictly read-only with respect to the annotation grid.
+
+### Use Cases
+
+• Inspecting contextual usage of specific tokens or morphemes.  
+• Verifying automatic label assignments against surrounding context.  
+• Exploring frequency-independent distribution patterns prior to quantitative analysis.
+
+## Show Sentence (Context Viewer)
+
+The **Show Sentence (Context Viewer)** displays the full sentence containing the currently selected token in the annotation grid, allowing users to inspect annotations in their immediate linguistic context.
+
+• The sentence is extracted directly from the input text using punctuation and line breaks as boundaries.  
+• The selected token is highlighted within the sentence for easy identification.  
+• The viewer operates in read-only mode and does not modify annotation data.
+
+This tool supports rapid contextual verification during manual annotation and revision.
+
+## Word Frequency List
+
+![Word Frequency List](images/ui-frequency.png)
+
+The **Word Frequency List** provides a quantitative overview of token usage in the annotated data. Frequencies are computed from the current annotation state and can be filtered by label.
+
+• Frequencies are calculated at the token level after basic normalization.  
+• Users can include or exclude tokens based on annotation labels (e.g., TR, EN, MIXED).  
+• The list displays total frequency counts and label-wise distributions.  
+• Double-clicking a token sends it directly to the Concordance (KWIC) tool.  
+• Results can be exported as a `.csv` file for further analysis.
+
+This tool supports exploratory corpus analysis and rapid inspection of distributional patterns.
 
 
