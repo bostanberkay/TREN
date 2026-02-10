@@ -359,12 +359,6 @@ The **Show Sentence (Context Viewer)** displays the full sentence containing the
 
 This tool supports rapid contextual verification during manual annotation and revision.
 
-## Word Frequency List
-
-![Word Frequency List](images/ui-frequency.png)
-
-The **Word Frequency List** window provides a frequency-based summary of tokens derived from the current annotation state. Frequencies are computed dynamically from the annotated data and reflect all manual edits made in the annotation grid.
-
 ### Word Frequency List
 
 ![Word Frequency List](images/ui-frequency.png)
@@ -378,22 +372,22 @@ The **Word Frequency List** window provides a frequency-based summary of tokens 
 • Frequencies are aggregated across the entire input text.
 
 ```bash
-# Token filtering (exclude meta rows)
+Token filtering
 T' = { t ∈ T | t is not a meta token }
 
-# Token normalization
+Token normalization
 norm(t) = strip_punctuation(lowercase(t))
 
-# Total frequency
+Total frequency
 f(w) = Σ I(norm(t_i) = w)
 
-# Label-conditioned frequency
+Label-conditioned frequency
 f(w | L) = Σ I(norm(t_i) = w ∧ label_i = L)
 
-# Total token count
+Total token count
 N = Σ_w f(w)
 
-# Sorting criterion
+Sorting criterion
 sort by: (-f(w), w)
 ```
 
@@ -410,7 +404,183 @@ sort by: (-f(w), w)
 
 This tool supports both exploratory analysis and the preparation of frequency-based datasets.
 
+## Computational Design & Formalization
 
+This section formalizes the **language labeling and annotation mechanisms** implemented in TREN. The formulations below describe the logical and mathematical principles underlying the system’s decisions. TREN implements a **symbolically constrained, probabilistic, and morphologically informed** annotation framework. Language labels emerge from hybrid decision mechanisms rather than purely statistical or purely rule-based processes, ensuring transparency, interpretability, and linguistic validity.
 
+---
+
+### 1. Token Space and Label Set
+
+Let
+
+T = { t₁, t₂, …, tₙ }
+
+be the ordered set of tokens extracted from the input text.
+
+Each token tᵢ is assigned a label ℓᵢ from the finite label set:
+
+L = { TR, EN, MIXED, UID, NE, OTHER, LANG3 }
+
+Meta tokens used for sentence- or block-level information are excluded from token-level labeling:
+
+T_meta = { SentenceID, MatrixLang, EmbedLang }
+
+T_valid = T \ T_meta
+
+---
+
+### 2. Probabilistic Word-Level Language Identification
+
+For each token t ∈ T_valid, the language identification model produces a probability distribution:
+
+P(t) = { P_TR(t), P_EN(t) }
+
+with the constraint:
+
+P_TR(t) + P_EN(t) = 1
+
+where:
+• P_TR(t) denotes the probability that token t is Turkish  
+• P_EN(t) denotes the probability that token t is English  
+
+---
+
+### 3. Lexicon Membership Constraints
+
+Let Lex_TR and Lex_EN denote the Turkish and English lexicons, respectively.
+
+Lexicon membership is defined as:
+
+t ∈ Lex_TR  ⇔  t is attested in the Turkish lexicon  
+t ∈ Lex_EN  ⇔  t is attested in the English lexicon  
+
+Lexicons function as symbolic constraints in the labeling decision.
+
+---
+
+### 4. Hybrid Language Labeling Function
+
+Final language labels are assigned using a **hybrid decision function** combining probabilistic confidence and lexicon membership:
+
+label(t) =
+
+• TR  
+  if P_TR(t) ≥ θ ∧ t ∈ Lex_TR  
+
+• EN  
+  if P_EN(t) ≥ θ ∧ t ∈ Lex_EN  
+
+• MIXED  
+  if EN_stem(t) ∧ TR_suffix(t)  
+
+• UID  
+  otherwise  
+
+where:
+• θ is a confidence threshold  
+• EN_stem(t) denotes the presence of an English lexical stem  
+• TR_suffix(t) denotes one or more Turkish morphological suffixes  
+
+---
+
+### 5. Intra-Word Code-Switching (MIXED) Condition
+
+A token t is labeled as MIXED if it satisfies the following structural condition:
+
+t = s + σ₁ + σ₂ + … + σₖ
+
+such that:
+
+s ∈ Lex_EN  
+σᵢ ∈ Morph_TR  for all i ≥ 1  
+
+where Morph_TR is the set of licensed Turkish morphological suffixes.
+
+This captures English–Turkish intra-word code-switching.
+
+---
+
+### 6. Morphological Validity Constraint
+
+Suffix sequences must conform to Turkish morphotactic constraints:
+
+{ σ₁, σ₂, …, σₖ } ⊆ Σ_TR
+
+where Σ_TR is the inventory of morphologically valid Turkish suffixes.
+
+Tokens violating morphotactic constraints are excluded from MIXED labeling.
+
+---
+
+### 7. Named Entity Precedence
+
+If a token t is identified as a named entity:
+
+NE(t) = true
+
+then its label is overridden as:
+
+label(t) = NE
+
+Named Entity recognition takes precedence over language-based labeling.
+
+---
+
+### 8. Residual Category Assignment
+
+Tokens that do not meet linguistic labeling criteria are assigned to residual categories:
+
+label(t) = OTHER  
+  if t is a number, punctuation mark, symbol, or non-lexical item  
+
+label(t) = LANG3  
+  if t belongs to a language other than Turkish or English  
+
+---
+
+### 9. Sentence-Level Matrix Language
+
+For a sentence S consisting of tokens { t₁, …, tₘ }, define:
+
+count_L(S) = | { t ∈ S : label(t) = L } |
+
+for L ∈ { TR, EN }.
+
+The Matrix Language is defined as:
+
+ML(S) = argmax_L count_L(S)
+
+---
+
+### 10. Embedded Language
+
+The Embedded Language is defined as the non-matrix language present in the sentence:
+
+EL(S) = { TR, EN } \ { ML(S) }
+
+If no tokens from the non-matrix language occur, EL(S) is undefined.
+
+---
+
+## References
+
+Joulin, A., Grave, E., Bojanowski, P., & Mikolov, T. (2017).  
+Bag of tricks for efficient text classification.  
+*Proceedings of the 15th Conference of the European Chapter of the Association for Computational Linguistics (EACL 2017)*, 427–431.  
+https://doi.org/10.18653/v1/E17-2068
+
+Myers-Scotton, C. (1993).  
+*Duelling languages: Grammatical structure in codeswitching*.  
+Oxford University Press.
+
+Qi, P., Zhang, Y., Zhang, Y., Bolton, J., & Manning, C. D. (2020).  
+Stanza: A Python natural language processing toolkit for many human languages.  
+*Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics: System Demonstrations*, 101–108.  
+https://doi.org/10.18653/v1/2020.acl-demos.14
+
+Van Rossum, G., & Drake, F. L., Jr. (1995).  
+*Python reference manual*.  
+Centrum voor Wiskunde en Informatica, Amsterdam.
 
 
