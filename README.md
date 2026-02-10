@@ -566,22 +566,12 @@ If no tokens from the non-matrix language occur, EL(S) is undefined.
 
 ## References
 
-Joulin, A., Grave, E., Bojanowski, P., & Mikolov, T. (2017).  
-Bag of tricks for efficient text classification.  
-*Proceedings of the 15th Conference of the European Chapter of the Association for Computational Linguistics (EACL 2017)*, 427–431.  
-https://doi.org/10.18653/v1/E17-2068
+Joulin, A., Grave, E., Bojanowski, P., & Mikolov, T. (2017). Bag of tricks for efficient text classification. *Proceedings of the 15th Conference of the European Chapter of the Association for Computational Linguistics (EACL 2017)*, 427–431. https://doi.org/10.18653/v1/E17-2068
 
-Myers-Scotton, C. (1993).  
-*Duelling languages: Grammatical structure in codeswitching*.  
-Oxford University Press.
+Myers-Scotton, C. (1993). *Duelling languages: Grammatical structure in codeswitching*. Oxford University Press.
 
-Qi, P., Zhang, Y., Zhang, Y., Bolton, J., & Manning, C. D. (2020).  
-Stanza: A Python natural language processing toolkit for many human languages.  
-*Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics: System Demonstrations*, 101–108.  
-https://doi.org/10.18653/v1/2020.acl-demos.14
+Qi, P., Zhang, Y., Zhang, Y., Bolton, J., & Manning, C. D. (2020). Stanza: A Python natural language processing toolkit for many human languages. *Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics: System Demonstrations*, 101–108. https://doi.org/10.18653/v1/2020.acl-demos.14
 
-Van Rossum, G., & Drake, F. L., Jr. (1995).  
-*Python reference manual*.  
-Centrum voor Wiskunde en Informatica, Amsterdam.
+Van Rossum, G., & Drake, F. L., Jr. (1995). *Python reference manual*. Centrum voor Wiskunde en Informatica, Amsterdam.
 
 
