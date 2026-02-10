@@ -89,7 +89,6 @@ pip install -r requirements.txt
 
 # Documentation of TREN
 
-TREN is a semi-automatic corpus annotation application developed for the analysis of Turkish–English code-switching data, with a particular focus on intra-word code-switching and morphologically complex structures. The application combines automatic processing pipelines with interactive user supervision, allowing researchers to inspect, correct, and enrich annotations in a controlled environment.
 
 This documentation provides a detailed overview of the TREN interface, workflow, and underlying mechanisms. Its purpose is to guide users through the functionalities of the application, explain how annotation decisions are produced and modified, and clarify how analytical tools and computations operate within the system. The documentation is intended both for end users conducting linguistic analysis and for researchers interested in the technical design of the application.
 
