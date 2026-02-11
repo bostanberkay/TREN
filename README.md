@@ -1,7 +1,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 ## TREN: A Corpus Annotation Tool for Code-Switching Data
 
-TREN is a system developed for the annotation and analysis of Turkish–English code-switching data in corpus-based linguistic research. It is designed as a semi-automatic annotation application that integrates automatic processing with user-controlled manual intervention, enabling transparent and reproducible analysis of code-switching phenomena, with a particular focus on intra-word code-switching.
+TREN is a system developed for the annotation and analysis of Turkish–English code-switching data in corpus-based linguistic research. It is designed as a semi-automatic annotation application that integrates automatic processing with user-controlled manual intervention, enabling transparent and reproducible analysis of code-switching.
 
 The system consists of an interactive graphical annotation interface and an underlying processing pipeline. Through the interface, users can load raw textual data, preprocess it into token-based representations, and inspect or revise automatically assigned labels. The processing pipeline supports language identification, rule-based morphological analysis, and sentence-level computations, facilitating fine-grained analysis of bilingual data.
 
@@ -20,7 +20,7 @@ TREN is intended for use by researchers working on bilingual and multilingual la
 • code-switching and bilingual language use  
 • corpus linguistics  
 • morphology and morphosyntax   
-• discourse-oriented and usage-based linguistic analysis
+• discourse analysis
 <p align="center">
   <img src="assets/tren_icon.png" alt="TREN icon" width="120">
 </p>
@@ -343,12 +343,6 @@ The **Concordance (KWIC)** tool provides a keyword-in-context view over the inpu
 • The input cursor is repositioned to the selected match to support contextual inspection.  
 • The tool does not modify annotations and is strictly read-only with respect to the annotation grid.
 
-### Use Cases
-
-• Inspecting contextual usage of specific tokens or morphemes.  
-• Verifying automatic label assignments against surrounding context.  
-• Exploring frequency-independent distribution patterns prior to quantitative analysis.
-
 ## Show Sentence (Context Viewer)
 
 The **Show Sentence (Context Viewer)** displays the full sentence containing the currently selected token in the annotation grid, allowing users to inspect annotations in their immediate linguistic context.
@@ -402,11 +396,10 @@ sort by: (-f(w), w)
 • Selecting a token and double-clicking (or pressing **Enter**) sends it to the Concordance (KWIC) tool.  
 • Frequency tables can be exported as `.csv` files for downstream statistical or corpus-based analyses.
 
-This tool supports both exploratory analysis and the preparation of frequency-based datasets.
 
 ## Computational Design & Formalization
 
-This section formalizes the **language labeling and annotation mechanisms** implemented in TREN. The formulations below describe the logical and mathematical principles underlying the system’s decisions. TREN implements a **symbolically constrained, probabilistic, and morphologically informed** annotation framework. Language labels emerge from hybrid decision mechanisms rather than purely statistical or purely rule-based processes, ensuring transparency, interpretability, and linguistic validity.
+This section formalizes the **language labeling and annotation mechanisms** implemented in TREN. The formulations below describe the principles underlying the system’s decisions. TREN implements a **symbolically constrained, probabilistic, and morphologically informed** annotation framework. Language labels emerge from hybrid decision mechanisms rather than purely statistical or purely rule-based processes, ensuring transparency, interpretability, and linguistic validity.
 
 ---
 
@@ -562,6 +555,20 @@ EL(S) = { TR, EN } \ { ML(S) }
 If no tokens from the non-matrix language occur, EL(S) is undefined.
 
 ---
+
+## Acknowledgement
+
+TREN was developed within the scope of an ongoing research project on Turkish–English intra-word code-switching. The application was specifically designed to support the construction, annotation, and analysis of an original intra-word code-switching corpus compiled as part of this project. The current fully annotated intra-word code-switching corpus was created using TREN as its primary annotation environment. TREN therefore reflects not only a technical implementation but also a methodological framework grounded in corpus-based bilingual research.
+
+## Disclaimer
+
+This application is provided "AS IS", without warranty of any kind, express or implied.  
+The developer assumes no responsibility for any errors, inaccuracies, or analytical consequences resulting from the software or its output.
+
+## Contact
+
+For questions about TREN not answered in this documentation, or to report an issue, you may contact:
+**bostanberkay@outlook.com**
 
 ## References
 
