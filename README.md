@@ -16,11 +16,8 @@ TREN’s features include, for instance:
 • automatic computation of Matrix Language and Embedded Language at the sentence level  
 • flexible export of annotated data in `.csv` and `.txt` formats  
 
-TREN is intended for use by researchers working on bilingual and multilingual language data, particularly in contexts where fine-grained annotation of code-switching is required. Typical application areas include:
-• code-switching and bilingual language use  
-• corpus linguistics  
-• morphology and morphosyntax   
-• discourse analysis
+TREN is intended for use by researchers working on bilingual and multilingual language data, particularly in contexts where fine-grained annotation of code-switching is required.
+
 <p align="center">
   <img src="assets/tren_icon.png" alt="TREN icon" width="120">
 </p>
