@@ -160,3 +160,17 @@ def reconstruct_text_from_blocks(blocks, extra_headers):
 def is_matrixembed_locked(token, new_value) -> bool:
     """MatrixLang/EmbedLang rows may only have their Label set to TR or EN."""
     return token in ("MatrixLang", "EmbedLang") and new_value not in ("TR", "EN")
+
+
+def iter_visible_rows(blocks, row_index_map, sep_rows):
+    """Iterate visible (non-separator) grid rows in sorted order, resolving
+    each to its underlying model row. Skips rows that don't resolve to a
+    model position (bidx is None)."""
+    for vis_r in sorted(row_index_map.keys()):
+        if vis_r in sep_rows:
+            continue
+        bidx, ridx = row_index_map.get(vis_r, (None, None))
+        if bidx is None:
+            continue
+        row = blocks[bidx][ridx]
+        yield vis_r, bidx, ridx, row

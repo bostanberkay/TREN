@@ -161,17 +161,9 @@ VOC vocative
                     continue
             return ""
 
-        for vis_r in sorted(getattr(self, '_row_index_map', {}).keys()):
-            if vis_r in getattr(self, '_sep_rows', set()):
-                continue
-            bidx, ridx = self._row_index_map.get(vis_r, (None, None))
-            if bidx is None:
-                continue
-            try:
-                row = self.blocks[bidx][ridx]
-            except Exception:
-                continue
-
+        for vis_r, bidx, ridx, row in annotation_model.iter_visible_rows(
+            self.blocks, getattr(self, '_row_index_map', {}), getattr(self, '_sep_rows', set())
+        ):
             tok = str(row.get('token', '') or '').strip()
             if self._is_meta_row_token(tok):
                 continue
@@ -1475,14 +1467,9 @@ VOC vocative
 
         out = []
         # Iterate
-        for vis_r in sorted(self._row_index_map.keys()):
-            if vis_r in self._sep_rows:
-                continue
-            bidx, ridx = self._row_index_map.get(vis_r, (None, None))
-            if bidx is None:
-                continue
-            row = self.blocks[bidx][ridx]
-
+        for vis_r, bidx, ridx, row in annotation_model.iter_visible_rows(
+            self.blocks, self._row_index_map, self._sep_rows
+        ):
             vals = [
                 row.get('idx', ''),
                 row.get('token', ''),
