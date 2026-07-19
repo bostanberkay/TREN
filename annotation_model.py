@@ -182,3 +182,39 @@ def iter_visible_rows(blocks, row_index_map, sep_rows):
             continue
         row = blocks[bidx][ridx]
         yield vis_r, bidx, ridx, row
+
+
+def build_grid_view(blocks, extra_headers, skip_separator_after_empty_block):
+    """Build tksheet-ready row data plus row_index_map/sep_rows from blocks.
+    Returns (data, row_index_map, sep_rows).
+
+    A separator row is inserted after every block except the last.
+    If skip_separator_after_empty_block is True, that separator is
+    additionally skipped when the block itself has no rows.
+    """
+    data = []
+    row_index_map = {}
+    sep_rows = set()
+    row_cursor = 0
+    for bidx, rows in enumerate(blocks):
+        for ridx, r in enumerate(rows):
+            for h in extra_headers:
+                r.setdefault(h, "")
+            idxv = r.get("idx", "")
+            idxs = "" if idxv is None else str(idxv)
+            vals = [idxs, r.get("token", ""), r.get("label", ""), r.get("gloss", "")]
+            for h in extra_headers:
+                vals.append(r.get(h, ""))
+            data.append(vals)
+            row_index_map[row_cursor] = (bidx, ridx)
+            row_cursor += 1
+
+        is_last = bidx == len(blocks) - 1
+        insert_sep = (not is_last) and (bool(rows) if skip_separator_after_empty_block else True)
+        if insert_sep:
+            data.append(["" for _ in range(4 + len(extra_headers))])
+            row_index_map[row_cursor] = (None, None)
+            sep_rows.add(row_cursor)
+            row_cursor += 1
+
+    return data, row_index_map, sep_rows

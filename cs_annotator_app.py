@@ -2868,23 +2868,9 @@ VOC vocative
         self._renumber_tokens()
 
         # 3) Grid
-        data = []
-        row_cursor = 0
-        for bidx, rows in enumerate(self.blocks):
-            for ridx, r in enumerate(rows):
-                idxv = r.get("idx", "")
-                idxs = "" if idxv is None else str(idxv)
-                vals = [idxs, r.get("token", ""), r.get("label", ""), r.get("gloss", "")]
-                for h in self._extra_headers:
-                    vals.append(r.get(h, ""))
-                data.append(vals)
-                self._row_index_map[row_cursor] = (bidx, ridx)
-                row_cursor += 1
-            if bidx < len(self.blocks) - 1 and rows:
-                data.append(["" for _ in self._all_headers()])
-                self._row_index_map[row_cursor] = (None, None)
-                self._sep_rows.add(row_cursor)
-                row_cursor += 1
+        data, self._row_index_map, self._sep_rows = annotation_model.build_grid_view(
+            self.blocks, self._extra_headers, skip_separator_after_empty_block=True
+        )
 
         try:
             self.sheet.headers(self._all_headers())
@@ -2946,32 +2932,9 @@ VOC vocative
         if self.sheet is None and self._full_sheet is None:
             return
 
-        self._row_index_map = {}
-        self._sep_rows = set()
-
-        data = []
-        row_cursor = 0
-        for bidx, rows in enumerate(self.blocks):
-            for ridx, r in enumerate(rows):
-                # ensure extra keys exist
-                for h in self._extra_headers:
-                    r.setdefault(h, "")
-
-                idxv = r.get("idx", "")
-                idxs = "" if idxv is None else str(idxv)
-                vals = [idxs, r.get("token", ""), r.get("label", ""), r.get("gloss", "")]
-                for h in self._extra_headers:
-                    vals.append(r.get(h, ""))
-
-                data.append(vals)
-                self._row_index_map[row_cursor] = (bidx, ridx)
-                row_cursor += 1
-
-            if bidx < len(self.blocks) - 1:
-                data.append(["" for _ in self._all_headers()])
-                self._row_index_map[row_cursor] = (None, None)
-                self._sep_rows.add(row_cursor)
-                row_cursor += 1
+        data, self._row_index_map, self._sep_rows = annotation_model.build_grid_view(
+            self.blocks, self._extra_headers, skip_separator_after_empty_block=False
+        )
 
         for sh in (self.sheet, self._full_sheet):
             if sh is None:
