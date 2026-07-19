@@ -9,7 +9,15 @@ from annotation_model import (
     sheet_rows_to_txt,
     renumber_tokens,
     reconstruct_text_from_blocks,
+    is_matrixembed_locked,
+    iter_visible_rows,
+    resolve_row,
+    build_grid_view,
 )
+
+
+def _row(tok, lab="", glo="", idx=""):
+    return {"idx": idx, "token": tok, "label": lab, "gloss": glo}
 
 
 # --- is_meta_row_token ---------------------------------------------------
@@ -466,3 +474,324 @@ def test_reconstruct_text_from_blocks_delegates_to_renumber_tokens():
     idx_direct = [[r["idx"] for r in blk] for blk in blocks_direct]
     idx_via = [[r["idx"] for r in blk] for blk in blocks_via_reconstruct]
     assert idx_direct == idx_via
+
+
+# --- is_matrixembed_locked -------------------------------------------------
+
+@pytest.mark.parametrize("token, new_value, expected", [
+    # MatrixLang cases
+    ("MatrixLang", "TR", False),
+    ("MatrixLang", "EN", False),
+    ("MatrixLang", "MIXED", True),
+    ("MatrixLang", "", True),
+    # EmbedLang cases
+    ("EmbedLang", "TR", False),
+    ("EmbedLang", "EN", False),
+    ("EmbedLang", "UID", True),
+    ("EmbedLang", None, True),
+    # valid/invalid edits on non-meta tokens (never locked)
+    ("SentenceID", "TR", False),
+    ("SentenceID", "XYZ", False),
+    ("Bugun", "TR", False),
+    ("Bugun", "ANYTHING", False),
+    # None token
+    (None, "TR", False),
+    (None, None, False),
+    # ordinary/empty token
+    ("", "", False),
+], ids=[
+    "MatrixLang-TR-unlocked", "MatrixLang-EN-unlocked", "MatrixLang-MIXED-locked", "MatrixLang-empty-locked",
+    "EmbedLang-TR-unlocked", "EmbedLang-EN-unlocked", "EmbedLang-UID-locked", "EmbedLang-None-locked",
+    "SentenceID-TR-unlocked", "SentenceID-XYZ-unlocked", "Bugun-TR-unlocked", "Bugun-ANYTHING-unlocked",
+    "None_token-TR-unlocked", "None_token-None-unlocked", "empty_token-empty-unlocked",
+])
+def test_is_matrixembed_locked(token, new_value, expected):
+    assert is_matrixembed_locked(token, new_value) == expected
+
+
+def test_is_matrixembed_locked_case_sensitive():
+    # Only the exact "MatrixLang"/"EmbedLang" strings trigger the lock.
+    assert is_matrixembed_locked("matrixlang", "TR") is False
+    assert is_matrixembed_locked("embedlang", "XYZ") is False
+
+
+# --- iter_visible_rows -------------------------------------------------
+
+def test_iter_visible_rows_normal_multiple_blocks():
+    blocks = [
+        [_row("Bugun", "TR"), _row("meeting'e", "MIXED")],
+        [_row("I", "TR"), _row("think", "EN")],
+    ]
+    row_index_map = {0: (0, 0), 1: (0, 1), 2: (1, 0), 3: (1, 1)}
+    sep_rows = set()
+    result = list(iter_visible_rows(blocks, row_index_map, sep_rows))
+    assert result == [
+        (0, 0, 0, blocks[0][0]),
+        (1, 0, 1, blocks[0][1]),
+        (2, 1, 0, blocks[1][0]),
+        (3, 1, 1, blocks[1][1]),
+    ]
+
+
+def test_iter_visible_rows_with_separator_rows():
+    blocks = [
+        [_row("a", "TR"), _row("b", "EN")],
+        [_row("c", "MIXED")],
+    ]
+    row_index_map = {0: (0, 0), 1: (0, 1), 2: (None, None), 3: (1, 0)}
+    sep_rows = {2}
+    result = list(iter_visible_rows(blocks, row_index_map, sep_rows))
+    assert result == [
+        (0, 0, 0, blocks[0][0]),
+        (1, 0, 1, blocks[0][1]),
+        (3, 1, 0, blocks[1][0]),
+    ]
+
+
+def test_iter_visible_rows_unresolved_rows_not_in_sep_rows():
+    # bidx is None but the row isn't flagged as a separator -- must still skip.
+    blocks = [[_row("x", "TR")]]
+    row_index_map = {0: (0, 0), 1: (None, None), 2: (None, None)}
+    sep_rows = set()
+    result = list(iter_visible_rows(blocks, row_index_map, sep_rows))
+    assert result == [(0, 0, 0, blocks[0][0])]
+
+
+def test_iter_visible_rows_empty_mappings():
+    assert list(iter_visible_rows([], {}, set())) == []
+
+
+def test_iter_visible_rows_interleaved_separators():
+    blocks = [
+        [_row("a1", "TR")],
+        [_row("b1", "EN"), _row("b2", "MIXED")],
+        [_row("c1", "TR")],
+    ]
+    row_index_map = {0: (0, 0), 1: (None, None), 2: (1, 0), 3: (1, 1), 4: (None, None), 5: (2, 0)}
+    sep_rows = {1, 4}
+    result = list(iter_visible_rows(blocks, row_index_map, sep_rows))
+    assert result == [
+        (0, 0, 0, blocks[0][0]),
+        (2, 1, 0, blocks[1][0]),
+        (3, 1, 1, blocks[1][1]),
+        (5, 2, 0, blocks[2][0]),
+    ]
+
+
+def test_iter_visible_rows_stale_row_index_map_raises_index_error():
+    # Documents current, accepted behavior (see the S2 disclosure in review):
+    # a row_index_map entry pointing past the end of blocks is not silently
+    # skipped -- it raises IndexError when the generator is consumed. This
+    # only matters if row_index_map and blocks are already out of sync, which
+    # shouldn't happen in normal operation.
+    blocks = [[_row("a", "MIXED")]]
+    row_index_map = {0: (0, 0), 1: (5, 0)}
+    sep_rows = set()
+    gen = iter_visible_rows(blocks, row_index_map, sep_rows)
+    with pytest.raises(IndexError):
+        list(gen)
+
+
+# --- resolve_row -------------------------------------------------------
+
+@pytest.mark.parametrize("row_index_map, sep_rows, visible_row, expected", [
+    ({0: (0, 0), 1: (None, None)}, {1}, 1, (None, None)),
+    ({0: (0, 0), 1: (0, 1), 2: (1, 0)}, set(), 1, (0, 1)),
+    ({0: (0, 0), 1: (0, 1)}, set(), 0, (0, 0)),
+    ({0: (0, 0)}, set(), 99, (None, None)),
+    ({}, set(), 0, (None, None)),
+    ({}, set(), 5, (None, None)),
+    ({0: (0, 0)}, {7}, 7, (None, None)),
+    # Separator precedence: present in the map but also flagged as a
+    # separator -- separator status must win.
+    ({3: (2, 1)}, {3}, 3, (None, None)),
+], ids=[
+    "separator_row", "valid_row", "valid_row_first_entry", "missing_row",
+    "empty_mappings", "empty_mappings_row_absent", "row_absent_and_separator",
+    "separator_precedence_over_map_presence",
+])
+def test_resolve_row(row_index_map, sep_rows, visible_row, expected):
+    assert resolve_row(row_index_map, sep_rows, visible_row) == expected
+
+
+# --- build_grid_view ---------------------------------------------------
+
+_GRID_VIEW_CASES = [
+    (
+        "multiple_non_empty_blocks",
+        [
+            [_row("Bugun", "TR"), _row("meeting'e", "MIXED")],
+            [_row("I", "TR"), _row("think", "EN")],
+            [_row("x", "OTHER")],
+        ],
+    ),
+    (
+        "empty_block_in_the_middle",
+        [
+            [_row("a", "TR")],
+            [],
+            [_row("b", "EN")],
+        ],
+    ),
+    (
+        "empty_block_at_the_end",
+        [
+            [_row("a", "TR")],
+            [_row("b", "EN")],
+            [],
+        ],
+    ),
+    (
+        "empty_block_at_the_start",
+        [
+            [],
+            [_row("a", "TR")],
+            [_row("b", "EN")],
+        ],
+    ),
+    (
+        "single_block_only",
+        [
+            [_row("a", "TR"), _row("b", "EN")],
+        ],
+    ),
+    (
+        "single_empty_block_only",
+        [
+            [],
+        ],
+    ),
+    (
+        "empty_blocks_list",
+        [],
+    ),
+    (
+        "multiple_consecutive_empty_blocks",
+        [
+            [_row("a", "TR")],
+            [],
+            [],
+            [_row("b", "EN")],
+        ],
+    ),
+]
+
+# Expected (data, row_index_map, sep_rows) per (case, policy), computed by
+# direct execution against the real function before writing these tests.
+_GRID_VIEW_EXPECTED = {
+    ("multiple_non_empty_blocks", True): (
+        [["", "Bugun", "TR", ""], ["", "meeting'e", "MIXED", ""], ["", "", "", ""],
+         ["", "I", "TR", ""], ["", "think", "EN", ""], ["", "", "", ""], ["", "x", "OTHER", ""]],
+        {0: (0, 0), 1: (0, 1), 2: (None, None), 3: (1, 0), 4: (1, 1), 5: (None, None), 6: (2, 0)},
+        {2, 5},
+    ),
+    ("multiple_non_empty_blocks", False): (
+        [["", "Bugun", "TR", ""], ["", "meeting'e", "MIXED", ""], ["", "", "", ""],
+         ["", "I", "TR", ""], ["", "think", "EN", ""], ["", "", "", ""], ["", "x", "OTHER", ""]],
+        {0: (0, 0), 1: (0, 1), 2: (None, None), 3: (1, 0), 4: (1, 1), 5: (None, None), 6: (2, 0)},
+        {2, 5},
+    ),
+    ("empty_block_in_the_middle", True): (
+        [["", "a", "TR", ""], ["", "", "", ""], ["", "b", "EN", ""]],
+        {0: (0, 0), 1: (None, None), 2: (2, 0)},
+        {1},
+    ),
+    ("empty_block_in_the_middle", False): (
+        [["", "a", "TR", ""], ["", "", "", ""], ["", "", "", ""], ["", "b", "EN", ""]],
+        {0: (0, 0), 1: (None, None), 2: (None, None), 3: (2, 0)},
+        {1, 2},
+    ),
+    ("empty_block_at_the_end", True): (
+        [["", "a", "TR", ""], ["", "", "", ""], ["", "b", "EN", ""], ["", "", "", ""]],
+        {0: (0, 0), 1: (None, None), 2: (1, 0), 3: (None, None)},
+        {1, 3},
+    ),
+    ("empty_block_at_the_end", False): (
+        [["", "a", "TR", ""], ["", "", "", ""], ["", "b", "EN", ""], ["", "", "", ""]],
+        {0: (0, 0), 1: (None, None), 2: (1, 0), 3: (None, None)},
+        {1, 3},
+    ),
+    ("empty_block_at_the_start", True): (
+        [["", "a", "TR", ""], ["", "", "", ""], ["", "b", "EN", ""]],
+        {0: (1, 0), 1: (None, None), 2: (2, 0)},
+        {1},
+    ),
+    ("empty_block_at_the_start", False): (
+        [["", "", "", ""], ["", "a", "TR", ""], ["", "", "", ""], ["", "b", "EN", ""]],
+        {0: (None, None), 1: (1, 0), 2: (None, None), 3: (2, 0)},
+        {0, 2},
+    ),
+    ("single_block_only", True): (
+        [["", "a", "TR", ""], ["", "b", "EN", ""]],
+        {0: (0, 0), 1: (0, 1)},
+        set(),
+    ),
+    ("single_block_only", False): (
+        [["", "a", "TR", ""], ["", "b", "EN", ""]],
+        {0: (0, 0), 1: (0, 1)},
+        set(),
+    ),
+    ("single_empty_block_only", True): ([], {}, set()),
+    ("single_empty_block_only", False): ([], {}, set()),
+    ("empty_blocks_list", True): ([], {}, set()),
+    ("empty_blocks_list", False): ([], {}, set()),
+    ("multiple_consecutive_empty_blocks", True): (
+        [["", "a", "TR", ""], ["", "", "", ""], ["", "b", "EN", ""]],
+        {0: (0, 0), 1: (None, None), 2: (3, 0)},
+        {1},
+    ),
+    ("multiple_consecutive_empty_blocks", False): (
+        [["", "a", "TR", ""], ["", "", "", ""], ["", "", "", ""], ["", "", "", ""], ["", "b", "EN", ""]],
+        {0: (0, 0), 1: (None, None), 2: (None, None), 3: (None, None), 4: (3, 0)},
+        {1, 2, 3},
+    ),
+}
+
+
+@pytest.mark.parametrize("name, blocks", _GRID_VIEW_CASES, ids=[c[0] for c in _GRID_VIEW_CASES])
+@pytest.mark.parametrize("skip_policy", [True, False], ids=["skip_empty_sep", "always_sep"])
+def test_build_grid_view(name, blocks, skip_policy):
+    blocks_copy = copy.deepcopy(blocks)
+    result = build_grid_view(blocks_copy, [], skip_separator_after_empty_block=skip_policy)
+    assert result == _GRID_VIEW_EXPECTED[(name, skip_policy)]
+
+
+def test_build_grid_view_separator_policies_diverge_for_empty_middle_block():
+    # Regression guard for the discovered _populate_table vs.
+    # _rebuild_grid_from_model inconsistency: for a block structure with an
+    # empty middle block, the two policies MUST produce different sep_rows.
+    # If this test ever passes with skip_policy True and False producing the
+    # same result for this input, the divergence this parameter exists to
+    # encode has been lost.
+    blocks = [[_row("a", "TR")], [], [_row("b", "EN")]]
+
+    _, _, sep_true = build_grid_view(copy.deepcopy(blocks), [], skip_separator_after_empty_block=True)
+    _, _, sep_false = build_grid_view(copy.deepcopy(blocks), [], skip_separator_after_empty_block=False)
+
+    assert sep_true == {1}
+    assert sep_false == {1, 2}
+    assert sep_true != sep_false
+
+
+def test_build_grid_view_custom_header_backfill_and_mutation():
+    blocks = [
+        [_row("a", "TR"), {"idx": "", "token": "b", "label": "EN", "gloss": ""}],
+    ]
+    before_keys = [set(r.keys()) for blk in blocks for r in blk]
+
+    data, row_index_map, sep_rows = build_grid_view(blocks, ["note", "pos"], skip_separator_after_empty_block=True)
+
+    after_keys = [set(r.keys()) for blk in blocks for r in blk]
+    # setdefault backfills the missing extra-header keys onto the row dicts
+    # in place -- neither row had "note"/"pos" before the call.
+    assert before_keys == [
+        {"idx", "token", "label", "gloss"},
+        {"idx", "token", "label", "gloss"},
+    ]
+    assert after_keys == [
+        {"idx", "token", "label", "gloss", "note", "pos"},
+        {"idx", "token", "label", "gloss", "note", "pos"},
+    ]
+    assert data == [["", "a", "TR", "", "", ""], ["", "b", "EN", "", "", ""]]
+    assert row_index_map == {0: (0, 0), 1: (0, 1)}
+    assert sep_rows == set()
