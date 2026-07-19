@@ -2,7 +2,8 @@ from unittest import mock
 
 import pytest
 
-from cs_pipeline import Annotator, DEFAULTS
+import cs_pipeline
+from cs_pipeline import Annotator, DEFAULTS, tokenize
 
 
 def _make_annotator(turkish_top=(), turkish_all=(), english_words=()):
@@ -308,3 +309,169 @@ def test_detect_mixed_no_apostrophe_ft_predict_not_called_when_base_in_lexicon()
         result = obj._detect_mixed_no_apostrophe("stressim", DEFAULTS)
     assert result == ("stress", "im")
     mocked.assert_not_called()
+
+
+# --- _build_ne_map -----------------------------------------------------
+# Touches no `self.*` state at all -- Annotator.__new__() with zero
+# attributes set is sufficient. Only doc.ents (a list) and each entity's
+# .text (a string) are ever read; nothing about Stanza's real API surface
+# (spans, offsets, per-token objects) matters to this function.
+
+class _FakeEnt:
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeDoc:
+    def __init__(self, ents):
+        self.ents = ents
+
+
+@pytest.mark.parametrize("ents", [None, []], ids=["ents_none", "ents_empty_list"])
+def test_build_ne_map_falsy_ents(ents):
+    obj = _make_annotator()
+    assert obj._build_ne_map(_FakeDoc(ents), ["a", "b"]) == {}
+
+
+def test_build_ne_map_doc_missing_ents_attribute():
+    class NoEntsDoc:
+        pass
+    obj = _make_annotator()
+    assert obj._build_ne_map(NoEntsDoc(), ["a", "b"]) == {}
+
+
+def test_build_ne_map_normal_multiword_entity():
+    obj = _make_annotator()
+    tokens = tokenize("New York is nice")
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("New York")]), tokens) == {
+        "New": "NE", "York": "NE",
+    }
+
+
+def test_build_ne_map_single_word_entity():
+    obj = _make_annotator()
+    tokens = tokenize("Ankara is nice")
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("Ankara")]), tokens) == {"Ankara": "NE"}
+
+
+def test_build_ne_map_empty_entity_text():
+    obj = _make_annotator()
+    tokens = tokenize("New York is nice")
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("")]), tokens) == {}
+
+
+def test_build_ne_map_malformed_entity_missing_text_attribute_raises():
+    # Documents current, unguarded behavior: there is no try/except here, so
+    # a malformed entity object propagates a bare AttributeError. Not a bug
+    # to fix in this step -- locking in the current behavior.
+    class BadEnt:
+        pass
+    obj = _make_annotator()
+    tokens = tokenize("New York is nice")
+    with pytest.raises(AttributeError):
+        obj._build_ne_map(_FakeDoc([BadEnt()]), tokens)
+
+
+def test_build_ne_map_case_sensitive_matching():
+    obj = _make_annotator()
+    tokens = tokenize("Washington met washington")
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("Washington")]), tokens) == {
+        "Washington": "NE",
+    }
+
+
+def test_build_ne_map_duplicate_token_text_limitation():
+    # Documents a real, current alignment limitation: matching is by literal
+    # token TEXT, not by span/position. A token string that legitimately
+    # appears once as part of an entity and once elsewhere in the same line
+    # cannot be distinguished here -- both would be treated as NE when this
+    # map is consumed by annotate()'s per-token loop. Not a bug to fix in
+    # this step -- locking in the current behavior.
+    obj = _make_annotator()
+    tokens = tokenize("Paris loves Paris")
+    ne_map = obj._build_ne_map(_FakeDoc([_FakeEnt("Paris")]), tokens)
+    assert ne_map == {"Paris": "NE"}
+    assert all(tok in ne_map for tok in tokens if tok == "Paris")
+
+
+def test_build_ne_map_entity_text_matches_nothing_in_line():
+    obj = _make_annotator()
+    tokens = tokenize("unrelated sentence here")
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("Berlin")]), tokens) == {}
+
+
+def test_build_ne_map_multiple_entities_aggregate_via_union():
+    obj = _make_annotator()
+    tokens = tokenize("Ankara and Istanbul are cities")
+    ne_map = obj._build_ne_map(
+        _FakeDoc([_FakeEnt("Ankara"), _FakeEnt("Istanbul")]), tokens
+    )
+    assert ne_map == {"Ankara": "NE", "Istanbul": "NE"}
+
+
+def test_build_ne_map_entity_text_with_trailing_punctuation():
+    # The entity-piece regex strips punctuation not attached to \w chars,
+    # so a trailing comma in the entity's raw text doesn't prevent matching.
+    obj = _make_annotator()
+    tokens = tokenize("I love New York today")
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("New York,")]), tokens) == {
+        "New": "NE", "York": "NE",
+    }
+
+
+def test_build_ne_map_apostrophe_containing_entity_name():
+    obj = _make_annotator()
+    tokens = tokenize("O'Brien lives here")
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("O'Brien")]), tokens) == {
+        "O'Brien": "NE",
+    }
+
+
+def test_build_ne_map_lone_apostrophe_entity_text_regex_gap():
+    # Documents a confirmed inconsistency: tokenize()'s regex includes a
+    # lone-apostrophe alternative (`|['’]`), but _build_ne_map's own
+    # inline regex (r"\w+['’]?\w*|\w+") does not. A standalone
+    # apostrophe token from tokenize() can never be matched via this path.
+    # Narrow practical impact; not a bug to fix in this step.
+    obj = _make_annotator()
+    assert tokenize("'") == ["'"]
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("'")]), ["'", "x"]) == {}
+
+
+# --- _ensure_ner ---------------------------------------------------------
+
+def test_ensure_ner_disabled_leaves_self_ner_untouched():
+    obj = _make_annotator()
+    obj.ner = None
+    obj._ensure_ner(enabled=False)
+    assert obj.ner is None
+
+
+def test_ensure_ner_disabled_does_not_overwrite_existing_ner():
+    obj = _make_annotator()
+    sentinel = object()
+    obj.ner = sentinel
+    obj._ensure_ner(enabled=False)
+    assert obj.ner is sentinel
+
+
+def test_ensure_ner_enabled_does_not_overwrite_existing_ner():
+    # Lazy construction: only builds a pipeline the first time, when
+    # self.ner is still None.
+    obj = _make_annotator()
+    sentinel = object()
+    obj.ner = sentinel
+    obj._ensure_ner(enabled=True)
+    assert obj.ner is sentinel
+
+
+def test_ensure_ner_enabled_lazily_constructs_pipeline_when_none():
+    obj = _make_annotator()
+    obj.ner = None
+    with mock.patch.object(cs_pipeline, "stanza") as mocked_stanza:
+        mocked_stanza.Pipeline.return_value = "fake_pipeline_instance"
+        obj._ensure_ner(enabled=True)
+    assert obj.ner == "fake_pipeline_instance"
+    mocked_stanza.Pipeline.assert_called_once_with(
+        "tr", processors="tokenize,ner", use_gpu=False
+    )
