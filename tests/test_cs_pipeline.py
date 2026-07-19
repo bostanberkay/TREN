@@ -100,3 +100,95 @@ def test_choose_label_lexicon_hit_never_calls_ft_predict(make_obj, token):
     with mock.patch.object(obj, "_ft_predict") as mocked:
         obj._choose_label(token, DEFAULTS)
     mocked.assert_not_called()
+
+
+# --- _split_mixed_apostrophe ------------------------------------------------
+# Neither this function nor _parse_tr_suffixes_full touches `self` at all, so
+# a bare Annotator.__new__() instance with no attributes set is sufficient.
+
+@pytest.mark.parametrize("token, expected", [
+    ("meeting'e", ("meeting", "e")),      # straight apostrophe
+    ("meeting’e", ("meeting", "e")),      # curly/typographic apostrophe (U+2019)
+    ("nothingatall", (None, None)),       # no apostrophe at all
+    ("'twas", (None, None)),              # leading apostrophe -> empty first part
+    ("word'", (None, None)),              # trailing apostrophe -> empty second part
+    ("a'b'c", (None, None)),              # 2+ apostrophes -> more than 2 parts
+], ids=[
+    "straight_apostrophe_split", "curly_apostrophe_split", "no_apostrophe",
+    "leading_apostrophe_empty_base", "trailing_apostrophe_empty_suffix",
+    "multiple_apostrophes",
+])
+def test_split_mixed_apostrophe(token, expected):
+    obj = _make_annotator()
+    assert obj._split_mixed_apostrophe(token) == expected
+
+
+@pytest.mark.parametrize("token", [
+    "he's", "we're", "I've", "I'm", "we'll", "he'd", "don't",
+], ids=["s", "re", "ve", "m", "ll", "d", "t_via_dont"])
+def test_split_mixed_apostrophe_english_contractions_rejected(token):
+    obj = _make_annotator()
+    assert obj._split_mixed_apostrophe(token) == (None, None)
+
+
+def test_split_mixed_apostrophe_contraction_check_is_case_insensitive():
+    obj = _make_annotator()
+    assert obj._split_mixed_apostrophe("word'S") == (None, None)
+
+
+def test_split_mixed_apostrophe_nt_branch_is_unreachable():
+    # Documents a confirmed dead branch: `sfx.endswith("n't")` can never be
+    # True, because re.split(r"[’']", token) splits on every apostrophe,
+    # so the suffix half can never itself contain an apostrophe when exactly
+    # 2 parts result (the precondition to reach this check at all). Real
+    # contractions like "don't" split to suffix "t", already caught by the
+    # EN_CONTRACTIONS set membership check. Not a bug to fix here -- locking
+    # in the current, verified behavior.
+    obj = _make_annotator()
+    assert obj._split_mixed_apostrophe("don't")[1] != "n't"
+
+
+# --- _parse_tr_suffixes_full -------------------------------------------------
+
+@pytest.mark.parametrize("suffix, expected", [
+    ("", ([], set(), set(), set())),
+    ("e", (["e"], {"Case=Dat"}, set(), set())),
+    ("ne", (["ne"], {"Case=Dat"}, set(), set())),   # buffer-n dative, one unit
+    ("na", (["na"], {"Case=Dat"}, set(), set())),   # buffer-n dative, one unit
+    ("ımız", (["ımız"], {"Poss=Yes", "Person[psor]=1", "Number[psor]=Plur"}, set(), set())),
+    ("lar", (["lar"], {"Number=Plur"}, set(), set())),
+    ("lik", (["lik"], set(), {"Deriv=LIK", "DerivPOS=NOUN"}, set())),
+    ("xyz", (["xyz"], set(), {"Unparsed=Leftover"}, set())),
+], ids=[
+    "empty_string", "single_case_ending", "buffer_n_dative_ne", "buffer_n_dative_na",
+    "possessive_long", "plural", "derivational", "unparseable_leftover",
+])
+def test_parse_tr_suffixes_full(suffix, expected):
+    obj = _make_annotator()
+    assert obj._parse_tr_suffixes_full(suffix) == expected
+
+
+def test_parse_tr_suffixes_full_multistage_chain():
+    # Exercises all four stages chaining together in one input:
+    # deriv ("lık") + plural ("lar") + case ("ı").
+    obj = _make_annotator()
+    segments, ud, deriv, amb = obj._parse_tr_suffixes_full("lıkları")
+    assert segments == ["lık", "lar", "ı"]
+    assert ud == {"Case=Acc", "Number=Plur"}
+    assert deriv == {"Deriv=LIK", "DerivPOS=NOUN"}
+    assert amb == set()
+
+
+@pytest.mark.parametrize("suffix", ["ıım", "iim", "uum", "uüm"], ids=[
+    "ambiguous_ii_im", "ambiguous_i_im", "ambiguous_u_um", "ambiguous_u_umlaut_m",
+])
+def test_parse_tr_suffixes_full_ambiguous_vowel_branch_is_reachable(suffix):
+    # Confirms the Amb=P3sg_or_Acc branch is reachable (verified by brute
+    # force search), contrary to what a static read might suggest: stage 1's
+    # CASE_ENDINGS already includes bare i/i/u/u-umlaut, but stage 2 can
+    # strip a POSS_SHORT suffix (e.g. "ım") and expose a *new* trailing
+    # vowel that stage 1 never had the chance to see, since stage 1 already
+    # finished running before stage 2 started.
+    obj = _make_annotator()
+    segments, ud, deriv, amb = obj._parse_tr_suffixes_full(suffix)
+    assert amb == {"Amb=P3sg_or_Acc"}
