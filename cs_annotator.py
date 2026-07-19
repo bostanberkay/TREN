@@ -1,4 +1,18 @@
 #!/usr/bin/env python
+"""
+LEGACY / SUPERSEDED PROTOTYPE — NOT THE SUPPORTED APPLICATION.
+
+This file is an early ("Sprint 1") prototype of the TREN annotator GUI. It is
+retained only for historical reference and is not imported by, or otherwise
+connected to, the current application.
+
+- The supported GUI entry point is `cs_annotator_app.py`.
+- The production annotation logic lives in `cs_pipeline.py`.
+- This file's own `run_pipeline` is a stub that does not call
+  `cs_pipeline.Annotator` and does not perform real annotation.
+
+Do not build on this file or treat it as reflecting current behavior.
+"""
 
 
 import os
