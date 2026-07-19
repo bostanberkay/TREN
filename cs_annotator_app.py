@@ -11,6 +11,7 @@ import json
 import sys
 
 from cs_pipeline import Annotator, DEFAULTS
+import annotation_model
 
 try:
     import tksheet
@@ -1592,21 +1593,7 @@ VOC vocative
 
     # Frequency helpers
     def _freq_normalize_token(self, tok: str):
-        """Normalize token for frequency counting.
-        - Casefold ON
-        - Keep hyphenated forms (umbrella-ya stays)
-        - Strip leading/trailing punctuation
-        """
-        if tok is None:
-            return None
-        s = str(tok).strip()
-        if not s:
-            return None
-        # strip punctuation at edges only
-        s = re.sub(r"^[\W_]+|[\W__]+$", "", s, flags=re.UNICODE)
-        if not s:
-            return None
-        return s.casefold()
+        return annotation_model.freq_normalize_token(tok)
 
     def _compute_word_frequencies(self, allowed_labels=None):
         """Compute word frequencies from annotated blocks.
@@ -3022,18 +3009,7 @@ VOC vocative
         return "\n\n".join(out_blocks)
 
     def _is_meta_row_token(self, tok: str) -> bool:
-        """Rows that should NOT be counted as tokens for numbering."""
-        if tok is None:
-            return False
-        t = str(tok).strip()
-        if not t:
-            # blank rows are structural/editable placeholders
-            return True
-        if t in ("MatrixLang", "EmbedLang"):
-            return True
-        if t.lower() in ("sentenceid", "sentid", "sentence_id", "sent_id"):
-            return True
-        return False
+        return annotation_model.is_meta_row_token(tok)
 
     def _renumber_tokens(self):
         """Assign sequential token ids only to non-meta rows."""
