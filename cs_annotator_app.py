@@ -2949,16 +2949,7 @@ VOC vocative
         return annotation_model.is_meta_row_token(tok)
 
     def _renumber_tokens(self):
-        """Assign sequential token ids only to non-meta rows."""
-        g = 1
-        for rows in self.blocks:
-            for r in rows:
-                tok = r.get("token", "")
-                if self._is_meta_row_token(tok):
-                    r["idx"] = ""
-                    continue
-                r["idx"] = g
-                g += 1
+        annotation_model.renumber_tokens(self.blocks)
 
     def _refresh_sheet_idx_column(self):
         """Modeldeki idx değerlerini grid'in 0. kolonuna geri bas.

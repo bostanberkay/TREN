@@ -108,3 +108,16 @@ def sheet_rows_to_txt(rows, headers):
     while out_lines and out_lines[-1] == "":
         out_lines.pop()
     return "\n".join(out_lines)
+
+
+def renumber_tokens(blocks):
+    """Assign sequential token ids only to non-meta rows."""
+    g = 1
+    for rows in blocks:
+        for r in rows:
+            tok = r.get("token", "")
+            if is_meta_row_token(tok):
+                r["idx"] = ""
+                continue
+            r["idx"] = g
+            g += 1
