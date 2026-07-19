@@ -1771,7 +1771,7 @@ VOC vocative
             return
 
         # Map visible row to model row
-        bidx, ridx = self._row_index_map.get(r, (None, None))
+        bidx, ridx = annotation_model.resolve_row(self._row_index_map, self._sep_rows, r)
         if bidx is None:
             messagebox.showwarning("Show Sentence", "Invalid selection.")
             return
@@ -2171,7 +2171,7 @@ VOC vocative
             self.bell()
             return
         c = 2  # force Label column
-        bidx, ridx = self._row_index_map.get(r, (None, None))
+        bidx, ridx = annotation_model.resolve_row(self._row_index_map, self._sep_rows, r)
         if bidx is None:
             self.bell()
             return
@@ -2499,7 +2499,7 @@ VOC vocative
             r = r0 + dr
             if r in self._sep_rows:
                 continue
-            bidx, ridx = self._row_index_map.get(r, (None, None))
+            bidx, ridx = annotation_model.resolve_row(self._row_index_map, self._sep_rows, r)
             if bidx is None:
                 continue
 
@@ -2561,7 +2561,7 @@ VOC vocative
             # idx column is not clearable
             if c == 0:
                 continue
-            bidx, ridx = self._row_index_map.get(r, (None, None))
+            bidx, ridx = annotation_model.resolve_row(self._row_index_map, self._sep_rows, r)
             if bidx is None:
                 continue
 
@@ -2605,7 +2605,7 @@ VOC vocative
             self.bell()
             return
 
-        bidx, ridx = self._row_index_map.get(r, (None, None))
+        bidx, ridx = annotation_model.resolve_row(self._row_index_map, self._sep_rows, r)
         if bidx is None:
             self.bell()
             return
@@ -2635,7 +2635,7 @@ VOC vocative
             self.bell()
             return
 
-        bidx, ridx = self._row_index_map.get(r, (None, None))
+        bidx, ridx = annotation_model.resolve_row(self._row_index_map, self._sep_rows, r)
         if bidx is None:
             self.bell()
             return
@@ -2741,7 +2741,7 @@ VOC vocative
             self.bell()
             return
 
-        bidx, ridx = self._row_index_map.get(r, (None, None))
+        bidx, ridx = annotation_model.resolve_row(self._row_index_map, self._sep_rows, r)
         if bidx is None:
             self.bell()
             return
@@ -3016,7 +3016,7 @@ VOC vocative
             r, c = event.row, event.column
             if r in self._sep_rows:
                 return
-            bidx, ridx = self._row_index_map.get(r, (None, None))
+            bidx, ridx = annotation_model.resolve_row(self._row_index_map, self._sep_rows, r)
             if bidx is None:
                 return
 

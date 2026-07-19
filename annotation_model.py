@@ -162,6 +162,14 @@ def is_matrixembed_locked(token, new_value) -> bool:
     return token in ("MatrixLang", "EmbedLang") and new_value not in ("TR", "EN")
 
 
+def resolve_row(row_index_map, sep_rows, visible_row):
+    """Resolve a visible grid row to its (bidx, ridx) model position.
+    Returns (None, None) for separator rows or rows with no mapping."""
+    if visible_row in sep_rows:
+        return None, None
+    return row_index_map.get(visible_row, (None, None))
+
+
 def iter_visible_rows(blocks, row_index_map, sep_rows):
     """Iterate visible (non-separator) grid rows in sorted order, resolving
     each to its underlying model row. Skips rows that don't resolve to a
