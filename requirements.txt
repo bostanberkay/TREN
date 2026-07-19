@@ -1,3 +1,6 @@
-fasttext
+fasttext==0.9.3
+# fasttext 0.9.3 (latest published version) calls np.array(..., copy=False),
+# which raises under numpy>=2.0's stricter copy semantics.
+numpy<2
 stanza
 tksheet
