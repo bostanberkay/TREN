@@ -52,7 +52,7 @@ Alternatively, run the application directly from source or you may clone this re
 
 ```bash
 git clone https://github.com/bostanberkay/TREN.git
-cd tren
+cd TREN
 python cs_annotator_app.py
 
 ```
@@ -398,6 +398,8 @@ sort by: (-f(w), w)
 
 This section formalizes the **language labeling and annotation mechanisms** implemented in TREN. The formulations below describe the principles underlying the system’s decisions. TREN implements a **symbolically constrained, probabilistic, and morphologically informed** annotation framework. Language labels emerge from hybrid decision mechanisms rather than purely statistical or purely rule-based processes, ensuring transparency, interpretability, and linguistic validity.
 
+**Note on this formalization:** Sections 2–4 below describe an idealized model of TREN's language-identification logic, intended to communicate the underlying linguistic principles. They do not describe the literal control flow of the implementation. In the actual pipeline, a label is produced by a staged, priority-ordered sequence of checks — lexicon/frequency-list membership is consulted first, and a statistical language-model confidence score is only consulted as a last resort — rather than by evaluating a single function over a normalized two-way probability distribution.
+
 ---
 
 ### 1. Token Space and Label Set
@@ -524,8 +526,15 @@ Tokens that do not meet linguistic labeling criteria are assigned to residual ca
 label(t) = OTHER  
   if t is a number, punctuation mark, symbol, or non-lexical item  
 
-label(t) = LANG3  
-  if t belongs to a language other than Turkish or English  
+label(t) = UID  
+  if t cannot be confidently identified as Turkish or English, including
+  tokens belonging to a language other than Turkish or English  
+
+**Note:** `LANG3` is available as a manual relabeling option in the
+annotation grid, allowing a human annotator to mark a token as belonging to
+a third language after review. It is not currently assigned automatically
+by the pipeline; unidentified non-TR/EN tokens fall through to `UID` unless
+a human annotator relabels them.
 
 ---
 
@@ -535,21 +544,36 @@ For a sentence S consisting of tokens { t₁, …, tₘ }, define:
 
 count_L(S) = | { t ∈ S : label(t) = L } |
 
-for L ∈ { TR, EN }.
+for L ∈ { TR, EN, MIXED }.
+
+MIXED tokens contribute weighted partial votes to both languages, reflecting
+that a MIXED token combines a Turkish suffix with an English stem:
+
+score_TR(S) = count_TR(S) + w_TR · count_MIXED(S)  
+score_EN(S) = count_EN(S) + w_EN · count_MIXED(S)
+
+with w_TR = 0.6 and w_EN = 0.4 by default. NE, OTHER, and UID tokens do not
+contribute to either score.
 
 The Matrix Language is defined as:
 
-ML(S) = argmax_L count_L(S)
+ML(S) = TR  if score_TR(S) ≥ score_EN(S)  
+      = EN  otherwise
+
+(ties are resolved in favor of TR)
 
 ---
 
 ### 10. Embedded Language
 
-The Embedded Language is defined as the non-matrix language present in the sentence:
+The Embedded Language is defined as the non-matrix language, present if at
+least one token in S is labeled as that language or as MIXED:
 
-EL(S) = { TR, EN } \ { ML(S) }
+EL(S) = the language in { TR, EN } \ { ML(S) } that occurs (directly or via
+a MIXED token) in S
 
-If no tokens from the non-matrix language occur, EL(S) is undefined.
+If no such token occurs, EL(S) is undefined, rendered as "-" in the
+annotation grid.
 
 ---
 
