@@ -2913,37 +2913,7 @@ VOC vocative
         self._select_first_cell()
 
     def _reconstruct_text_from_blocks(self):
-        """Fallback TXT reconstruction from the Python model.
-
-        Includes extra user-defined columns. For meta rows (blank idx), idx is omitted.
-        Trailing empty fields are trimmed.
-        """
-        self._renumber_tokens()
-        out_blocks = []
-        for rows in getattr(self, 'blocks', []):
-            lines = []
-            for r in rows:
-                idx = str(r.get('idx', '') or '').strip()
-                tok = str(r.get('token', '') or '')
-                lab = str(r.get('label', '') or '')
-                glo = str(r.get('gloss', '') or '')
-
-                if not tok:
-                    continue
-
-                extras = [str(r.get(h, '') or '') for h in self._extra_headers]
-
-                if idx == "":
-                    fields = [tok, lab, glo] + extras
-                else:
-                    fields = [idx, tok, lab, glo] + extras
-
-                while fields and str(fields[-1]).strip() == "":
-                    fields.pop()
-
-                lines.append("\t".join(fields))
-            out_blocks.append("\n".join(lines))
-        return "\n\n".join(out_blocks)
+        return annotation_model.reconstruct_text_from_blocks(self.blocks, self._extra_headers)
 
     def _is_meta_row_token(self, tok: str) -> bool:
         return annotation_model.is_meta_row_token(tok)

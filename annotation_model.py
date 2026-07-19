@@ -121,3 +121,37 @@ def renumber_tokens(blocks):
                 continue
             r["idx"] = g
             g += 1
+
+
+def reconstruct_text_from_blocks(blocks, extra_headers):
+    """Fallback TXT reconstruction from the Python model.
+
+    Includes extra user-defined columns. For meta rows (blank idx), idx is omitted.
+    Trailing empty fields are trimmed.
+    """
+    renumber_tokens(blocks)
+    out_blocks = []
+    for rows in blocks:
+        lines = []
+        for r in rows:
+            idx = str(r.get('idx', '') or '').strip()
+            tok = str(r.get('token', '') or '')
+            lab = str(r.get('label', '') or '')
+            glo = str(r.get('gloss', '') or '')
+
+            if not tok:
+                continue
+
+            extras = [str(r.get(h, '') or '') for h in extra_headers]
+
+            if idx == "":
+                fields = [tok, lab, glo] + extras
+            else:
+                fields = [idx, tok, lab, glo] + extras
+
+            while fields and str(fields[-1]).strip() == "":
+                fields.pop()
+
+            lines.append("\t".join(fields))
+        out_blocks.append("\n".join(lines))
+    return "\n\n".join(out_blocks)
