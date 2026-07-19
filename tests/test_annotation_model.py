@@ -7,6 +7,8 @@ from annotation_model import (
     freq_normalize_token,
     compute_word_frequencies,
     sheet_rows_to_txt,
+    renumber_tokens,
+    reconstruct_text_from_blocks,
 )
 
 
@@ -289,3 +291,178 @@ def test_sheet_rows_to_txt_does_not_mutate_rows(name, headers, rows, expected):
     before = copy.deepcopy(rows)
     sheet_rows_to_txt(rows, headers)
     assert rows == before
+
+
+# --- renumber_tokens ---------------------------------------------------
+
+def _rt_row(tok, lab="", glo="", idx="PRE", **extra):
+    d = {"idx": idx, "token": tok, "label": lab, "gloss": glo}
+    d.update(extra)
+    return d
+
+
+def test_renumber_tokens_global_numbering_across_blocks():
+    # Numbering must be a single, global counter -- it must NOT reset at
+    # each block boundary.
+    blocks = [
+        [_rt_row("Bugun", "TR"), _rt_row("meeting'e", "MIXED")],
+        [_rt_row("I", "TR"), _rt_row("think", "EN"), _rt_row("bir", "TR")],
+    ]
+    renumber_tokens(blocks)
+    assert [[r["idx"] for r in blk] for blk in blocks] == [[1, 2], [3, 4, 5]]
+
+
+def test_renumber_tokens_skips_metadata_rows():
+    blocks = [
+        [
+            _rt_row("SentenceID"),
+            _rt_row("a", "TR"),
+            _rt_row("MatrixLang"),
+            _rt_row("b", "EN"),
+            _rt_row("EmbedLang"),
+        ],
+    ]
+    renumber_tokens(blocks)
+    assert [(r["token"], r["idx"]) for blk in blocks for r in blk] == [
+        ("SentenceID", ""),
+        ("a", 1),
+        ("MatrixLang", ""),
+        ("b", 2),
+        ("EmbedLang", ""),
+    ]
+
+
+def test_renumber_tokens_overwrites_existing_idx_values():
+    blocks = [[_rt_row("a", "TR", idx=999), _rt_row("b", "EN", idx=-5)]]
+    renumber_tokens(blocks)
+    assert [r["idx"] for blk in blocks for r in blk] == [1, 2]
+
+
+def test_renumber_tokens_row_missing_token_key():
+    # A row dict with no "token" key at all defaults to "" (via r.get),
+    # which is itself a meta-row token, so it gets idx == "".
+    blocks = [[{"idx": "X", "label": "TR", "gloss": ""}, _rt_row("y", "EN")]]
+    renumber_tokens(blocks)
+    assert [r.get("idx") for blk in blocks for r in blk] == ["", 1]
+
+
+def test_renumber_tokens_returns_none():
+    blocks = [[_rt_row("a", "TR")]]
+    assert renumber_tokens(blocks) is None
+
+
+def test_renumber_tokens_mutates_blocks_in_place():
+    blocks = [[_rt_row("a", "TR", idx="PRE")]]
+    row_obj = blocks[0][0]
+    renumber_tokens(blocks)
+    # Same dict object, mutated, not replaced.
+    assert blocks[0][0] is row_obj
+    assert row_obj["idx"] == 1
+
+
+# --- reconstruct_text_from_blocks ------------------------------------------
+
+_RECONSTRUCT_CASES = [
+    (
+        "empty_blocks_list",
+        [],
+        [],
+        "",
+    ),
+    (
+        "single_block_empty_rows",
+        [[]],
+        [],
+        "",
+    ),
+    (
+        "multiple_blocks_normal",
+        [
+            [_rt_row("Bugun", "TR"), _rt_row("meeting'e", "MIXED", "stem-DAT"), _rt_row("stressed", "EN")],
+            [_rt_row("I", "TR"), _rt_row("think", "EN")],
+        ],
+        [],
+        "1\tBugun\tTR\n2\tmeeting'e\tMIXED\tstem-DAT\n3\tstressed\tEN\n\n4\tI\tTR\n5\tthink\tEN",
+    ),
+    (
+        "metadata_rows",
+        [
+            [_rt_row("SentenceID"), _rt_row("x", "TR"), _rt_row("y", "EN"), _rt_row("MatrixLang", "TR"), _rt_row("EmbedLang", "EN")],
+        ],
+        [],
+        "SentenceID\n1\tx\tTR\n2\ty\tEN\nMatrixLang\tTR\nEmbedLang\tEN",
+    ),
+    (
+        "extra_headers_trailing_trim",
+        [
+            [_rt_row("a", "TR", "gloss1", note="n1", pos=""), _rt_row("b", "EN", "", note="", pos="")],
+        ],
+        ["note", "pos"],
+        "1\ta\tTR\tgloss1\tn1\n2\tb\tEN",
+    ),
+    (
+        "extra_headers_fully_populated",
+        [
+            [_rt_row("a", "TR", "g", note="n1", pos="NOUN")],
+        ],
+        ["note", "pos"],
+        "1\ta\tTR\tg\tn1\tNOUN",
+    ),
+    (
+        "whitespace_only_gloss",
+        [
+            [_rt_row("a", "TR", "   ")],
+        ],
+        [],
+        "1\ta\tTR",
+    ),
+    (
+        "empty_token_rows_skipped_inline",
+        [
+            [_rt_row("a", "TR"), _rt_row(""), _rt_row("b", "EN")],
+            [_rt_row("")],
+        ],
+        [],
+        "1\ta\tTR\n2\tb\tEN\n\n",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "name, blocks, extra_headers, expected",
+    _RECONSTRUCT_CASES,
+    ids=[c[0] for c in _RECONSTRUCT_CASES],
+)
+def test_reconstruct_text_from_blocks(name, blocks, extra_headers, expected):
+    # Byte-for-byte output assertion against the exact expected TXT string.
+    blocks_copy = copy.deepcopy(blocks)
+    assert reconstruct_text_from_blocks(blocks_copy, extra_headers) == expected
+
+
+def test_reconstruct_text_from_blocks_renumbering_side_effect():
+    blocks = [
+        [_rt_row("SentenceID"), _rt_row("Bugun", "TR"), _rt_row("meeting'e", "MIXED")],
+        [_rt_row("I", "TR"), _rt_row("MatrixLang")],
+    ]
+    reconstruct_text_from_blocks(blocks, [])
+    assert [[r["idx"] for r in blk] for blk in blocks] == [["", 1, 2], [3, ""]]
+
+
+def test_reconstruct_text_from_blocks_delegates_to_renumber_tokens():
+    # The numbering side effect must be identical whether renumber_tokens is
+    # called directly or reached via reconstruct_text_from_blocks -- proving
+    # this function delegates rather than re-implementing numbering.
+    blocks = [
+        [_rt_row("SentenceID"), _rt_row("Bugun", "TR"), _rt_row("meeting'e", "MIXED")],
+        [_rt_row("I", "TR"), _rt_row("MatrixLang")],
+    ]
+
+    blocks_direct = copy.deepcopy(blocks)
+    renumber_tokens(blocks_direct)
+
+    blocks_via_reconstruct = copy.deepcopy(blocks)
+    reconstruct_text_from_blocks(blocks_via_reconstruct, [])
+
+    idx_direct = [[r["idx"] for r in blk] for blk in blocks_direct]
+    idx_via = [[r["idx"] for r in blk] for blk in blocks_via_reconstruct]
+    assert idx_direct == idx_via
