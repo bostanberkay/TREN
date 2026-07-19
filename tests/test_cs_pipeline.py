@@ -554,3 +554,162 @@ def test_decide_matrix_embed_dash_sentinel_both_directions(labels, expected_embe
     obj = _make_annotator()
     matrix, embed = obj._decide_matrix_embed(labels, DEFAULTS)
     assert embed == expected_embed
+
+
+# --- annotate() control-flow skeleton ---------------------------------
+# First-time integration-level tests: exercise the real annotate() method
+# end-to-end. Lower-level helper internals (choose_label priority order,
+# apostrophe/non-apostrophe MIXED detection, suffix parsing, NE-map
+# matching, matrix/embed voting) are already covered by dedicated unit
+# tests above and are NOT re-verified here. Detailed MIXED/UID/suffix
+# branch coverage through annotate() is deliberately out of scope for this
+# commit -- these tests only prove the control-flow skeleton: ordering,
+# branching, and output construction.
+
+def test_annotate_empty_input():
+    obj = _make_annotator()
+    obj.ner = lambda line: _FakeDoc([])
+    assert obj.annotate("", DEFAULTS) == ""
+
+
+def test_annotate_whitespace_only_single_line():
+    obj = _make_annotator()
+    obj.ner = lambda line: _FakeDoc([])
+    assert obj.annotate("   ", DEFAULTS) == ""
+
+
+def test_annotate_whitespace_only_multiple_lines():
+    obj = _make_annotator()
+    obj.ner = lambda line: _FakeDoc([])
+    assert obj.annotate("  \n\t\n", DEFAULTS) == "\n"
+
+
+def test_annotate_blank_line_preserved_as_output_separator():
+    obj = _make_annotator(turkish_top={"bugun", "gunaydin"})
+    obj.ner = lambda line: _FakeDoc([])
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("bugun\n\ngunaydin", DEFAULTS)
+    assert out == (
+        "SentenceID\t1\nbugun\tTR\nMatrixLang\tTR\nEmbedLang\t-\n"
+        "\n"
+        "\nSentenceID\t2\ngunaydin\tTR\nMatrixLang\tTR\nEmbedLang\t-\n"
+    )
+
+
+def test_annotate_blank_line_does_not_increment_sentence_id():
+    obj = _make_annotator(turkish_top={"bugun", "gunaydin"})
+    obj.ner = lambda line: _FakeDoc([])
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("bugun\n\ngunaydin", DEFAULTS)
+    assert "SentenceID\t1" in out
+    assert "SentenceID\t2" in out
+    assert "SentenceID\t3" not in out
+
+
+@pytest.mark.parametrize("flag, expect_row", [(True, True), (False, False)], ids=["enabled", "disabled"])
+def test_annotate_feature_sentence_id_flag(flag, expect_row):
+    obj = _make_annotator(turkish_top={"bugun"})
+    obj.ner = lambda line: _FakeDoc([])
+    cfg = dict(DEFAULTS, FEATURE_SENTENCE_ID=flag)
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("bugun", cfg)
+    assert ("SentenceID\t1" in out.splitlines()) == expect_row
+
+
+def test_annotate_multiline_sentence_id_counting():
+    obj = _make_annotator(turkish_top={"bugun", "gunaydin", "iyi"})
+    obj.ner = lambda line: _FakeDoc([])
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("bugun\ngunaydin\niyi", DEFAULTS)
+    assert "SentenceID\t1" in out.splitlines()
+    assert "SentenceID\t2" in out.splitlines()
+    assert "SentenceID\t3" in out.splitlines()
+
+
+def test_annotate_ner_disabled_never_calls_self_ner():
+    obj = _make_annotator(turkish_top={"bugun"})
+    ner_mock = mock.Mock()
+    obj.ner = ner_mock
+    cfg = dict(DEFAULTS, NER_ENABLED=False)
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        obj.annotate("bugun", cfg)
+    ner_mock.assert_not_called()
+
+
+def test_annotate_ner_enabled_called_once_per_nonblank_line():
+    obj = _make_annotator(turkish_top={"bugun", "gunaydin"})
+    ner_mock = mock.Mock(return_value=_FakeDoc([]))
+    obj.ner = ner_mock
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        obj.annotate("bugun\n\ngunaydin", DEFAULTS)  # NER_ENABLED defaults True
+    assert ner_mock.call_count == 2
+    ner_mock.assert_has_calls([mock.call("bugun"), mock.call("gunaydin")])
+
+
+def test_annotate_other_precedence_over_ne():
+    # Patches _build_ne_map directly (already unit-tested on its own) so
+    # this test proves annotate()'s branch ORDERING -- is_other_token is
+    # checked before ne_map membership -- rather than re-testing NE-match
+    # logic. Deliberately does NOT mock _ft_predict: if OTHER precedence
+    # ever broke and this token reached the language-choice path instead,
+    # the test would fail loudly (AttributeError) rather than silently
+    # passing via a mock.
+    obj = _make_annotator()
+    obj.ner = lambda line: _FakeDoc([])
+    with mock.patch.object(obj, "_build_ne_map", return_value={"42": "NE"}):
+        out = obj.annotate("42", DEFAULTS)
+    lines = out.splitlines()
+    assert "42\tOTHER" in lines
+    assert "42\tNE" not in lines
+
+
+def test_annotate_ne_precedence_over_choose_label():
+    # Patches _build_ne_map to force NE membership, and spies on
+    # _choose_label to prove it is never reached for an NE-matched token --
+    # this tests branch ordering, not _choose_label's own (already-tested)
+    # internal logic.
+    obj = _make_annotator()
+    obj.ner = lambda line: _FakeDoc([])
+    with mock.patch.object(obj, "_build_ne_map", return_value={"Istanbul": "NE"}):
+        with mock.patch.object(obj, "_choose_label") as mocked_choose:
+            out = obj.annotate("Istanbul", DEFAULTS)
+    assert "Istanbul\tNE" in out.splitlines()
+    mocked_choose.assert_not_called()
+
+
+@pytest.mark.parametrize("flag, expect_token_row", [(True, True), (False, False)], ids=[
+    "per_item_true_emits_rows", "per_item_false_emits_no_rows",
+])
+def test_annotate_feature_language_per_item_row_emission(flag, expect_token_row):
+    obj = _make_annotator(turkish_top={"bugun"})
+    obj.ner = lambda line: _FakeDoc([])
+    cfg = dict(DEFAULTS, FEATURE_LANGUAGE_PER_ITEM=flag)
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("bugun", cfg)
+    lines = out.splitlines()
+    assert ("bugun\tTR" in lines) == expect_token_row
+    # meta rows (SentenceID/MatrixLang) are unaffected either way
+    assert "SentenceID\t1" in lines
+    assert "MatrixLang\tTR" in lines
+
+
+@pytest.mark.parametrize("matrix_flag, embed_flag, expect_matrix_row, expect_embed_row", [
+    (True, True, True, True),
+    (True, False, True, False),
+    (False, True, False, True),
+    (False, False, False, False),
+], ids=[
+    "matrix_true_embed_true", "matrix_true_embed_false",
+    "matrix_false_embed_true", "matrix_false_embed_false",
+])
+def test_annotate_matrix_embed_flag_combinations(
+    matrix_flag, embed_flag, expect_matrix_row, expect_embed_row
+):
+    obj = _make_annotator(turkish_top={"bugun"})
+    obj.ner = lambda line: _FakeDoc([])
+    cfg = dict(DEFAULTS, FEATURE_MATRIX_LANGUAGE=matrix_flag, FEATURE_EMBEDDED_LANGUAGE=embed_flag)
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("bugun", cfg)
+    lines = out.splitlines()
+    assert any(l.startswith("MatrixLang\t") for l in lines) == expect_matrix_row
+    assert any(l.startswith("EmbedLang\t") for l in lines) == expect_embed_row
