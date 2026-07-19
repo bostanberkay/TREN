@@ -1596,37 +1596,7 @@ VOC vocative
         return annotation_model.freq_normalize_token(tok)
 
     def _compute_word_frequencies(self, allowed_labels=None):
-        """Compute word frequencies from annotated blocks.
-        Returns:
-            freq: dict[token] -> total count
-            by_label: dict[token] -> {label: count}
-            total_tokens: int
-        Meta rows (MatrixLang, EmbedLang, SentenceID, blanks) are excluded.
-        """
-        freq = {}
-        by_label = {}
-        total = 0
-
-        for blk in getattr(self, 'blocks', []) or []:
-            for r in blk:
-                tok = r.get('token', '')
-                if self._is_meta_row_token(tok):
-                    continue
-                norm = self._freq_normalize_token(tok)
-                if not norm:
-                    continue
-                lab = str(r.get('label', '') or '').strip()
-                if allowed_labels is not None and lab not in allowed_labels:
-                    continue
-
-                total += 1
-                freq[norm] = freq.get(norm, 0) + 1
-                if norm not in by_label:
-                    by_label[norm] = {}
-                if lab:
-                    by_label[norm][lab] = by_label[norm].get(lab, 0) + 1
-
-        return freq, by_label, total
+        return annotation_model.compute_word_frequencies(self.blocks, allowed_labels)
     # Word Frequency List
     def open_word_frequency(self):
         """Open Word Frequency List window (counts from annotated blocks)."""

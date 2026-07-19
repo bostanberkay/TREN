@@ -37,3 +37,37 @@ def freq_normalize_token(tok: str):
     if not s:
         return None
     return s.casefold()
+
+
+def compute_word_frequencies(blocks, allowed_labels=None):
+    """Compute word frequencies from annotated blocks.
+    Returns:
+        freq: dict[token] -> total count
+        by_label: dict[token] -> {label: count}
+        total_tokens: int
+    Meta rows (MatrixLang, EmbedLang, SentenceID, blanks) are excluded.
+    """
+    freq = {}
+    by_label = {}
+    total = 0
+
+    for blk in blocks or []:
+        for r in blk:
+            tok = r.get('token', '')
+            if is_meta_row_token(tok):
+                continue
+            norm = freq_normalize_token(tok)
+            if not norm:
+                continue
+            lab = str(r.get('label', '') or '').strip()
+            if allowed_labels is not None and lab not in allowed_labels:
+                continue
+
+            total += 1
+            freq[norm] = freq.get(norm, 0) + 1
+            if norm not in by_label:
+                by_label[norm] = {}
+            if lab:
+                by_label[norm][lab] = by_label[norm].get(lab, 0) + 1
+
+    return freq, by_label, total
