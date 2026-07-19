@@ -71,3 +71,40 @@ def compute_word_frequencies(blocks, allowed_labels=None):
                 by_label[norm][lab] = by_label[norm].get(lab, 0) + 1
 
     return freq, by_label, total
+
+
+def sheet_rows_to_txt(rows, headers):
+    """Convert grid rows to TXT exactly like the UI: tab-separated rows.
+    Blank grid rows become blank lines (block separators).
+
+    Behavior:
+    - If idx is blank (meta rows), omit the idx column in the output.
+    - Trailing empty fields are removed.
+    """
+    out_lines = []
+    for rr in rows:
+        if rr is None:
+            out_lines.append("")
+            continue
+
+        r = ["" if v is None else str(v) for v in rr]
+        ncol = len(headers)
+        while len(r) < ncol:
+            r.append("")
+        r = r[:ncol]
+
+        if all(x.strip() == "" for x in r):
+            out_lines.append("")
+            continue
+
+        idx = r[0].strip()
+        fields = r[1:] if idx == "" else r
+
+        while fields and fields[-1].strip() == "":
+            fields.pop()
+
+        out_lines.append("\t".join(fields))
+
+    while out_lines and out_lines[-1] == "":
+        out_lines.pop()
+    return "\n".join(out_lines)
