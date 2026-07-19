@@ -2189,7 +2189,7 @@ VOC vocative
             self.bell()
             return
         tok = self.blocks[bidx][ridx].get('token')
-        if tok in ("MatrixLang", "EmbedLang") and new_value not in ("TR", "EN"):
+        if annotation_model.is_matrixembed_locked(tok, new_value):
             self.bell()
             return
         self.blocks[bidx][ridx]['label'] = new_value
@@ -2524,7 +2524,7 @@ VOC vocative
                 # Matrix/Embed constraint only for Label column
                 if hdrs[c] == "Label":
                     tok = self.blocks[bidx][ridx].get('token')
-                    if tok in ("MatrixLang", "EmbedLang") and val not in ("TR", "EN"):
+                    if annotation_model.is_matrixembed_locked(tok, val):
                         continue
 
                 # update model
@@ -2767,7 +2767,7 @@ VOC vocative
         # Matrix/Embed
         if c == 2:
             tok = self.blocks[bidx][ridx].get('token')
-            if tok in ("MatrixLang", "EmbedLang") and new_value not in ("TR", "EN"):
+            if annotation_model.is_matrixembed_locked(tok, new_value):
                 self.bell()
                 return
             self.blocks[bidx][ridx]['label'] = new_value
@@ -3047,14 +3047,13 @@ VOC vocative
 
             if c == 2:
                 # Label
-                if self.blocks[bidx][ridx].get('token') in ("MatrixLang", "EmbedLang"):
-                    if nv not in ("TR", "EN"):
-                        ov = self.blocks[bidx][ridx].get('label', '')
-                        sheet.set_cell_data(r, 2, ov)
-                        if hasattr(sheet, "refresh"):
-                            sheet.refresh()
-                        self.bell()
-                        return
+                if annotation_model.is_matrixembed_locked(self.blocks[bidx][ridx].get('token'), nv):
+                    ov = self.blocks[bidx][ridx].get('label', '')
+                    sheet.set_cell_data(r, 2, ov)
+                    if hasattr(sheet, "refresh"):
+                        sheet.refresh()
+                    self.bell()
+                    return
                 self.blocks[bidx][ridx]['label'] = nv
             elif c == 1:
                 # Item

@@ -155,3 +155,8 @@ def reconstruct_text_from_blocks(blocks, extra_headers):
             lines.append("\t".join(fields))
         out_blocks.append("\n".join(lines))
     return "\n\n".join(out_blocks)
+
+
+def is_matrixembed_locked(token, new_value) -> bool:
+    """MatrixLang/EmbedLang rows may only have their Label set to TR or EN."""
+    return token in ("MatrixLang", "EmbedLang") and new_value not in ("TR", "EN")
