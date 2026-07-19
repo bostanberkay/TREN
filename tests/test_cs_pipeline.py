@@ -475,3 +475,82 @@ def test_ensure_ner_enabled_lazily_constructs_pipeline_when_none():
     mocked_stanza.Pipeline.assert_called_once_with(
         "tr", processors="tokenize,ner", use_gpu=False
     )
+
+
+# --- _decide_matrix_embed ----------------------------------------------
+# Touches no `self.*` state at all -- Annotator.__new__() with zero
+# attributes set is sufficient. No models, files, Stanza objects, or
+# lexicons are involved anywhere in this function.
+
+@pytest.mark.parametrize("labels, expected", [
+    ([], ("TR", "-")),                                  # empty label list -- 0>=0 tie-break to TR, no EN/MIXED -> "-"
+    (["TR", "TR", "TR"], ("TR", "-")),                   # TR-only
+    (["EN", "EN"], ("EN", "-")),                         # EN-only
+    (["TR", "TR", "EN"], ("TR", "EN")),                  # TR majority
+    (["EN", "EN", "TR"], ("EN", "TR")),                  # EN majority
+    (["TR", "EN"], ("TR", "EN")),                        # exact TR/EN tie -> current TR tie-break
+    (["MIXED"], ("TR", "EN")),                           # one MIXED, default weights (0.6 TR / 0.4 EN)
+    (["TR", "MIXED"], ("TR", "EN")),                     # MIXED combined with TR
+    (["EN", "MIXED"], ("EN", "TR")),                     # MIXED combined with EN
+    (["TR", "NE", "OTHER", "UID"], ("TR", "-")),         # NE/OTHER/UID ignored -- same result as TR-only
+    (["NE", "OTHER", "UID"], ("TR", "-")),               # only NE/OTHER/UID -- same result as empty list
+], ids=[
+    "empty_label_list", "tr_only", "en_only", "tr_majority", "en_majority",
+    "exact_tr_en_tie", "one_mixed_default_weights", "mixed_combined_with_tr",
+    "mixed_combined_with_en", "ne_other_uid_ignored_alongside_tr",
+    "labels_containing_only_ne_other_uid",
+])
+def test_decide_matrix_embed(labels, expected):
+    obj = _make_annotator()
+    assert obj._decide_matrix_embed(labels, DEFAULTS) == expected
+
+
+def test_decide_matrix_embed_weighted_tie_via_mixed():
+    # 1 EN + 5 MIXED, at default weights (0.6/0.4), produces an EXACT
+    # floating-point tie: score_tr = 0.6*5 = 3.0, score_en = 1 + 0.4*5 = 3.0
+    # (confirmed no float-precision surprise). Ties resolve to TR, same as
+    # the plain exact_tr_en_tie case above but reached via MIXED weighting
+    # rather than raw TR/EN counts.
+    obj = _make_annotator()
+    labels = ["EN"] + ["MIXED"] * 5
+    assert obj._decide_matrix_embed(labels, DEFAULTS) == ("TR", "EN")
+
+
+def test_decide_matrix_embed_custom_mixed_tr_weight_can_flip_outcome():
+    # At default weights, ["EN", "MIXED"] resolves EN (score_en=1.4 >
+    # score_tr=0.6). Boosting MIXED_TR_WEIGHT flips the outcome to TR,
+    # proving the cfg value is actually read, not hardcoded.
+    obj = _make_annotator()
+    labels = ["EN", "MIXED"]
+    assert obj._decide_matrix_embed(labels, DEFAULTS) == ("EN", "TR")
+    cfg = dict(DEFAULTS, MIXED_TR_WEIGHT=2.0)
+    assert obj._decide_matrix_embed(labels, cfg) == ("TR", "EN")
+
+
+def test_decide_matrix_embed_custom_mixed_en_weight_can_flip_outcome():
+    # At default weights, ["TR", "MIXED"] resolves TR (score_tr=1.6 >
+    # score_en=0.4). Boosting MIXED_EN_WEIGHT flips the outcome to EN,
+    # proving the cfg value is actually read, not hardcoded.
+    obj = _make_annotator()
+    labels = ["TR", "MIXED"]
+    assert obj._decide_matrix_embed(labels, DEFAULTS) == ("TR", "EN")
+    cfg = dict(DEFAULTS, MIXED_EN_WEIGHT=2.0)
+    assert obj._decide_matrix_embed(labels, cfg) == ("EN", "TR")
+
+
+def test_decide_matrix_embed_returns_a_two_element_string_tuple():
+    obj = _make_annotator()
+    result = obj._decide_matrix_embed(["TR"], DEFAULTS)
+    assert isinstance(result, tuple)
+    assert len(result) == 2
+    assert all(isinstance(x, str) for x in result)
+
+
+@pytest.mark.parametrize("labels, expected_embed", [
+    (["TR", "TR"], "-"),   # matrix resolves TR, no EN/MIXED present -> "-"
+    (["EN", "EN"], "-"),   # matrix resolves EN, no TR/MIXED present -> "-"
+], ids=["no_embed_when_matrix_tr_and_no_en_or_mixed", "no_embed_when_matrix_en_and_no_tr_or_mixed"])
+def test_decide_matrix_embed_dash_sentinel_both_directions(labels, expected_embed):
+    obj = _make_annotator()
+    matrix, embed = obj._decide_matrix_embed(labels, DEFAULTS)
+    assert embed == expected_embed
