@@ -192,3 +192,119 @@ def test_parse_tr_suffixes_full_ambiguous_vowel_branch_is_reachable(suffix):
     obj = _make_annotator()
     segments, ud, deriv, amb = obj._parse_tr_suffixes_full(suffix)
     assert amb == {"Amb=P3sg_or_Acc"}
+
+
+# --- _detect_mixed_no_apostrophe --------------------------------------------
+# Uses Annotator.__new__(Annotator) + synthetic turkish_freq_all /
+# english_freq_words, and mock.patch.object for _ft_predict, matching the
+# same pattern used for _choose_label.
+
+def test_detect_mixed_no_apostrophe_whole_token_already_turkish():
+    obj = _make_annotator(turkish_all={"evim"})
+    assert obj._detect_mixed_no_apostrophe("evim", DEFAULTS) == (None, None)
+
+
+def test_detect_mixed_no_apostrophe_base_resolved_via_english_lexicon():
+    obj = _make_annotator(english_words={"stress"})
+    assert obj._detect_mixed_no_apostrophe("stressim", DEFAULTS) == ("stress", "im")
+
+
+def test_detect_mixed_no_apostrophe_base_resolved_via_fasttext():
+    obj = _make_annotator()
+    with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.9)):
+        assert obj._detect_mixed_no_apostrophe("bossum", DEFAULTS) == ("boss", "um")
+
+
+@pytest.mark.parametrize("prob, expected", [
+    (0.80, ("boss", "um")),        # exactly FT_EN_MIN -- inclusive (>=)
+    (0.7999999, (None, None)),     # just under -- must not be accepted
+], ids=["exact_boundary", "just_below_boundary"])
+def test_detect_mixed_no_apostrophe_fasttext_threshold_boundary(prob, expected):
+    obj = _make_annotator()
+    with mock.patch.object(obj, "_ft_predict", return_value=("EN", prob)):
+        assert obj._detect_mixed_no_apostrophe("bossum", DEFAULTS) == expected
+
+
+def test_detect_mixed_no_apostrophe_no_valid_split():
+    obj = _make_annotator(english_words={"hello"})
+    assert obj._detect_mixed_no_apostrophe("hello", DEFAULTS) == (None, None)
+
+
+def test_detect_mixed_no_apostrophe_longest_suffix_candidate_wins():
+    # "lilanın" ends in both "nın" (3 chars, a real CASE_ENDINGS key) and
+    # "ın" (2 chars, also a real CASE_ENDINGS key) -- both bases are valid
+    # English words here, so only trial order decides the result. Candidates
+    # are tried longest-first, so "nın" (base "lila") must win over "ın"
+    # (base "lilan").
+    obj = _make_annotator(english_words={"lila", "lilan"})
+    assert obj._detect_mixed_no_apostrophe("lilanın", DEFAULTS) == ("lila", "nın")
+
+
+def test_detect_mixed_no_apostrophe_first_valid_candidate_wins_after_longest_fails():
+    # Same "nın"/"ın" overlap as above, but this time only the SHORTER
+    # split's base ("lilan") is a known English word -- the longer split's
+    # base ("lila") is not, and is mocked to clearly fail the fastText
+    # fallback too. The loop must continue past the failed longest candidate
+    # to the next-shorter one, not stop at the first (longest) attempt.
+    obj = _make_annotator(english_words={"lilan"})
+    with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.1)):
+        assert obj._detect_mixed_no_apostrophe("lilanın", DEFAULTS) == ("lilan", "ın")
+
+
+def test_detect_mixed_no_apostrophe_base_length_exactly_2_accepted():
+    obj = _make_annotator(english_words={"ok"})
+    assert obj._detect_mixed_no_apostrophe("oklar", DEFAULTS) == ("ok", "lar")
+
+
+def test_detect_mixed_no_apostrophe_base_length_1_rejected():
+    obj = _make_annotator(english_words={"a"})
+    assert obj._detect_mixed_no_apostrophe("aim", DEFAULTS) == (None, None)
+
+
+def test_detect_mixed_no_apostrophe_single_char_suffix_candidates_excluded():
+    # "stresse" = "stress" + "e". "e" is a valid CASE_ENDINGS key (Case=Dat)
+    # and would otherwise split into a real English base, but candidates
+    # shorter than 2 chars are structurally skipped (`if len(suf) < 2:
+    # continue`), so no split is ever attempted here.
+    obj = _make_annotator(english_words={"stress"})
+    assert obj._detect_mixed_no_apostrophe("stresse", DEFAULTS) == (None, None)
+
+
+def test_detect_mixed_no_apostrophe_yn_initial_suffix_vowel_final_base_accepted():
+    obj = _make_annotator(english_words={"feta"})
+    assert obj._detect_mixed_no_apostrophe("fetayla", DEFAULTS) == ("feta", "yla")
+
+
+def test_detect_mixed_no_apostrophe_yn_initial_suffix_consonant_final_base_rejected():
+    obj = _make_annotator(english_words={"boss"})
+    assert obj._detect_mixed_no_apostrophe("bossya", DEFAULTS) == (None, None)
+
+
+def test_detect_mixed_no_apostrophe_suffix_must_produce_a_feature():
+    # Every real suffix dictionary key (len >= 2) always parses into at
+    # least one UD/deriv/ambiguity feature via _parse_tr_suffixes_full, so
+    # this guard never actually rejects a real candidate in practice. To
+    # exercise the guard itself (not fix or reinterpret it), force a
+    # no-feature parse via mocking and confirm the candidate is rejected.
+    obj = _make_annotator(english_words={"boss"})
+    with mock.patch.object(obj, "_parse_tr_suffixes_full", return_value=([], set(), set(), set())):
+        assert obj._detect_mixed_no_apostrophe("bossum", DEFAULTS) == (None, None)
+
+
+def test_detect_mixed_no_apostrophe_mixed_strict_rejects_turkish_known_base():
+    obj = _make_annotator(turkish_all={"kritik"}, english_words={"kritik"})
+    assert obj._detect_mixed_no_apostrophe("kritikim", DEFAULTS) == (None, None)
+
+
+def test_detect_mixed_no_apostrophe_mixed_strict_false_accepts_same_candidate():
+    obj = _make_annotator(turkish_all={"kritik"}, english_words={"kritik"})
+    cfg = dict(DEFAULTS, MIXED_STRICT=False)
+    assert obj._detect_mixed_no_apostrophe("kritikim", cfg) == ("kritik", "im")
+
+
+def test_detect_mixed_no_apostrophe_ft_predict_not_called_when_base_in_lexicon():
+    obj = _make_annotator(english_words={"stress"})
+    with mock.patch.object(obj, "_ft_predict") as mocked:
+        result = obj._detect_mixed_no_apostrophe("stressim", DEFAULTS)
+    assert result == ("stress", "im")
+    mocked.assert_not_called()
