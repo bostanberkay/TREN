@@ -713,3 +713,186 @@ def test_annotate_matrix_embed_flag_combinations(
     lines = out.splitlines()
     assert any(l.startswith("MatrixLang\t") for l in lines) == expect_matrix_row
     assert any(l.startswith("EmbedLang\t") for l in lines) == expect_embed_row
+
+
+# --- annotate() detailed integration branches --------------------------
+# NER_ENABLED=False throughout (no test here needs NE at all -- self.ner is
+# never touched by annotate() when this flag is False, so no fake doc/ner
+# stub is required). Lower-level helper internals already covered by their
+# own dedicated unit tests are patched out where useful, per the same
+# "prove wiring, not helper internals" approach used for the precedence
+# tests in the previous commit.
+
+_CFG_NO_NER = dict(DEFAULTS, NER_ENABLED=False)
+
+
+# -- Apostrophe MIXED --
+
+def test_annotate_apostrophe_mixed_english_base_produces_mixed_row():
+    obj = _make_annotator(english_words={"meeting"})
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("meeting'e", _CFG_NO_NER)
+    assert out == "SentenceID\t1\nmeeting'e\tMIXED\nMatrixLang\tTR\nEmbedLang\tEN\n"
+
+
+def test_annotate_apostrophe_mixed_curly_apostrophe_variant():
+    obj = _make_annotator(english_words={"meeting"})
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("meeting’e", _CFG_NO_NER)
+    assert out == "SentenceID\t1\nmeeting’e\tMIXED\nMatrixLang\tTR\nEmbedLang\tEN\n"
+
+
+def test_annotate_apostrophe_mixed_requires_parsed_features():
+    # Any real, non-empty suffix from a genuine apostrophe split always
+    # parses to at least Unparsed=Leftover (verified separately), so this
+    # gate is effectively always true in practice. To exercise the gate
+    # itself -- not re-derive that finding -- force _parse_tr_suffixes_full
+    # to return no features and confirm the MIXED branch is correctly
+    # skipped, falling through to ordinary (UID) labeling instead.
+    obj = _make_annotator(english_words={"meeting"})
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        with mock.patch.object(obj, "_parse_tr_suffixes_full", return_value=([], set(), set(), set())):
+            with mock.patch.object(obj, "_detect_mixed_no_apostrophe", return_value=(None, None)):
+                out = obj.annotate("meeting'e", _CFG_NO_NER)
+    assert out == "SentenceID\t1\nmeeting'e\tUID\nMatrixLang\tTR\nEmbedLang\t-\n"
+
+
+def test_annotate_apostrophe_split_turkish_base_follows_tr_branch():
+    # base_label == "TR" is a distinct branch from both the MIXED path and
+    # the ordinary-labeling fallback -- it emits the ORIGINAL token text
+    # (with apostrophe) labeled TR, not just the base.
+    obj = _make_annotator(turkish_top={"kedi"})
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("kedi'ye", _CFG_NO_NER)
+    assert out == "SentenceID\t1\nkedi'ye\tTR\nMatrixLang\tTR\nEmbedLang\t-\n"
+
+
+def test_annotate_apostrophe_split_non_qualifying_falls_through():
+    # base_label is neither EN nor TR (UID here) -- the apostrophe branch
+    # must fall through entirely to ordinary labeling (whole-token
+    # _choose_label result), consulting _detect_mixed_no_apostrophe next.
+    # _split_mixed_apostrophe, _choose_label, and _detect_mixed_no_apostrophe
+    # are patched directly so this test isolates annotate()'s own fallthrough
+    # wiring from those already-tested helpers' internal logic.
+    obj = _make_annotator()
+    with mock.patch.object(obj, "_split_mixed_apostrophe", return_value=("weird", "zzz")):
+        with mock.patch.object(obj, "_choose_label", return_value="UID") as mocked_choose:
+            with mock.patch.object(obj, "_detect_mixed_no_apostrophe", return_value=(None, None)) as mocked_detect:
+                out = obj.annotate("weird'zzz", _CFG_NO_NER)
+    assert out == "SentenceID\t1\nweird'zzz\tUID\nMatrixLang\tTR\nEmbedLang\t-\n"
+    assert mocked_choose.call_count == 2  # whole token, then base
+    mocked_detect.assert_called_once_with("weird'zzz", _CFG_NO_NER)
+
+
+# -- Non-apostrophe MIXED --
+
+def test_annotate_non_apostrophe_mixed_produces_mixed_row():
+    obj = _make_annotator(english_words={"stress"})
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("stressim", _CFG_NO_NER)
+    assert out == "SentenceID\t1\nstressim\tMIXED\nMatrixLang\tTR\nEmbedLang\tEN\n"
+
+
+def test_annotate_non_apostrophe_mixed_wiring_via_mocked_detection():
+    # Patches _detect_mixed_no_apostrophe directly (already unit-tested on
+    # its own) to prove annotate() trusts its returned (base, suffix) and
+    # emits the MIXED row accordingly -- pure wiring, not re-derivation of
+    # that function's own feature-parsing logic.
+    obj = _make_annotator()
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        with mock.patch.object(obj, "_detect_mixed_no_apostrophe", return_value=("stress", "im")) as mocked:
+            out = obj.annotate("stressim", _CFG_NO_NER)
+    assert out == "SentenceID\t1\nstressim\tMIXED\nMatrixLang\tTR\nEmbedLang\tEN\n"
+    mocked.assert_called_once_with("stressim", _CFG_NO_NER)
+
+
+def test_annotate_non_apostrophe_mixed_skipped_when_label_is_tr():
+    obj = _make_annotator(turkish_top={"bugun"})
+    with mock.patch.object(obj, "_detect_mixed_no_apostrophe") as mocked:
+        obj.annotate("bugun", _CFG_NO_NER)
+    mocked.assert_not_called()
+
+
+def test_annotate_non_apostrophe_mixed_consulted_for_non_tr_labels():
+    obj = _make_annotator(english_words={"stressed"})
+    with mock.patch.object(obj, "_detect_mixed_no_apostrophe", return_value=(None, None)) as mocked:
+        obj.annotate("stressed", _CFG_NO_NER)
+    mocked.assert_called_once_with("stressed", _CFG_NO_NER)
+
+
+# -- UID and voting --
+
+def test_annotate_uid_emits_token_row_when_per_item_true():
+    obj = _make_annotator()
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("xyzzy", _CFG_NO_NER)
+    assert out == "SentenceID\t1\nxyzzy\tUID\nMatrixLang\tTR\nEmbedLang\t-\n"
+
+
+def test_annotate_uid_does_not_contribute_to_voting():
+    # A TR token plus a UID token: MatrixLang must reflect only the TR
+    # contribution, exactly as if the UID token were TR-only (i.e. UID
+    # contributes nothing to either score).
+    obj = _make_annotator(turkish_top={"bugun"})
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("bugun xyzzy", _CFG_NO_NER)
+    assert out == "SentenceID\t1\nbugun\tTR\nxyzzy\tUID\nMatrixLang\tTR\nEmbedLang\t-\n"
+
+
+def test_annotate_all_uid_sentence_yields_dash_sentinels():
+    obj = _make_annotator()
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("xyzzy plugh", _CFG_NO_NER)
+    assert out == "SentenceID\t1\nxyzzy\tUID\nplugh\tUID\nMatrixLang\tTR\nEmbedLang\t-\n"
+
+
+def test_annotate_uid_rows_disappear_when_per_item_false():
+    obj = _make_annotator()
+    cfg = dict(_CFG_NO_NER, FEATURE_LANGUAGE_PER_ITEM=False)
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("xyzzy", cfg)
+    assert out == "SentenceID\t1\nMatrixLang\tTR\nEmbedLang\t-\n"
+    assert "UID" not in out
+
+
+# -- Final output construction --
+
+def test_annotate_token_rows_precede_matrix_and_embed_rows():
+    obj = _make_annotator(turkish_top={"bugun"}, english_words={"stressed"})
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("bugun stressed", _CFG_NO_NER)
+    lines = out.splitlines()
+    assert lines == [
+        "SentenceID\t1", "bugun\tTR", "stressed\tEN", "MatrixLang\tTR", "EmbedLang\tEN",
+    ]
+    matrix_idx = lines.index("MatrixLang\tTR")
+    embed_idx = lines.index("EmbedLang\tEN")
+    token_indices = [lines.index("bugun\tTR"), lines.index("stressed\tEN")]
+    assert all(i < matrix_idx for i in token_indices)
+    assert matrix_idx < embed_idx
+
+
+def test_annotate_each_sentence_block_ends_with_blank_separator():
+    obj = _make_annotator(turkish_top={"bugun", "gunaydin"})
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out_single = obj.annotate("bugun", _CFG_NO_NER)
+        out_multi = obj.annotate("bugun\ngunaydin", _CFG_NO_NER)
+    assert out_single == "SentenceID\t1\nbugun\tTR\nMatrixLang\tTR\nEmbedLang\t-\n"
+    assert out_multi == (
+        "SentenceID\t1\nbugun\tTR\nMatrixLang\tTR\nEmbedLang\t-\n"
+        "\nSentenceID\t2\ngunaydin\tTR\nMatrixLang\tTR\nEmbedLang\t-\n"
+    )
+
+
+def test_annotate_representative_tr_en_mixed_sentence_exact_output():
+    obj = _make_annotator(turkish_top={"bugun"}, english_words={"stressed", "meeting"})
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("bugun stressed meeting'e", _CFG_NO_NER)
+    assert out == (
+        "SentenceID\t1\n"
+        "bugun\tTR\n"
+        "stressed\tEN\n"
+        "meeting'e\tMIXED\n"
+        "MatrixLang\tTR\n"
+        "EmbedLang\tEN\n"
+    )
