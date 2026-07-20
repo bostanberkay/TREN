@@ -69,6 +69,40 @@ All required dependencies are listed in the `requirements.txt` file. To install 
 ```bash
 pip install -r requirements.txt
 ```
+
+## Example Usage
+
+A minimal, non-interactive example is included to demonstrate the annotation pipeline without needing the full GUI. From the repository root, run:
+
+```bash
+python examples/quickstart.py
+```
+
+This script runs a deterministic Turkish-English code-switching example through the real `Annotator.annotate()` pipeline and verifies the output against a bundled expected result.
+
+Example input:
+
+```
+kitap amazing boss'um
+```
+
+Annotation output:
+
+```
+SentenceID	1
+kitap	TR
+amazing	EN
+boss'um	MIXED
+MatrixLang	TR
+EmbedLang	EN
+```
+
+A successful run ends with:
+
+```
+OK: quickstart annotation matches the expected output.
+```
+
 ## Version Log
 
 ### TREN v1.0.0 Initial Release

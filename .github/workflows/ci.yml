@@ -26,5 +26,8 @@ jobs:
       - name: Syntax check
         run: python -m py_compile annotation_model.py cs_pipeline.py cs_annotator_app.py
 
+      - name: Run quickstart
+        run: python examples/quickstart.py
+
       - name: Run tests
         run: python -m pytest
