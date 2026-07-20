@@ -107,6 +107,10 @@ OK: quickstart annotation matches the expected output.
 
 TREN v1.0.0 was the first public release. See [CHANGELOG.md](CHANGELOG.md) for a record of changes going forward.
 
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and pull request guidelines, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
+
 
 
 # Documentation of TREN

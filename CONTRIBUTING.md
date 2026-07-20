@@ -52,7 +52,7 @@ These are the same commands run automatically by the project's CI workflow on ev
 - Keep each pull request to one logical change.
 - Keep commits focused and easy to review individually.
 - Make sure CI passes before opening a pull request.
-- Update relevant documentation (README, docstrings, etc.) when your change affects documented behavior.
+- Update relevant documentation (README, CHANGELOG, docstrings, etc.) when your change affects documented behavior.
 
 ## Coding principles
 
