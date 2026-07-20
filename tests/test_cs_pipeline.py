@@ -982,3 +982,56 @@ def test_tokenize_returns_a_list_of_strings():
     result = tokenize("hello world")
     assert isinstance(result, list)
     assert all(isinstance(t, str) for t in result)
+
+
+# --- end-to-end smoke test -----------------------------------------------
+# Minimal, deterministic smoke coverage for the real, fully integrated
+# pipeline. Unlike every other annotate() test above, NOTHING is patched
+# except _ft_predict (to avoid loading a real fastText model) -- real
+# tokenize(), real _choose_label, real apostrophe-based MIXED detection,
+# real suffix parsing, and real _decide_matrix_embed all run unmodified.
+# This closes Stage 3.1: every individual piece exercised here already has
+# its own dedicated, more detailed unit tests elsewhere in this file.
+
+def test_annotate_end_to_end_smoke_tr_en_mixed_sentence():
+    obj = Annotator.__new__(Annotator)
+    obj.turkish_freq_top = {"kitap"}
+    obj.turkish_freq_all = set()
+    obj.english_freq_words = {"amazing", "boss"}
+
+    cfg = dict(DEFAULTS, NER_ENABLED=False)
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("kitap amazing boss'um", cfg)
+
+    assert out == (
+        "SentenceID\t1\n"      # sentence counter
+        "kitap\tTR\n"          # real _choose_label: Turkish top-1000 hit
+        "amazing\tEN\n"        # real _choose_label: English lexicon hit
+        "boss'um\tMIXED\n"     # real apostrophe split + suffix parsing: boss (EN) + um (Poss=Yes)
+        "MatrixLang\tTR\n"     # real _decide_matrix_embed voting
+        "EmbedLang\tEN\n"      # real _decide_matrix_embed voting
+    )
+
+
+def test_annotate_end_to_end_smoke_multiline_independent_sentences():
+    obj = Annotator.__new__(Annotator)
+    obj.turkish_freq_top = {"kitap"}
+    obj.turkish_freq_all = set()
+    obj.english_freq_words = {"amazing", "boss"}
+
+    cfg = dict(DEFAULTS, NER_ENABLED=False)
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("kitap amazing\nboss'um", cfg)
+
+    assert out == (
+        "SentenceID\t1\n"
+        "kitap\tTR\n"
+        "amazing\tEN\n"
+        "MatrixLang\tTR\n"
+        "EmbedLang\tEN\n"
+        "\n"                   # blank separator between independent sentence blocks
+        "SentenceID\t2\n"      # SentenceID increments across lines
+        "boss'um\tMIXED\n"
+        "MatrixLang\tTR\n"
+        "EmbedLang\tEN\n"
+    )
