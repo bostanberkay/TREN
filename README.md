@@ -105,16 +105,7 @@ OK: quickstart annotation matches the expected output.
 
 ## Version Log
 
-### TREN v1.0.0 Initial Release
-• First public release of the TREN application.  
-• Stabilized application initialization and runtime behavior.  
-• Improved handling of resource paths for both packaged and source-based execution.  
-• Ensured consistent behavior between standalone `.app` execution and running from source.  
-• Verified macOS `.dmg` distribution and application packaging workflow.  
-
-### Bug Fixes
-• Resolved a critical launch issue causing the application to open twice on startup.  
-• Improved robustness of file and resource path resolution.
+TREN v1.0.0 was the first public release. See [CHANGELOG.md](CHANGELOG.md) for a record of changes going forward.
 
 
 
