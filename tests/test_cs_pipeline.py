@@ -896,3 +896,89 @@ def test_annotate_representative_tr_en_mixed_sentence_exact_output():
         "MatrixLang\tTR\n"
         "EmbedLang\tEN\n"
     )
+
+
+# --- tokenize() ----------------------------------------------------------
+# Module-level, pure regex function: r"\w+['’]?\w*|\w+|['’]". No Annotator
+# instance needed at all. Only current, verified regex behavior is tested
+# here -- several findings below are non-obvious and are documented as-is,
+# not normalized or "fixed".
+
+@pytest.mark.parametrize("text, expected", [
+    ("hello world", ["hello", "world"]),
+    ("123 456", ["123", "456"]),
+    ("under_score", ["under_score"]),                       # underscore is a \w char
+    ("word_123_test", ["word_123_test"]),
+    ("çalışma İstanbul ğüşöç", ["çalışma", "İstanbul", "ğüşöç"]),  # Turkish letters are \w
+    ("Bugün meeting'e gitmem lazım", ["Bugün", "meeting'e", "gitmem", "lazım"]),
+    ("", []),
+    ("   ", []),
+    ("\n\t", []),
+    ("a\tb\nc", ["a", "b", "c"]),
+    ("a-b", ["a", "b"]),        # hyphen is not \w -- dropped, not attached to either side
+    ("---", []),                # pure punctuation run -- matches nothing at all
+], ids=[
+    "ordinary_whitespace_separated", "digits", "underscore", "underscore_with_digits",
+    "turkish_characters", "mixed_turkish_english", "empty_string", "whitespace_only",
+    "newlines_and_tabs", "tab_and_newline_separated_tokens", "hyphen_between_words",
+    "pure_punctuation_run",
+])
+def test_tokenize(text, expected):
+    assert tokenize(text) == expected
+
+
+def test_tokenize_punctuation_is_dropped_not_returned_as_tokens():
+    # Punctuation matches none of the regex's three alternatives, so it is
+    # silently absent from the result -- NOT returned as its own token(s).
+    # This is current, verified behavior, not "punctuation tokens" in the
+    # sense of separate punctuation entries appearing in the output.
+    assert tokenize("hello, world!") == ["hello", "world"]
+    assert tokenize("hello , world !") == ["hello", "world"]
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("meeting's", ["meeting's"]),
+    ("meeting’s", ["meeting’s"]),
+], ids=["straight_apostrophe_inside_word", "curly_apostrophe_inside_word"])
+def test_tokenize_apostrophe_inside_word(text, expected):
+    assert tokenize(text) == expected
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("'", ["'"]),
+    ("’", ["’"]),
+], ids=["standalone_straight_apostrophe", "standalone_curly_apostrophe"])
+def test_tokenize_standalone_apostrophe(text, expected):
+    assert tokenize(text) == expected
+
+
+def test_tokenize_leading_vs_trailing_apostrophe_are_asymmetric():
+    # A trailing apostrophe is absorbed into the preceding word (\w+['']?\w*
+    # matches greedily, with \w* allowed to match zero trailing chars). A
+    # leading apostrophe cannot be absorbed the same way -- \w+ requires a
+    # word char FIRST, so it fails at the apostrophe and the ['’] alternative
+    # catches it as its own separate token instead. Current, verified,
+    # asymmetric behavior -- not normalized here.
+    assert tokenize("hello'") == ["hello'"]
+    assert tokenize("'hello") == ["'", "hello"]
+
+
+def test_tokenize_multiple_apostrophes_split_three_ways():
+    # The first apostrophe in a word is absorbed into that token; a second,
+    # unabsorbable apostrophe becomes its own standalone token; scanning
+    # then resumes plainly from there.
+    assert tokenize("a'b'c") == ["a'b", "'", "c"]
+    assert tokenize("it's a'b'c") == ["it's", "a'b", "'", "c"]
+
+
+def test_tokenize_preserves_order():
+    text = "Bugün meeting'e gitmem lazım çünkü boss'um çok stressed"
+    assert tokenize(text) == [
+        "Bugün", "meeting'e", "gitmem", "lazım", "çünkü", "boss'um", "çok", "stressed",
+    ]
+
+
+def test_tokenize_returns_a_list_of_strings():
+    result = tokenize("hello world")
+    assert isinstance(result, list)
+    assert all(isinstance(t, str) for t in result)
