@@ -2,11 +2,22 @@
 """Experimental MIXED-vs-KEEP_ORIGINAL reranker support code (Phase 2+).
 
 Isolated from the production annotation flow: nothing in this module is
-imported by cs_pipeline.py or cs_annotator_app.py, and nothing here alters
-Annotator.annotate() or any other production behaviour. It reuses
-Annotator._parse_tr_suffixes_full and Annotator._ft_predict as-is (read-only
-calls into the existing pipeline) rather than duplicating the suffix tables
-or the fastText/lexicon lookup logic.
+imported by cs_pipeline.py or cs_annotator_app.py directly, and nothing
+here alters Annotator.annotate() or any other production behaviour -- this
+module's own functions are pure candidate/feature-generation logic with no
+side effects on the rule-based pipeline. It reuses Annotator._parse_tr_suffixes_full
+and Annotator._ft_predict as-is (read-only calls into the existing
+pipeline) rather than duplicating the suffix tables or the fastText/lexicon
+lookup logic.
+
+As of Phase 6, this module's logic IS exercised on every normal annotation
+run -- indirectly, via reranker_integration.py, which cs_annotator_app.py
+imports and which calls classify_candidate()/build_structured_feature_dict()
+from here to rerank UID/NE/TR candidates to MIXED. "Isolated" above
+describes this module's own import graph and lack of side effects, not
+whether its logic affects what a user sees -- see reranker_integration.py
+and README.md's "MIXED-Token Reranker" section for the current, wired-in
+production behaviour.
 
 Candidate generation (enumerate_candidate_analyses / select_best_analysis)
 implements a conservative stem/suffix split search: since

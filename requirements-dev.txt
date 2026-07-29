@@ -1,8 +1,2 @@
 -r requirements.txt
 pytest
-# Needed to import/collect tests/test_mixed_reranker.py (the experimental
-# reranker's test suite imports mixed_reranker.py, tools/build_reranker_dataset.py,
-# and tools/train_mixed_reranker.py, which use these at module level).
-joblib
-scipy
-scikit-learn

@@ -12,6 +12,7 @@ import sys
 
 from cs_pipeline import Annotator, DEFAULTS
 import annotation_model
+import reranker_integration
 
 try:
     import tksheet
@@ -495,6 +496,8 @@ VOC vocative
         self._init_style()
 
         self.annotator = None
+        self._reranker_bundle = None
+        self._reranker_load_attempted = False
         self.current_text = ""
         self.current_output = ""
         self.current_path = None
@@ -2307,7 +2310,11 @@ VOC vocative
         try:
             if self.annotator is None:
                 self.annotator = Annotator()
+            if not self._reranker_load_attempted:
+                self._reranker_bundle = reranker_integration.load_reranker_bundle()
+                self._reranker_load_attempted = True
             out = self.annotator.annotate(txt, self.cfg)
+            out = reranker_integration.apply_reranker(out, self.annotator, self.cfg, self._reranker_bundle)
             out = self._ensure_matrix_embed_consistency(out)
             self._populate_table(out)
             self.current_output = out

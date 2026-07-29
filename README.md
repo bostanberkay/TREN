@@ -111,20 +111,30 @@ TREN v1.0.0 was the first public release. See [CHANGELOG.md](CHANGELOG.md) for a
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and pull request guidelines, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
 
-## Experimental: MIXED-Token Reranker
+## MIXED-Token Reranker
 
-TREN includes a separate, **experimental** research module that is not part of the shipped annotation tool: a statistical reranker that proposes a second opinion on tokens the production pipeline (`cs_pipeline.py`) already labeled, to see whether a MIXED intra-word code-switching call was missed. It is completely isolated from production — the reranker's code (`mixed_reranker.py`, `tools/build_reranker_dataset.py`, `tools/train_mixed_reranker.py`) is never imported by `cs_pipeline.py` or `cs_annotator_app.py`, never runs during normal annotation, and cannot change any label a user sees in the application. It exists purely to evaluate whether a candidate future improvement is worth pursuing, and is developed under a strict experimental protocol: every change is benchmarked in isolation against a frozen train/dev/test split before being considered for adoption, and negative results are recorded, not discarded.
+TREN's annotation pipeline includes a statistical reranker that runs automatically after the rule-based annotator, on every annotation request, to catch MIXED intra-word code-switching calls the rule-based pass missed. `Annotator.annotate()` (`cs_pipeline.py`) remains the primary, unmodified rule-based annotation engine; the reranker (`reranker_integration.py`, calling into `mixed_reranker.py`) is a post-processing stage that runs after it, in `cs_annotator_app.py`'s `run_pipeline()`:
+
+```
+Annotator.annotate() -> apply_reranker() -> _ensure_matrix_embed_consistency() -> _populate_table()
+```
+
+The reranker may only **promote** an already-produced `UID`, `NE`, or `TR` label to `MIXED` when its frozen model's probability clears the validated threshold — it never invents a label the rule-based pass didn't already consider, and it cannot alter `TR`/`EN`/`MIXED`/`OTHER`/`LANG3` labels otherwise. A token's final label may therefore come from either the rule-based annotator alone or from this reranking stage. It was developed under a strict experimental protocol before being integrated — every candidate feature group ("batch") was benchmarked in isolation against a frozen train/dev/test split before being considered for adoption, and negative results were recorded, not discarded (see below).
 
 ### Architecture
 
 The reranker is a hybrid, two-stage pipeline built on top of the existing rule-based annotator:
 
-1. **Candidate generation** — for every token the production pipeline predicted as `UID`, `NE`, or `TR`, the reranker enumerates plausible stem/suffix splits by calling the existing, unmodified `Annotator._parse_tr_suffixes_full` (plus a separate, additional experimental verbal-suffix table used only as a fallback) and selects the best split with a deterministic tie-break policy.
-2. **Statistical reranking** — a `LogisticRegression` classifier, trained on character n-grams of the token plus a set of structured features described below, estimates the probability that the token is genuinely MIXED. If a candidate's probability clears a data-driven threshold (selected on a held-out dev set to guarantee ≥0.75 precision), the reranker's cascade simulation flips the label to MIXED; otherwise the original prediction is kept unchanged.
+1. **Candidate generation** — for every token the rule-based pass predicted as `UID`, `NE`, or `TR`, the reranker enumerates plausible stem/suffix splits by calling the existing, unmodified `Annotator._parse_tr_suffixes_full` (plus a separate, additional experimental verbal-suffix table used only as a fallback) and selects the best split with a deterministic tie-break policy.
+2. **Statistical reranking** — a `LogisticRegression` classifier, trained on character n-grams of the token plus a set of structured features described below, estimates the probability that the token is genuinely MIXED. If a candidate's probability clears a data-driven threshold (selected on a held-out dev set to guarantee ≥0.75 precision), the reranker promotes the label to MIXED; otherwise the original prediction is kept unchanged.
 
 The structured features are organized into independently-gated, opt-in **batches**, each isolated behind its own flag so it can be included or excluded without touching any other batch's code.
 
-### Active experimental baseline: Phase 5F
+### Loading and fallback behavior
+
+The trained model (`resources/models/model.joblib`, `vectorizer.joblib`, `metadata.json` — a byte-for-byte copy of the frozen Phase 5F experiment artifacts) is loaded lazily: nothing is loaded at application startup, only on the first annotation request, and the result is cached for the rest of the session. If `joblib`/`scikit-learn` aren't installed, the model files are missing or corrupted, or the metadata fails validation against the frozen Phase 5F configuration, loading fails safely and annotation falls back to exactly the original rule-based output — no crash, no dialog, no interruption. Saved projects (`.trenproj`) and the TXT/CSV export formats are unaffected either way: the reranker's output uses the identical text format `Annotator.annotate()` itself produces.
+
+### Frozen production configuration: Phase 5F
 
 The current active baseline combines the following, on top of the shared character n-gram + baseline structured features:
 
@@ -141,7 +151,7 @@ Batches B and D are **not hidden** — their code, CLI flags, and tests remain i
 - **Batch B (morphological complexity) was rejected** because it produced no improvement in active-policy cascade performance over the Batch A+C baseline, and its own coefficients showed a sign-flip on the pre-existing `suffix_segment_count` feature — evidence that it duplicates information the model already had rather than adding new signal.
 - **Batch D (English-stem quality) was rejected** because, at the operating threshold actually used in production-realistic evaluation, it introduced two new *neutral* misclassifications (tokens that were already mislabeled and remained mislabeled, just differently) and a net regression in MIXED F1 relative to the Phase 5F baseline, despite having individually large model coefficients — which the evaluation protocol explicitly treats as insufficient grounds for adoption on its own.
 
-### Benchmark (Phase 5F, active experimental baseline)
+### Benchmark (Phase 5F, frozen production configuration)
 
 Evaluated on a frozen, held-out test split via a candidate-gated cascade simulation (non-candidate tokens are always left unchanged; candidates flip to MIXED only if the reranker's probability clears the dev-selected precision≥0.75 threshold):
 
@@ -154,11 +164,11 @@ Evaluated on a frozen, held-out test split via a candidate-gated cascade simulat
 | Harmful changes (broke a previously-correct prediction) | 2 |
 | Neutral changes (already wrong, still wrong) | 0 |
 
-These numbers describe the experimental reranker's own held-out evaluation only — they are not a claim about the production annotation pipeline's accuracy, which is unaffected by any of this work.
+These numbers are the reranker's held-out benchmark results — a fixed measurement against one frozen test split, not a live guarantee about every future document. This is the same frozen model (threshold 0.85, Batch A + Batch C + pruned Batch G) that now runs automatically as part of normal annotation, per "Loading and fallback behavior" above.
 
 ### Reproducing / testing
 
-The reranker's own automated tests (`tests/test_mixed_reranker.py`) are included in the project's main test suite; **511 tests currently pass** across the whole repository (`python -m pytest`). To rebuild the active-baseline dataset and retrain the model yourself:
+The reranker's own automated tests (`tests/test_mixed_reranker.py`, `tests/test_reranker_integration.py`) are included in the project's main test suite; **560 tests currently pass** across the whole repository (`python -m pytest`). To rebuild the active-baseline dataset and retrain the model yourself:
 
 ```bash
 python tools/build_reranker_dataset.py --gold <gold.csv> --pred <pred.csv> \

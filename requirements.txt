@@ -4,3 +4,7 @@ fasttext==0.9.3
 numpy<2
 stanza
 tksheet
+# Runtime dependencies for the Phase 5F reranker infrastructure (reranker_integration.py).
+joblib
+scipy
+scikit-learn
