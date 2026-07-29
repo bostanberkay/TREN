@@ -111,6 +111,67 @@ TREN v1.0.0 was the first public release. See [CHANGELOG.md](CHANGELOG.md) for a
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and pull request guidelines, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
 
+## Experimental: MIXED-Token Reranker
+
+TREN includes a separate, **experimental** research module that is not part of the shipped annotation tool: a statistical reranker that proposes a second opinion on tokens the production pipeline (`cs_pipeline.py`) already labeled, to see whether a MIXED intra-word code-switching call was missed. It is completely isolated from production — the reranker's code (`mixed_reranker.py`, `tools/build_reranker_dataset.py`, `tools/train_mixed_reranker.py`) is never imported by `cs_pipeline.py` or `cs_annotator_app.py`, never runs during normal annotation, and cannot change any label a user sees in the application. It exists purely to evaluate whether a candidate future improvement is worth pursuing, and is developed under a strict experimental protocol: every change is benchmarked in isolation against a frozen train/dev/test split before being considered for adoption, and negative results are recorded, not discarded.
+
+### Architecture
+
+The reranker is a hybrid, two-stage pipeline built on top of the existing rule-based annotator:
+
+1. **Candidate generation** — for every token the production pipeline predicted as `UID`, `NE`, or `TR`, the reranker enumerates plausible stem/suffix splits by calling the existing, unmodified `Annotator._parse_tr_suffixes_full` (plus a separate, additional experimental verbal-suffix table used only as a fallback) and selects the best split with a deterministic tie-break policy.
+2. **Statistical reranking** — a `LogisticRegression` classifier, trained on character n-grams of the token plus a set of structured features described below, estimates the probability that the token is genuinely MIXED. If a candidate's probability clears a data-driven threshold (selected on a held-out dev set to guarantee ≥0.75 precision), the reranker's cascade simulation flips the label to MIXED; otherwise the original prediction is kept unchanged.
+
+The structured features are organized into independently-gated, opt-in **batches**, each isolated behind its own flag so it can be included or excluded without touching any other batch's code.
+
+### Active experimental baseline: Phase 5F
+
+The current active baseline combines the following, on top of the shared character n-gram + baseline structured features:
+
+| Batch | Description | Status |
+|---|---|---|
+| **Batch A** | Parser metadata — which parse path produced the candidate analysis, why the token was flagged as a candidate, and where the stem/suffix split falls in the token. | **Active** |
+| **Batch C** | Confidence interaction — how the token's own language-ID confidence compares to its extracted stem's, and how strongly lexicon/fastText evidence agrees. | **Active** |
+| **Batch G** (pruned) | Candidate ambiguity — how many plausible analyses were considered, whether the selection was unique, and whether nominal and verbal parses competed for the same token. | **Active** |
+| Batch B | Morphological complexity — tag counts, case/plural/possessive/derivational/verbal flags derived from the parser's own morphological tags. | Evaluated, **rejected** |
+| Batch D | English-stem quality — fastText/lexicon-derived confidence and contrast measures for the extracted stem. | Evaluated, **rejected** |
+
+Batches B and D are **not hidden** — their code, CLI flags, and tests remain in the repository and fully reproducible; they are simply off by default because they did not clear the bar for inclusion:
+
+- **Batch B (morphological complexity) was rejected** because it produced no improvement in active-policy cascade performance over the Batch A+C baseline, and its own coefficients showed a sign-flip on the pre-existing `suffix_segment_count` feature — evidence that it duplicates information the model already had rather than adding new signal.
+- **Batch D (English-stem quality) was rejected** because, at the operating threshold actually used in production-realistic evaluation, it introduced two new *neutral* misclassifications (tokens that were already mislabeled and remained mislabeled, just differently) and a net regression in MIXED F1 relative to the Phase 5F baseline, despite having individually large model coefficients — which the evaluation protocol explicitly treats as insufficient grounds for adoption on its own.
+
+### Benchmark (Phase 5F, active experimental baseline)
+
+Evaluated on a frozen, held-out test split via a candidate-gated cascade simulation (non-candidate tokens are always left unchanged; candidates flip to MIXED only if the reranker's probability clears the dev-selected precision≥0.75 threshold):
+
+| Metric | Value |
+|---|---|
+| MIXED precision | 0.893 |
+| MIXED recall | 0.781 |
+| MIXED F1 | 0.8333 |
+| Beneficial changes (fixed a real MIXED miss) | 17 |
+| Harmful changes (broke a previously-correct prediction) | 2 |
+| Neutral changes (already wrong, still wrong) | 0 |
+
+These numbers describe the experimental reranker's own held-out evaluation only — they are not a claim about the production annotation pipeline's accuracy, which is unaffected by any of this work.
+
+### Reproducing / testing
+
+The reranker's own automated tests (`tests/test_mixed_reranker.py`) are included in the project's main test suite; **511 tests currently pass** across the whole repository (`python -m pytest`). To rebuild the active-baseline dataset and retrain the model yourself:
+
+```bash
+python tools/build_reranker_dataset.py --gold <gold.csv> --pred <pred.csv> \
+  --exclusions <exclusions.csv> --segmentation-mismatches <segmentation_mismatches.csv> \
+  --resources-dir resources --out-dir <out-dir> \
+  --include-batch-a-features --include-batch-g-features
+
+python tools/train_mixed_reranker.py --dataset <out-dir>/dataset.json \
+  --split-manifest <out-dir>/split_manifest.json --out-dir <out-dir>
+```
+
+Batch C is included by default; pass `--exclude-batch-c-features` to disable it. Batch B and Batch D remain available via `--include-batch-b-features` / `--include-batch-d-features` for reproducing the rejected experiments, but are not part of the active baseline shown above.
+
 
 
 # Documentation of TREN
