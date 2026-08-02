@@ -1048,3 +1048,221 @@ def build_structured_feature_dict(pred_item: str, pred_label: str, analysis: Opt
         feats["stem_lexicon_contrast"] = stem_lexicon_contrast
 
     return feats
+
+
+# ---------------------------------------------------------------------------
+# Residual verbal MIXED detector -- wired into production as of the phase
+# authorized after Phase 4's offline validation (see CHANGELOG). Runs from
+# reranker_integration.apply_reranker(), AFTER the frozen Phase 5F reranker
+# pass, on whatever tokens are still labeled UID/TR post-rerank. Separate
+# from, and does not alter, the frozen reranker's own candidate/feature/
+# inference code above -- this section only ADDS new, independent
+# parsing/evidence helpers, reusing the existing verbal-suffix machinery
+# (_parse_experimental_verbal_suffix at the existing, unmodified PHASE_4E
+# level -- DEFAULT_VERBAL_MORPHOLOGY_LEVEL itself is never touched) rather
+# than duplicating it.
+#
+# Confirmed offline (not assumed): PHASE_4E already fully parses suffixes
+# like "lamışım"/"ladı" -- simply not the frozen-model default level. The
+# ONE genuine gap is 1st/3rd-person-plural verbal agreement (e.g. "ladık"),
+# which no existing level models at all -- VERBAL_FIRST_PERSON_PLURAL below
+# is the one new closed-class table this stage adds.
+# ---------------------------------------------------------------------------
+
+# Bare and past-fused 1st-person-plural agreement, structured exactly like
+# VERBAL_FIRST_PERSON_SINGULAR above (bare forms stand alone; the
+# past+1pl portmanteau is fused, since Turkish "-dık/-dik/-duk/-dük/-tık/
+# -tik/-tuk/-tük" is a genuine irregular fusion, not two separately
+# strippable morphemes). Bare single-character "-k" is deliberately
+# EXCLUDED -- too promiscuous alone (many ordinary Turkish words end in
+# "k": büyük, küçük, artık, gerek...); confirmed unnecessary for every
+# target analysis this stage needs to recover.
+VERBAL_FIRST_PERSON_PLURAL = {
+    "ık": frozenset({"Verbal=1stPersonPlural"}), "ik": frozenset({"Verbal=1stPersonPlural"}),
+    "uk": frozenset({"Verbal=1stPersonPlural"}), "ük": frozenset({"Verbal=1stPersonPlural"}),
+    "ız": frozenset({"Verbal=1stPersonPlural"}), "iz": frozenset({"Verbal=1stPersonPlural"}),
+    "uz": frozenset({"Verbal=1stPersonPlural"}), "üz": frozenset({"Verbal=1stPersonPlural"}),
+    "dık": frozenset({"Verbal=Past", "Verbal=1stPersonPlural"}),
+    "dik": frozenset({"Verbal=Past", "Verbal=1stPersonPlural"}),
+    "duk": frozenset({"Verbal=Past", "Verbal=1stPersonPlural"}),
+    "dük": frozenset({"Verbal=Past", "Verbal=1stPersonPlural"}),
+    "tık": frozenset({"Verbal=Past", "Verbal=1stPersonPlural"}),
+    "tik": frozenset({"Verbal=Past", "Verbal=1stPersonPlural"}),
+    "tuk": frozenset({"Verbal=Past", "Verbal=1stPersonPlural"}),
+    "tük": frozenset({"Verbal=Past", "Verbal=1stPersonPlural"}),
+}
+
+RESIDUAL_VERBALIZER_TAGS = frozenset({"Verbal=Verbalizer", "Verbal=PassiveInchoative"})
+
+
+def parse_residual_verbal_suffix(suffix: str, allow_informal_orthography: bool = True):
+    """Peels, right-to-left: (1) the NEW 1st-person-plural agreement stage
+    above (bare or fused-with-past) -- agreement is the outermost/rightmost
+    Turkish verbal morpheme, so tried first; (2) delegates whatever remains
+    to _parse_experimental_verbal_suffix at the existing, unmodified
+    PHASE_4E level (verbalizer/infinitive/passive-inchoative/tense-aspect-
+    mood/2nd-person/1st-singular -- all reused unmodified; the module
+    default VERBAL_MORPHOLOGY_PHASE_4C1 is never referenced here). Returns
+    (segments, tags, fully_consumed, used_informal), the same shape as
+    _parse_experimental_verbal_suffix so callers can treat it uniformly.
+    """
+    s = suffix.lower()
+    plural_segment = None
+    plural_tags = frozenset()
+
+    items = sorted(VERBAL_FIRST_PERSON_PLURAL.items(), key=lambda kv: -len(kv[0]))
+    for end, tagset in items:
+        if s.endswith(end):
+            plural_segment = end
+            plural_tags = tagset
+            s = s[:-len(end)]
+            break
+
+    rest_segments, rest_tags, fully_consumed, used_informal = _parse_experimental_verbal_suffix(
+        s, level=VERBAL_MORPHOLOGY_PHASE_4E, allow_informal_orthography=allow_informal_orthography)
+
+    segments = list(rest_segments) + ([plural_segment] if plural_segment else [])
+    tags = frozenset(rest_tags | plural_tags)
+    return segments, tags, fully_consumed, used_informal
+
+
+def enumerate_residual_verbal_candidates(token: str, min_stem_len: int = MIN_STEM_LEN):
+    """Right-to-left split enumeration (mirrors enumerate_candidate_
+    analyses's own loop shape), verbal-only via parse_residual_verbal_suffix
+    -- nominal MIXED candidates are already covered by classify_candidate
+    above and are out of this stage's scope. Apostrophe-bearing tokens are
+    excluded (condition 10) -- they are handled by the existing production
+    apostrophe-MIXED path, not this stage. Returns a list of dicts: {stem,
+    suffix, split_position, segments, tags, used_informal}.
+    """
+    candidates = []
+    if "'" in token or "’" in token:
+        return candidates
+    tok_l = token.lower()
+    n = len(tok_l)
+    for split in range(n - min_stem_len, 0, -1):
+        stem, suffix = tok_l[:split], tok_l[split:]
+        if len(stem) < min_stem_len or not suffix:
+            continue
+        segments, tags, fully_consumed, used_informal = parse_residual_verbal_suffix(suffix)
+        if not fully_consumed or not tags:
+            continue
+        candidates.append({
+            "stem": stem, "suffix": suffix, "split_position": split,
+            "segments": segments, "tags": tags, "used_informal": used_informal,
+        })
+    return candidates
+
+
+def _residual_verbal_looks_like_proper_name_or_noise(token: str) -> bool:
+    """Condition 10: excludes probable proper names, acronyms, codes, URLs,
+    mentions, hashtags, and other non-lexical noise. Reuses
+    cs_pipeline.is_other_token read-only (local import -- this module stays
+    import-free of cs_pipeline at module load time, matching its existing
+    isolation contract; cs_pipeline.py itself never imports this module,
+    so no circular import is introduced) plus a capitalization heuristic
+    consistent with the one validated for the offline UID resolver's
+    proper-name guard.
+    """
+    from cs_pipeline import is_other_token
+    if is_other_token(token):
+        return True
+    if token.isupper() and len(token) > 1:
+        return True  # acronym / all-caps code
+    if any(c.isdigit() for c in token):
+        return True  # alphanumeric identifier / product code
+    if token[:1].isupper():
+        return True  # capitalized -- probable proper name/brand
+    return False
+
+
+def _residual_verbal_direct_english_evidence(annotator, stem: str) -> bool:
+    """Condition 6/production policy: STRICT English-lexicon evidence only
+    -- a direct annotator.english_freq_words hit. Deliberately narrower
+    than is_non_turkish_stem_evidence above (which also accepts a
+    high-confidence fastText EN prediction): offline ablation found the
+    fastText fallback produced byte-identical predictions and metrics to
+    the strict-lexicon-only rule on both evaluated corpora, so it is not
+    wired into production (this function) -- it remains available,
+    unchanged, via is_non_turkish_stem_evidence for offline experimentation
+    only.
+    """
+    return stem.lower() in annotator.english_freq_words
+
+
+def _residual_verbal_has_lexicon_confirmed_competing_nominal_stem(token_l: str, annotator) -> bool:
+    """Condition 8: whether a NOMINAL suffix split (annotator._parse_tr_
+    suffixes_full, reused read-only, the same production parser
+    _analysis_from_suffix above already calls) leaves a Turkish-lexicon-
+    confirmed stem -- a genuinely plausible competing analysis, as opposed
+    to trivially matching a short suffix on an otherwise-nonsense remainder
+    (found necessary during offline testing: the nominal parser trivially
+    matches a bare 2-char suffix like "ım" almost anywhere, e.g. stripping
+    it from "uploadlamışım" leaves the nonsense stem "uploadlamış", which is
+    not real competing evidence -- requiring the competing stem to itself
+    be Turkish-lexicon-confirmed mirrors condition 7's own
+    positive-evidence-only standard).
+    """
+    n = len(token_l)
+    for split in range(n - 2, 0, -1):
+        stem, suf = token_l[:split], token_l[split:]
+        if len(suf) < 2:
+            continue
+        segments, ud_feats, deriv, amb = annotator._parse_tr_suffixes_full(suf)
+        if "Unparsed=Leftover" in deriv or not (ud_feats or deriv or amb):
+            continue
+        if stem in annotator.turkish_freq_all or stem in annotator.turkish_freq_top:
+            return True
+    return False
+
+
+def evaluate_residual_verbal_promotion(token: str, annotator, cfg, strict_lexicon_only: bool = True):
+    """Applies every residual-verbal promotion condition (see CLAUDE.md-
+    adjacent production brief / CHANGELOG for the numbered list). Returns
+    (should_promote: bool, chosen_candidate_or_None, reason: str) -- reason
+    is always populated, even on rejection.
+
+    `strict_lexicon_only` defaults to True (production policy: strict
+    English-lexicon evidence only, per the offline ablation finding that
+    broad fastText-fallback evidence produced identical results on both
+    evaluated corpora while adding unmeasured false-positive risk on unseen
+    tokens). reranker_integration.py's production call site never overrides
+    this default. Passing False remains available for offline experiments
+    only (mirrors is_non_turkish_stem_evidence's broader evidence rule) --
+    not wired into any production call path.
+    """
+    if _residual_verbal_looks_like_proper_name_or_noise(token):
+        return False, None, "proper_name_or_noise"
+
+    candidates = enumerate_residual_verbal_candidates(token)
+    if not candidates:
+        return False, None, "no_verbal_candidate"
+
+    qualifying = []
+    for c in candidates:
+        if not (c["tags"] & RESIDUAL_VERBALIZER_TAGS):
+            continue  # condition 2: explicit verbalizer/passive-inchoative required
+        stem = c["stem"]
+        if stem in annotator.turkish_freq_all or stem in annotator.turkish_freq_top:
+            continue  # condition 7: stem must be absent from the Turkish lexicon
+        has_evidence = (_residual_verbal_direct_english_evidence(annotator, stem) if strict_lexicon_only
+                         else is_non_turkish_stem_evidence(annotator, stem, cfg))
+        if not has_evidence:
+            continue  # condition 6
+        qualifying.append(c)
+
+    if not qualifying:
+        return False, None, "no_qualifying_candidate"
+
+    if _residual_verbal_has_lexicon_confirmed_competing_nominal_stem(token.lower(), annotator):
+        return False, None, "competing_nominal_analysis"  # condition 8
+
+    # condition 9: uniqueness -- prefer the longest (most specific) stem;
+    # a tie among qualifying candidates means the analysis is not unique
+    # enough to act on.
+    qualifying.sort(key=lambda c: -len(c["stem"]))
+    best = qualifying[0]
+    if len(qualifying) > 1 and len(qualifying[1]["stem"]) == len(best["stem"]):
+        return False, None, "ambiguous_analysis"
+
+    return True, best, "promoted"

@@ -528,3 +528,149 @@ def test_app_init_declares_reranker_cache_slots():
     src = inspect.getsource(cs_annotator_app.App.__init__)
     assert "self._reranker_bundle = None" in src
     assert "self._reranker_load_attempted = False" in src
+
+
+# ---------------------------------------------------------------------------
+# Residual verbal MIXED detector -- production wiring inside apply_reranker().
+# Strict evidence only (mixed_reranker.evaluate_residual_verbal_promotion's
+# default); this file only tests PLACEMENT, fail-safety, and Matrix/Embed
+# interaction with the frozen-reranker stage -- the detection RULE itself
+# (parsing/evidence/gating) is tested exhaustively in test_mixed_reranker.py.
+# ---------------------------------------------------------------------------
+
+def test_apply_reranker_residual_stage_runs_after_rerank_loop_in_source():
+    # Item 14: structural placement guarantee, same technique as
+    # test_module_does_not_import_joblib_at_top_level above.
+    import inspect
+    src = inspect.getsource(ri.apply_reranker)
+    rerank_pos = src.index("_rerank_token_label(")
+    residual_pos = src.index("_apply_residual_verbal_promotion(")
+    assert rerank_pos < residual_pos
+
+
+def test_residual_stage_never_reconsiders_a_token_already_promoted_by_frozen_reranker(real_bundle):
+    # Item 14 (functional): "boostlamak" would ALSO qualify for the
+    # residual stage on its own (stem "boost" + verbalizer+infinitive) --
+    # this proves the residual stage's eligibility check sees the
+    # ALREADY-promoted post-rerank label and never even calls the residual
+    # evaluator for it, rather than merely producing the same answer twice.
+    obj = _make_annotator(english_words={"boost"})
+    original = _sentence_block(1, [("boostlamak", "UID")], matrix="-", embed="-")
+    with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.95)), \
+         mock.patch("reranker_integration.mr.evaluate_residual_verbal_promotion") as mock_residual:
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert "boostlamak\tMIXED" in result
+    mock_residual.assert_not_called()
+
+
+def test_residual_promotion_after_frozen_reranker_declines(real_bundle):
+    # The frozen reranker itself is disabled here (classify_candidate always
+    # non-candidate) so the promotion below is attributable ONLY to the
+    # residual stage -- exercises the real production
+    # evaluate_residual_verbal_promotion end to end, not a mock.
+    obj = _make_annotator(english_words={"design"})
+    original = _sentence_block(1, [("designladık", "TR")], matrix="-", embed="-")
+    with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)):
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert "designladık\tMIXED" in result
+
+
+def test_matrix_embed_recomputed_when_only_residual_stage_promotes(real_bundle):
+    # Item 15: Matrix/Embedded Language recomputation must fire even when
+    # the ONLY label change in the block came from the residual stage, not
+    # the frozen reranker.
+    obj = _make_annotator(english_words={"design"}, turkish_all={"kitap"})
+    original = _sentence_block(1, [("kitap", "TR"), ("designladık", "TR")], matrix="TR", embed="-")
+    with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)):
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert "designladık\tMIXED" in result
+    assert "MatrixLang\tTR" in result
+    assert "EmbedLang\tEN" in result
+    assert "EmbedLang\t-" not in result
+
+
+def test_residual_stage_never_touches_non_uid_tr_labels(real_bundle):
+    # Item 16: MIXED/EN/OTHER/NE/LANG3 rows must never be inspected by the
+    # residual stage, even when their text would otherwise structurally
+    # qualify (e.g. "designladık" already labeled MIXED).
+    obj = _make_annotator(english_words={"design"})
+    original = _sentence_block(1, [
+        ("designladık", "MIXED"),
+        ("amazing", "EN"),
+        ("42", "OTHER"),
+        ("Ankara", "NE"),
+        ("bonjour", "LANG3"),
+    ], matrix="-", embed="-")
+    with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)):
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert result == original  # byte-for-byte identical -- nothing eligible for either stage
+
+
+def test_residual_promotion_never_raises_preserves_label_and_continues(real_bundle):
+    # Item 13: fail-safe contract -- an unexpected exception from the
+    # residual evaluator for one token must not interrupt the rest of the
+    # block, and must leave that token's own label untouched.
+    obj = _make_annotator(english_words={"design"})
+    original = _sentence_block(1, [("designladık", "TR"), ("kitap", "TR")], matrix="TR", embed="-")
+    with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)), \
+         mock.patch("reranker_integration.mr.evaluate_residual_verbal_promotion",
+                     side_effect=RuntimeError("boom")):
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert "designladık\tTR" in result
+    assert "kitap\tTR" in result
+
+
+def test_frozen_reranker_output_unchanged_by_presence_of_residual_stage(real_bundle):
+    # Item 17: with the residual stage forced to never promote, the
+    # existing frozen-reranker-only fixtures (applar/zzqxwv/masada/
+    # boostlamak) must behave exactly as they did before this integration
+    # -- i.e. the frozen model's own decision-making is untouched.
+    obj = _make_annotator(english_words={"boost"})
+    original = _sentence_block(1, [("boostlamak", "UID")], matrix="-", embed="-")
+    with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.95)), \
+         mock.patch("reranker_integration.mr.evaluate_residual_verbal_promotion",
+                     return_value=(False, None, "no_verbal_candidate")):
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert "boostlamak\tMIXED" in result
+
+
+# ---------------------------------------------------------------------------
+# Residual verbal MIXED detector -- production regression targets (item 11)
+# and native-Turkish controls (item 12), exercised through the FULL
+# apply_reranker() wiring (frozen reranker disabled, so promotions below are
+# attributable only to the residual stage).
+# ---------------------------------------------------------------------------
+
+_RESIDUAL_PROD_TARGETS = [
+    "uploadlamışım", "designladık", "inviteladık", "filterladık", "forwardladı",
+    "mutelamışım", "refreshledik", "cancelladık", "editledik", "dropladı",
+]
+
+_RESIDUAL_PROD_CONTROLS = [
+    "anladık", "yapmışım", "bekledik", "konuşuyoruz", "gideceksin", "dinledim",
+    "başladık", "temizledik", "eklemişim", "yazdırdık", "kapattılar",
+    "paylaşmışım", "güncelledik", "alamadık", "alıyoruz", "biliyonuz",
+    "dediğimiz", "düşünüyoruz", "giremiyoruz", "gittik", "istiyoruz",
+    "kaldık", "olduğumuz", "olmuyorsunuz", "rahatlarız", "bilirdik",
+]
+
+_RESIDUAL_PROD_STEMS = {"upload", "design", "invite", "filter", "forward",
+                         "mute", "refresh", "cancel", "edit", "drop"}
+
+
+@pytest.mark.parametrize("token", _RESIDUAL_PROD_TARGETS)
+def test_residual_production_targets_promote_via_apply_reranker(token, real_bundle):
+    obj = _make_annotator(english_words=_RESIDUAL_PROD_STEMS)
+    original = _sentence_block(1, [(token, "TR")], matrix="-", embed="-")
+    with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)):
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert f"{token}\tMIXED" in result, f"{token} was not promoted: {result}"
+
+
+@pytest.mark.parametrize("token", _RESIDUAL_PROD_CONTROLS)
+def test_residual_production_native_controls_never_promote_via_apply_reranker(token, real_bundle):
+    obj = _make_annotator(english_words=_RESIDUAL_PROD_STEMS)
+    original = _sentence_block(1, [(token, "TR")], matrix="-", embed="-")
+    with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)):
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert f"{token}\tMIXED" not in result, f"{token} was incorrectly promoted: {result}"

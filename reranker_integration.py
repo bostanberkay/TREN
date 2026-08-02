@@ -17,6 +17,22 @@ otherwise alter TR/EN/MIXED/OTHER/LANG3 labels. A final label a user sees
 may therefore come from either the rule-based annotator alone, or from this
 reranking stage.
 
+As of the residual-verbal-detector integration (offline-validated, then
+authorized for production -- see CHANGELOG), apply_reranker() runs a
+SECOND, independent post-processing stage internally, strictly after the
+frozen-reranker pass above and before Matrix/Embedded Language is
+recomputed: mixed_reranker.evaluate_residual_verbal_promotion (strict
+English-lexicon evidence only -- the broad fastText-fallback variant is
+NOT used in production) may promote a token still labeled UID or TR after
+the frozen-reranker pass to MIXED, recovering verbal code-switching forms
+(e.g. "designladık") the frozen model's own feature set does not target.
+This stage never touches NE, and never touches a token the reranker pass
+already promoted to MIXED. It does not use, load, or alter the frozen
+Phase 5F model, resources/models/*, or its 0.85 threshold in any way --
+it is a separate, purely rule/lexicon-based layer. cs_annotator_app.py is
+unchanged: this stage is folded into apply_reranker() itself, not a new
+production entry point.
+
 Model artifacts live in resources/models/ (model.joblib, vectorizer.joblib,
 metadata.json), copied byte-for-byte from the frozen Phase 5F experiment
 (artifacts/mixed_reranker/phase5f_batch_acg_pruned/) -- never regenerated or
@@ -344,26 +360,62 @@ def _rerank_token_label(item: str, label: str, annotator, cfg, bundle: ReRankerB
         return label
 
 
+# Residual verbal detector: eligible ONLY for UID/TR (never NE) -- see the
+# production rule's condition list (CHANGELOG). Checked against a token's
+# CURRENT label, i.e. after _rerank_token_label has already run for that
+# token in apply_reranker()'s first pass, so this stage only ever sees the
+# frozen reranker's own output, never the original rule-based label it may
+# have overridden.
+_RESIDUAL_VERBAL_ELIGIBLE_LABELS = frozenset({"UID", "TR"})
+
+
+def _apply_residual_verbal_promotion(item: str, label: str, annotator, cfg: dict) -> str:
+    """Return the (possibly overridden) label for one token via the strict,
+    production-policy residual verbal detector (mixed_reranker.
+    evaluate_residual_verbal_promotion, strict_lexicon_only left at its
+    default True -- the broad fastText-fallback variant is never requested
+    here). Never raises -- any unexpected failure leaves the label
+    untouched, mirroring _rerank_token_label's own fail-safe contract, so a
+    single token's residual-parsing error cannot interrupt annotation of
+    the rest of the block.
+    """
+    if label not in _RESIDUAL_VERBAL_ELIGIBLE_LABELS:
+        return label
+    try:
+        promote, _candidate, _reason = mr.evaluate_residual_verbal_promotion(item, annotator, cfg)
+        return "MIXED" if promote else label
+    except Exception as e:
+        _warn(f"residual verbal detection failed for {item!r} (label={label!r}), keeping original: {e}")
+        return label
+
+
 def apply_reranker(annotated_text: str, annotator, cfg: dict, bundle: Optional[ReRankerBundle]) -> str:
     """Post-process Annotator.annotate()'s raw text output with the frozen
     Phase 5F reranker.
 
     Input and output are the EXACT same tab-separated text format
     annotate() itself produces -- no schema change, no new fields, no new
-    meta rows. The only rewrites are: (1) a token row's Label, when the
-    reranker promotes a UID/NE/TR candidate to MIXED; (2) an existing
+    meta rows. The rewrites are: (1) a token row's Label, when the frozen
+    reranker promotes a UID/NE/TR candidate to MIXED; (1b) a token row's
+    Label, when the residual verbal detector (strict evidence only, see
+    _apply_residual_verbal_promotion) subsequently promotes a still-UID/TR
+    candidate to MIXED -- always AFTER (1), never touching NE, and never
+    reconsidering a token (1) already promoted; (2) an existing
     MatrixLang/EmbedLang row's value, recomputed via the unmodified
     Annotator._decide_matrix_embed, and only for blocks where a label
-    actually changed. Blocks with no label change are returned
-    byte-for-byte identical to the input.
+    actually changed by either stage. Blocks with no label change are
+    returned byte-for-byte identical to the input.
 
     If `bundle` is None (model unavailable), returns `annotated_text`
     completely unchanged -- this is the fallback path when
     load_reranker_bundle() failed for any reason, so annotation output is
-    identical to the original rule-based-only behavior. Never raises.
-    Performs no parser or candidate-generation changes -- called from
-    cs_annotator_app.py's run_pipeline() on every annotation request, right
-    after Annotator.annotate() and before _ensure_matrix_embed_consistency().
+    identical to the original rule-based-only behavior, INCLUDING the
+    residual verbal stage (it does not run in this fallback path either,
+    since it is defined as a stage that follows the frozen reranker, not a
+    replacement for it). Never raises. Performs no parser or
+    candidate-generation changes -- called from cs_annotator_app.py's
+    run_pipeline() on every annotation request, right after
+    Annotator.annotate() and before _ensure_matrix_embed_consistency().
     """
     if bundle is None:
         return annotated_text
@@ -378,6 +430,14 @@ def apply_reranker(annotated_text: str, annotator, cfg: dict, bundle: Optional[R
             if rec["kind"] != "token":
                 continue
             new_label = _rerank_token_label(rec["item"], rec["label"], annotator, cfg, bundle)
+            if new_label != rec["label"]:
+                rec["label"] = new_label
+                changed = True
+
+        for rec in records:
+            if rec["kind"] != "token":
+                continue
+            new_label = _apply_residual_verbal_promotion(rec["item"], rec["label"], annotator, cfg)
             if new_label != rec["label"]:
                 rec["label"] = new_label
                 changed = True

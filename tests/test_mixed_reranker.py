@@ -2330,3 +2330,264 @@ def test_batch_d_does_not_disturb_a_c_g_gating_when_all_enabled():
     assert feats["stem_lexicon_contrast"] == "english_only"
     for key in ("morph_tag_count", "has_case", "morph_complexity", "distinct_stem_count"):
         assert key not in feats
+
+
+# ---------------------------------------------------------------------------
+# Residual verbal MIXED detector -- production integration (strict evidence
+# only). Reuses the real, unmodified PHASE_4E level (DEFAULT_VERBAL_MORPHOLOGY_
+# LEVEL, PHASE_4C1, is never referenced by this stage) and the existing
+# _make_annotator bypass-__init__ convention above. TARGETS/NATIVE_CONTROLS
+# mirror the offline Phase 4 validation exactly -- see CHANGELOG for the
+# authorized production brief this stage implements.
+# ---------------------------------------------------------------------------
+
+RESIDUAL_TARGETS = [
+    ("uploadlamışım", "upload"), ("designladık", "design"), ("inviteladık", "invite"),
+    ("filterladık", "filter"), ("forwardladı", "forward"), ("mutelamışım", "mute"),
+    ("refreshledik", "refresh"), ("cancelladık", "cancel"), ("editledik", "edit"),
+    ("dropladı", "drop"),
+]
+
+RESIDUAL_NATIVE_CONTROLS = [
+    "anladık", "yapmışım", "bekledik", "konuşuyoruz", "gideceksin", "dinledim",
+    "başladık", "temizledik", "eklemişim", "yazdırdık", "kapattılar",
+    "paylaşmışım", "güncelledik", "alamadık", "alıyoruz", "biliyonuz",
+    "dediğimiz", "düşünüyoruz", "giremiyoruz", "gittik", "istiyoruz",
+    "kaldık", "olduğumuz", "olmuyorsunuz", "rahatlarız", "bilirdik",
+]
+
+
+def _residual_annotator():
+    """A real (not real-lexicon-file-backed) Annotator carrying the exact
+    English/Turkish stems the target/control fixtures below need -- built
+    once so every test below reflects the actual lexicon-membership
+    condition (6/7), not a mock."""
+    return _make_annotator(
+        turkish_all={
+            "an", "yap", "din", "ek", "al", "iz", "biliyor", "biliy", "gid",
+            "konus", "konuş", "bekle", "basla", "başla", "temizle", "yazdır",
+            "yazdir", "kapat", "paylas", "paylaş", "guncelle", "güncelle",
+            "olmuyor", "rahat", "bil", "kal", "old", "gel", "gir",
+        },
+        english_words={
+            "upload", "design", "invite", "filter", "forward", "mute",
+            "refresh", "cancel", "edit", "drop",
+        },
+    )
+
+
+# --- 1/2/3: exact parser gaps confirmed + resolved ------------------------
+
+def test_residual_parse_lamisim_fully_consumed():
+    segs, tags, full, _ = mr.parse_residual_verbal_suffix("lamışım")
+    assert full is True
+    assert "Verbal=Verbalizer" in tags
+    assert "Verbal=1stPersonSingular" in tags
+
+
+def test_residual_parse_ladi_fully_consumed():
+    segs, tags, full, _ = mr.parse_residual_verbal_suffix("ladı")
+    assert full is True
+    assert "Verbal=Verbalizer" in tags
+    assert "Verbal=Past" in tags
+
+
+def test_residual_parse_ladik_not_consumable_under_any_existing_level():
+    # Confirms the ONE genuine gap this stage closes: no existing level
+    # (including the frozen default PHASE_4C1) fully parses "ladık" alone.
+    for level in mr.VERBAL_MORPHOLOGY_LEVELS:
+        _, _, full, _ = mr._parse_experimental_verbal_suffix("ladık", level=level)
+        assert full is False, f"level {level!r} unexpectedly consumed 'ladık'"
+
+
+def test_residual_parse_ladik_fully_consumed_via_new_plural_stage():
+    segs, tags, full, _ = mr.parse_residual_verbal_suffix("ladık")
+    assert full is True
+    assert "Verbal=Verbalizer" in tags
+    assert "Verbal=Past" in tags
+    assert "Verbal=1stPersonPlural" in tags
+
+
+# --- 4: first-person-plural fused past forms -------------------------------
+
+@pytest.mark.parametrize("suffix", ["dık", "dik", "duk", "dük", "tık", "tik", "tuk", "tük"])
+def test_residual_plural_fused_past_forms_tag_both_past_and_plural(suffix):
+    tagset = mr.VERBAL_FIRST_PERSON_PLURAL[suffix]
+    assert "Verbal=Past" in tagset
+    assert "Verbal=1stPersonPlural" in tagset
+
+
+@pytest.mark.parametrize("suffix", ["ık", "ik", "uk", "ük", "ız", "iz", "uz", "üz"])
+def test_residual_plural_bare_forms_tag_plural_only(suffix):
+    tagset = mr.VERBAL_FIRST_PERSON_PLURAL[suffix]
+    assert tagset == frozenset({"Verbal=1stPersonPlural"})
+
+
+# --- 5: bare single-character "-k" rejected --------------------------------
+
+def test_residual_bare_single_char_k_not_in_plural_table():
+    assert "k" not in mr.VERBAL_FIRST_PERSON_PLURAL
+
+
+def test_residual_bare_k_does_not_yield_a_fully_consumed_plural_analysis():
+    # "artık" is an ordinary Turkish word ending in "-ık"/"-k"; parsing its
+    # suffix must not spuriously resolve via a bare 1-char "k" candidate --
+    # only the (excluded) full "ık" as a listed suffix should ever apply,
+    # and only when the caller explicitly enumerates that split.
+    segs, tags, full, _ = mr.parse_residual_verbal_suffix("k")
+    assert full is False  # "k" alone matches nothing in the plural table
+
+
+# --- 6: strict English-lexicon requirement (production policy) ------------
+
+def test_residual_strict_evidence_requires_direct_lexicon_hit():
+    obj = _make_annotator(english_words={"upload"})
+    assert mr._residual_verbal_direct_english_evidence(obj, "upload") is True
+    assert mr._residual_verbal_direct_english_evidence(obj, "uplod") is False
+
+
+def test_residual_strict_mode_rejects_fasttext_only_evidence():
+    # A stem with NO lexicon entry but strong fastText EN evidence must be
+    # rejected under the production default (strict_lexicon_only=True) --
+    # this is the exact offline finding that justified NOT wiring the broad
+    # fallback into production.
+    obj = _make_annotator()
+    with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.99)):
+        promote, cand, reason = mr.evaluate_residual_verbal_promotion(
+            "xyzqladık", obj, DEFAULTS, strict_lexicon_only=True)
+    assert promote is False
+    assert reason in ("no_qualifying_candidate", "no_verbal_candidate")
+
+
+def test_residual_broad_mode_available_but_not_default():
+    # The broad (fastText-inclusive) evidence path remains selectable for
+    # offline experimentation only -- exercising it here proves it still
+    # exists and works, without implying it is wired into any production
+    # call site (reranker_integration.py never passes strict_lexicon_only).
+    obj = _make_annotator()
+    with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.99)):
+        promote, cand, reason = mr.evaluate_residual_verbal_promotion(
+            "xyzqladık", obj, DEFAULTS, strict_lexicon_only=False)
+    assert promote is True
+    assert cand["stem"] == "xyzq"
+
+
+def test_residual_default_parameter_is_strict():
+    import inspect
+    sig = inspect.signature(mr.evaluate_residual_verbal_promotion)
+    assert sig.parameters["strict_lexicon_only"].default is True
+
+
+# --- 7: Turkish-lexicon collision rejection --------------------------------
+
+def test_residual_turkish_lexicon_stem_rejected_even_with_english_homograph():
+    # "an" is a genuine Turkish word ("moment") that also happens to be an
+    # English word (indefinite article) -- condition 7 must reject it via
+    # Turkish-lexicon presence, independent of condition 6's outcome.
+    obj = _make_annotator(turkish_all={"an"}, english_words={"an"})
+    promote, cand, reason = mr.evaluate_residual_verbal_promotion("anladık", obj, DEFAULTS)
+    assert promote is False
+
+
+@pytest.mark.parametrize("token", RESIDUAL_NATIVE_CONTROLS)
+def test_residual_native_turkish_controls_never_promote(token):
+    obj = _residual_annotator()
+    promote, cand, reason = mr.evaluate_residual_verbal_promotion(token, obj, DEFAULTS)
+    assert promote is False, f"{token} incorrectly promoted (stem={cand['stem'] if cand else None}, reason={reason})"
+
+
+# --- 8: competing nominal-analysis rejection -------------------------------
+
+def test_residual_competing_lexicon_confirmed_nominal_stem_blocks_promotion():
+    # A constructed token where a nominal (case/possessive) suffix split
+    # leaves a Turkish-lexicon-confirmed stem must be rejected even though a
+    # verbal analysis also qualifies -- condition 8.
+    obj = _make_annotator(turkish_all={"masa"}, english_words={"upload"})
+    # "uploadlamışım" itself has no competing lexicon-confirmed nominal stem
+    # (its only short nominal split leaves "uploadlamış", not lexicon-
+    # confirmed) -- the promotion must succeed there (see target-list test
+    # below). This test isolates the OPPOSITE case: a stem that genuinely
+    # does have a lexicon-confirmed nominal competitor.
+    assert mr._residual_verbal_has_lexicon_confirmed_competing_nominal_stem("masaya", obj) is True
+
+
+def test_residual_short_stem_nonsense_competing_analysis_does_not_block():
+    # Regression for the exact bug found during offline validation: the
+    # nominal parser trivially matches a bare 2-char suffix ("ım") almost
+    # anywhere, leaving a nonsense stem ("uploadlamış") that must NOT count
+    # as real competing evidence (it is not itself Turkish-lexicon-confirmed).
+    obj = _make_annotator(english_words={"upload"})
+    promote, cand, reason = mr.evaluate_residual_verbal_promotion("uploadlamışım", obj, DEFAULTS)
+    assert promote is True
+    assert cand["stem"] == "upload"
+
+
+# --- 9: ambiguous-analysis rejection ---------------------------------------
+
+def test_residual_ambiguous_tie_rejected():
+    # Two distinct English-lexicon stems of EQUAL length, both otherwise
+    # qualifying, must be rejected as ambiguous rather than arbitrarily
+    # picking one.
+    obj = _make_annotator(english_words={"drop", "stop"})
+    with mock.patch.object(mr, "enumerate_residual_verbal_candidates", return_value=[
+        {"stem": "drop", "suffix": "ladı", "split_position": 4,
+         "segments": ["la", "dı"], "tags": frozenset({"Verbal=Verbalizer", "Verbal=Past"}), "used_informal": False},
+        {"stem": "stop", "suffix": "ladı", "split_position": 4,
+         "segments": ["la", "dı"], "tags": frozenset({"Verbal=Verbalizer", "Verbal=Past"}), "used_informal": False},
+    ]):
+        promote, cand, reason = mr.evaluate_residual_verbal_promotion("dropstopladı", obj, DEFAULTS)
+    assert promote is False
+    assert reason == "ambiguous_analysis"
+
+
+# --- 10: proper-name/acronym/code guards -----------------------------------
+
+def test_residual_capitalized_token_rejected_as_proper_name():
+    assert mr._residual_verbal_looks_like_proper_name_or_noise("Uploadlamışım") is True
+
+
+def test_residual_all_caps_acronym_rejected():
+    assert mr._residual_verbal_looks_like_proper_name_or_noise("APIlamışım") is True
+
+
+def test_residual_alphanumeric_code_rejected():
+    assert mr._residual_verbal_looks_like_proper_name_or_noise("A7Klamışım") is True
+
+
+def test_residual_lowercase_plain_token_not_flagged_as_noise():
+    assert mr._residual_verbal_looks_like_proper_name_or_noise("uploadlamışım") is False
+
+
+def test_residual_capitalized_target_never_promotes_end_to_end():
+    obj = _make_annotator(english_words={"comeout"})
+    promote, cand, reason = mr.evaluate_residual_verbal_promotion("Comeoutladim", obj, DEFAULTS)
+    assert promote is False
+    assert reason == "proper_name_or_noise"
+
+
+def test_residual_apostrophe_bearing_token_produces_no_candidates():
+    assert mr.enumerate_residual_verbal_candidates("upload'lamışım") == []
+    promote, cand, reason = mr.evaluate_residual_verbal_promotion(
+        "upload'lamışım", _make_annotator(english_words={"upload"}), DEFAULTS)
+    assert promote is False
+    assert reason == "no_verbal_candidate"
+
+
+# --- 11: all positive regression targets promote with the correct stem ----
+
+@pytest.mark.parametrize("token,expected_stem", RESIDUAL_TARGETS)
+def test_residual_all_targets_promote_with_correct_stem(token, expected_stem):
+    obj = _residual_annotator()
+    promote, cand, reason = mr.evaluate_residual_verbal_promotion(token, obj, DEFAULTS)
+    assert promote is True, f"{token}: {reason}"
+    assert cand["stem"] == expected_stem
+
+
+# --- conditions requiring an explicit verbalizer/passive-inchoative marker
+
+def test_residual_no_verbalizer_never_promotes():
+    # A fully-consumed agreement/tense analysis without -la-/-le-/-lan-/-len-
+    # must never qualify, regardless of lexicon evidence (condition 2).
+    obj = _make_annotator(english_words={"shipler"})
+    promote, cand, reason = mr.evaluate_residual_verbal_promotion("shiplerdim", obj, DEFAULTS)
+    assert promote is False
