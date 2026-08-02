@@ -318,8 +318,15 @@ def test_detect_mixed_no_apostrophe_ft_predict_not_called_when_base_in_lexicon()
 # (spans, offsets, per-token objects) matters to this function.
 
 class _FakeEnt:
-    def __init__(self, text):
+    def __init__(self, text, type="PERSON"):
+        # Default type is PERSON: unconditionally survives Policy C (not
+        # TIME) and unconditionally blocks Policy D (see _build_ne_map),
+        # so pre-existing tests that only exercise exact/piece matching
+        # keep their original "always NE" behavior without needing to know
+        # about Policy C/D at all. Tests that specifically exercise C/D
+        # pass an explicit type.
         self.text = text
+        self.type = type
 
 
 class _FakeDoc:
@@ -436,6 +443,131 @@ def test_build_ne_map_lone_apostrophe_entity_text_regex_gap():
     obj = _make_annotator()
     assert tokenize("'") == ["'"]
     assert obj._build_ne_map(_FakeDoc([_FakeEnt("'")]), ["'", "x"]) == {}
+
+
+# --- NE arbitration: Policy C (TIME subtype) / Policy D (bare English
+# lexical exception) -- offline-validated against the real corpus and
+# synthetic benchmark before this production integration; see CHANGELOG.
+
+def test_build_ne_map_policy_c_corrects_time_false_positives():
+    # Real-corpus false positives: gold TR, Stanza tags a date/weekday
+    # phrase as one TIME entity.
+    obj = _make_annotator(turkish_top={"aralık", "mayıs", "pazartesi"})
+    tokens = ["25", "Aralık"]
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("25 Aralık", type="TIME")]), tokens) == {}
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("2025 mayıs", type="TIME")]), ["2025", "mayıs"]) == {}
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("pazartesi", type="TIME")]), ["pazartesi"]) == {}
+
+
+def test_build_ne_map_policy_c_does_not_touch_money():
+    # Real-corpus genuine gold=NE MONEY matches ("dolar"/"dolarlık") --
+    # MONEY was evaluated and deliberately excluded from Policy C's scope;
+    # must stay NE.
+    obj = _make_annotator()
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("milyar dolarlık", type="MONEY")]),
+                              ["milyar", "dolarlık"]) == {"milyar": "NE", "dolarlık": "NE"}
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("15 dolar", type="MONEY")]),
+                              ["15", "dolar"]) == {"15": "NE", "dolar": "NE"}
+
+
+def test_build_ne_map_policy_c_keeps_ne_when_also_matched_by_allowed_subtype():
+    # A piece matched by BOTH a TIME entity and a non-excluded-subtype
+    # entity keeps NE -- conservative, matches only when EVERY match is
+    # an excluded subtype.
+    obj = _make_annotator()
+    entities = [_FakeEnt("25 Aralık", type="TIME"), _FakeEnt("Aralık", type="ORGANIZATION")]
+    assert obj._build_ne_map(_FakeDoc(entities), ["25", "Aralık"]) == {"Aralık": "NE"}
+
+
+@pytest.mark.parametrize("token", ["Achievement", "Research", "Early", "Queer", "detachment"])
+def test_build_ne_map_policy_d_corrects_ordinary_english_words(token):
+    obj = _make_annotator(english_words={token.lower()})
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt(token, type="ORGANIZATION")]), [token]) == {}
+
+
+def test_build_ne_map_policy_d_retains_genuine_multiword_compounds():
+    # Regression (found and fixed during offline validation): pieces of a
+    # genuine compound organization name must NOT be overridden even if
+    # individually they'd otherwise qualify.
+    obj = _make_annotator(english_words={"comic", "plus", "after", "effect"})
+    tokens = ["Comic", "Plus"]
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("Comic Plus", type="ORGANIZATION")]), tokens) == {
+        "Comic": "NE", "Plus": "NE",
+    }
+    tokens2 = ["After", "Effect"]
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("After Effect", type="ORGANIZATION")]), tokens2) == {
+        "After": "NE", "Effect": "NE",
+    }
+
+
+def test_build_ne_map_policy_d_still_fixes_ner_boundary_noise():
+    # The OTHER piece being NER span-boundary noise (lowercase/suffixed/
+    # numeric), not a genuine second proper-noun word, must not BLOCK the
+    # override on the piece that does qualify -- "examın"/"Quality'de"/"3"
+    # separately stay NE on their own merits (no English-lexicon match of
+    # their own), which is correct and distinct from being "blocked".
+    obj = _make_annotator(english_words={"achievement", "research", "detachment"})
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("Achievement examın", type="ORGANIZATION")]),
+                              ["Achievement", "examın"]) == {"examın": "NE"}
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("Research Quality'de", type="ORGANIZATION")]),
+                              ["Research", "Quality'de"]) == {"Quality'de": "NE"}
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("3 detachment", type="MONEY")]),
+                              ["3", "detachment"]) == {"3": "NE"}
+
+
+def test_build_ne_map_policy_d_never_touches_apostrophed_tokens():
+    obj = _make_annotator(english_words={"store"})
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("Store'da", type="ORGANIZATION")]), ["Store'da"]) == {
+        "Store'da": "NE",
+    }
+
+
+def test_build_ne_map_policy_d_never_touches_acronyms_or_redacted():
+    obj = _make_annotator(english_words={"ai", "redacted"})
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("AI", type="ORGANIZATION")]), ["AI"]) == {"AI": "NE"}
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("REDACTED", type="ORGANIZATION")]), ["REDACTED"]) == {
+        "REDACTED": "NE",
+    }
+
+
+def test_build_ne_map_policy_d_declines_when_valid_turkish_morphology_exists():
+    # A bare English-lexicon word that ALSO has a plausible Turkish
+    # nominal-suffix reading must not be overridden (condition 7).
+    obj = _make_annotator(english_words={"kolaj"})
+    # "kolajlar" = "kolaj" + "lar" (Number=Plur) -- a valid Turkish parse.
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("kolajlar", type="ORGANIZATION")]), ["kolajlar"]) == {
+        "kolajlar": "NE",
+    }
+
+
+@pytest.mark.parametrize("entity_type", ["PERSON", "LOCATION", "ORGANIZATION"])
+def test_build_ne_map_retains_genuine_entities_of_all_three_types(entity_type):
+    obj = _make_annotator()
+    assert obj._build_ne_map(_FakeDoc([_FakeEnt("Bocconi", type=entity_type)]), ["Bocconi"]) == {
+        "Bocconi": "NE",
+    }
+
+
+def test_annotate_ai_siz_remains_mixed_despite_ai_entity_in_sentence():
+    # Regression: "AI" recognized as its own entity elsewhere must not
+    # pull the derivational MIXED form "AI'sız" into NE -- the whole token
+    # "AI'sız" is never itself an entity-piece match (only bare "AI" is),
+    # so it falls through to the pre-existing apostrophe-MIXED path,
+    # completely unaffected by Policy C/D.
+    obj = _make_annotator(english_words={"ai"})
+    obj.ner = lambda line: _FakeDoc([_FakeEnt("AI", type="ORGANIZATION")])
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("AI'sız", DEFAULTS)
+    assert "AI'sız\tMIXED" in out.splitlines()
+
+
+def test_annotate_apostrophe_mixed_forms_unaffected_by_policy_c_d():
+    # Pre-existing apostrophe-MIXED behavior (no entity involved at all)
+    # must be byte-identical after the Policy C/D change.
+    obj = _make_annotator(english_words={"meeting"})
+    with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
+        out = obj.annotate("meeting'e", _CFG_NO_NER)
+    assert out == "SentenceID\t1\nmeeting'e\tMIXED\nMatrixLang\tTR\nEmbedLang\tEN\n"
 
 
 # --- _ensure_ner ---------------------------------------------------------

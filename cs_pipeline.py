@@ -60,6 +60,16 @@ _TOKEN_RE = re.compile(
 
 EN_CONTRACTIONS = {"s", "re", "ve", "m", "ll", "d", "t"}
 
+# NE arbitration (Policies C/D), validated offline against the real corpus
+# and synthetic benchmark before production integration -- see CHANGELOG.
+# Policy C: Stanza entity subtypes that must NOT keep a token classified
+# NE. Evidence-scoped to TIME only -- MONEY was evaluated and rejected
+# (two real-corpus tokens, "dolar"/"dolarlık", are genuine gold-NE MONEY
+# matches; excluding MONEY would misclassify them). PERSON/LOCATION/
+# ORGANIZATION are never suppressed.
+POLICY_C_EXCLUDED_NE_SUBTYPES = {"TIME"}
+POLICY_D_REDACTED_LITERAL = "REDACTED"
+
 DERIV_SUFFIXES = {
     "lık": ("Deriv=LIK", "DerivPOS=NOUN"),
     "lik": ("Deriv=LIK", "DerivPOS=NOUN"),
@@ -271,16 +281,91 @@ class Annotator:
                 return base, token[-len(suf):]
         return None, None
 
+    def _has_valid_turkish_nominal_analysis(self, tok_l: str) -> bool:
+        """Whether ANY closed-class Turkish nominal suffix fully consumes
+        the tail of tok_l, regardless of the resulting stem's language --
+        used by Policy D (see _build_ne_map) to decline overriding NE when
+        the token also has a plausible Turkish-morphology reading. Reuses
+        _parse_tr_suffixes_full read-only; no new suffix tables."""
+        all_suffixes = (set(CASE_ENDINGS.keys()) | set(PLUR.keys()) |
+                        set(POSS_LONG.keys()) | set(POSS_SHORT.keys()) |
+                        set(DERIV_SUFFIXES.keys()) | set(BUFFER_N_ACC.keys()) | set(BUFFER_N_DAT.keys()))
+        for suf in sorted(all_suffixes, key=len, reverse=True):
+            if len(suf) < 2 or not tok_l.endswith(suf): continue
+            stem = tok_l[:-len(suf)]
+            if len(stem) < 2: continue
+            segments, ud_feats, deriv, amb = self._parse_tr_suffixes_full(suf)
+            if "Unparsed=Leftover" in deriv: continue
+            if ud_feats or deriv or amb:
+                return True
+        return False
+
+    def _qualifies_for_policy_d(self, tok: str) -> bool:
+        """Policy D: a token backed only by an NE match may be excluded
+        from ne_map (falling through to the existing _choose_label/MIXED
+        logic below, which -- given conditions 2/3 -- resolves it to EN
+        via the same English-lexicon check _choose_label already does; no
+        separate "set to EN" step is needed). All conditions below must
+        hold; see CHANGELOG for the offline evidence behind each."""
+        if "'" in tok or "’" in tok:
+            return False  # 1: bare token only
+        tok_l = tok.lower()
+        if tok_l not in self.english_freq_words:
+            return False  # 2: direct English-lexicon match required
+        if tok_l in self.turkish_freq_all or tok_l in self.turkish_freq_top:
+            return False  # 3: must be absent from the Turkish lexicon
+        if tok == POLICY_D_REDACTED_LITERAL:
+            return False  # 6: anonymization placeholder, not a real word
+        if tok.isupper() and len(tok) > 1:
+            return False  # 6: acronym / all-caps code
+        if any(c.isdigit() for c in tok):
+            return False  # 6: alphanumeric identifier / product code
+        if self._has_valid_turkish_nominal_analysis(tok_l):
+            return False  # 7: a plausible Turkish-morphology reading exists
+        return True
+
     def _build_ne_map(self, doc, line_tokens):
         ne_map = {}
         if not getattr(doc, "ents", None): return ne_map
-        ne_pieces = set()
+
+        # Policy C: a piece backed ONLY by excluded-subtype (TIME) entities
+        # is not NE at all -- omitted from `surviving_pieces` so it falls
+        # through to the existing non-NE labeling logic below, exactly like
+        # any token that was never entity-matched (no new "recompute" path).
+        # A piece backed by at least one non-excluded-subtype entity keeps
+        # its NE candidacy even if it also matches an excluded-subtype span.
+        surviving_pieces = set()
+        # Policy D guard: a piece backed by PERSON/LOCATION evidence, or by
+        # a genuine multi-word ORGANIZATION compound (another piece of the
+        # same span is itself a bare, alphabetic, capitalized word -- e.g.
+        # "Comic Plus"/"After Effect" -- as opposed to NER span-boundary
+        # noise like "Achievement examın"/"3 detachment"), is never a
+        # Policy D candidate.
+        policy_d_blocked = set()
+
         for ent in doc.ents:
-            for piece in re.findall(r"\w+['’]?\w*|\w+", ent.text):
-                if piece: ne_pieces.add(piece)
+            pieces = [p for p in re.findall(r"\w+['’]?\w*|\w+", ent.text) if p]
+            if not pieces: continue
+            if ent.type not in POLICY_C_EXCLUDED_NE_SUBTYPES:
+                surviving_pieces.update(pieces)
+            if ent.type in ("PERSON", "LOCATION"):
+                policy_d_blocked.update(pieces)
+            elif ent.type == "ORGANIZATION" and len(pieces) > 1:
+                for i, p in enumerate(pieces):
+                    others = pieces[:i] + pieces[i + 1:]
+                    if any("'" not in o and "’" not in o and o.isalpha() and o[:1].isupper()
+                           for o in others):
+                        policy_d_blocked.add(p)
+
         for tok in line_tokens:
-            if tok in ne_pieces:
+            if tok not in surviving_pieces:
+                continue
+            if tok in policy_d_blocked:
                 ne_map[tok] = "NE"
+                continue
+            if self._qualifies_for_policy_d(tok):
+                continue
+            ne_map[tok] = "NE"
         return ne_map
 
     def _ensure_ner(self, enabled=True):
