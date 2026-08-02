@@ -113,7 +113,7 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for developmen
 
 ## MIXED-Token Reranker
 
-TREN's annotation pipeline includes a statistical reranker that runs automatically after the rule-based annotator, on every annotation request, to catch MIXED intra-word code-switching calls the rule-based pass missed. `Annotator.annotate()` (`cs_pipeline.py`) remains the primary, unmodified rule-based annotation engine; the reranker (`reranker_integration.py`, calling into `mixed_reranker.py`) is a post-processing stage that runs after it, in `cs_annotator_app.py`'s `run_pipeline()`:
+TREN's annotation pipeline includes a statistical reranker that runs automatically after the rule-based annotator, on every annotation request, to catch MIXED intra-word code-switching calls the rule-based pass missed. `Annotator.annotate()` (`cs_pipeline.py`) remains the primary rule-based annotation engine — its core labeling flow is unchanged by the reranker below, though NE arbitration within it was subsequently updated by Policies C/D (see "Production Status" above); the reranker (`reranker_integration.py`, calling into `mixed_reranker.py`) is a post-processing stage that runs after it, in `cs_annotator_app.py`'s `run_pipeline()`:
 
 ```
 Annotator.annotate() -> apply_reranker() -> _ensure_matrix_embed_consistency() -> _populate_table()
@@ -168,7 +168,7 @@ These numbers are the reranker's held-out benchmark results — a fixed measurem
 
 ### Reproducing / testing
 
-The reranker's own automated tests (`tests/test_mixed_reranker.py`, `tests/test_reranker_integration.py`) are included in the project's main test suite; **560 tests currently pass** across the whole repository (`python -m pytest`). To rebuild the active-baseline dataset and retrain the model yourself:
+The reranker's own automated tests (`tests/test_mixed_reranker.py`, `tests/test_reranker_integration.py`) are included in the project's main test suite; **707 tests currently pass** across the whole repository (`python -m pytest`). To rebuild the active-baseline dataset and retrain the model yourself:
 
 ```bash
 python tools/build_reranker_dataset.py --gold <gold.csv> --pred <pred.csv> \
@@ -182,7 +182,50 @@ python tools/train_mixed_reranker.py --dataset <out-dir>/dataset.json \
 
 Batch C is included by default; pass `--exclude-batch-c-features` to disable it. Batch B and Batch D remain available via `--include-batch-b-features` / `--include-batch-d-features` for reproducing the rejected experiments, but are not part of the active baseline shown above.
 
+## Production Status (v1.3.0)
 
+### Pipeline
+
+```
+Input -> tokenizer -> rule-based annotator -> NE Policies C/D -> frozen Phase 5F reranker
+      -> strict residual verbal MIXED detector -> Matrix/Embedded consistency -> output
+```
+
+### Active components
+
+| Component | Role | Status |
+|---|---|---|
+| Rule-based annotator (`cs_pipeline.py`) | Primary language ID, MIXED/NE detection, Turkish suffix segmentation | Active; core labeling flow retained, with NE arbitration updated by Policies C/D |
+| NE Policy C | Withholds NE status from `TIME`-subtype-only entity matches | Active |
+| NE Policy D | Withholds NE status from guarded English-lexical/compound-entity matches | Active |
+| Frozen Phase 5F reranker | Promotes eligible `UID`/`NE`/`TR` candidates to `MIXED` at threshold 0.85 | Active, frozen |
+| Residual verbal MIXED detector | Promotes eligible `UID`/`TR` verbal candidates to `MIXED`, strict-lexicon evidence only | Active |
+| UID→TR resolver | Offline-validated | **Not integrated** |
+
+### Real-corpus metrics (primary evidence)
+
+| Accuracy | Weighted F1 | Auto macro F1 | Lexical macro F1 | MIXED P/R/F1 |
+|---:|---:|---:|---:|---|
+| 0.8725 | 0.9041 | 0.6877 | 0.8698 | 0.8661 / 0.8899 / 0.8778 |
+
+### Synthetic benchmarks (secondary, diagnostic — not external validation)
+
+| Benchmark | Accuracy | Weighted F1 | Auto macro F1 | Lexical macro F1 | MIXED P/R/F1 |
+|---|---:|---:|---:|---:|---|
+| First synthetic (100 sent.) | 0.8660 | 0.8897 | 0.5621 | 0.8673 | 0.7907 / 0.6800 / 0.7312 |
+| Synthetic v2, adjudicated gold (100 sent., 622 tok.) | 0.9212 | 0.9406 | 0.7245 | 0.9064 | 0.8000 / 0.9231 / 0.8571 |
+
+Both benchmarks are synthetic and LLM-authored — diagnostic secondary evidence, not external validation. Benchmark v2's frozen original gold was preserved unchanged; three high-confidence gold corrections (`soundtrack` MIXED→EN, `dress` TR→EN, `code` TR→EN) live only in a separate adjudicated-gold file, never in the frozen original.
+
+### Production guarantees
+
+- Frozen Phase 5F model and threshold (0.85) unchanged.
+- Residual verbal detection runs after the reranker, strict-lexicon evidence only, and can only promote `UID`/`TR` to `MIXED` — it never touches `NE`/`EN`/`OTHER`/`LANG3`/an already-`MIXED` token.
+- `LANG3` remains manual-only. The UID resolver is not integrated. No benchmark-specific rules are present anywhere in production.
+
+### Known limitations
+
+UID remains weak and heterogeneous; NE precision is limited by third-party Stanza behavior; rare Turkish lexicon coverage causes UID predictions; TR/EN dual-lexicon collisions are context-insensitive; proper-name/common-word ambiguity remains; nominal suffix substring false positives can occur on bare English words (e.g. `office`/`remote`); complex nominal MIXED chains (e.g. `cloudumuza`) may still be missed.
 
 # Documentation of TREN
 
