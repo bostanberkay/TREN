@@ -3,7 +3,7 @@ from unittest import mock
 import pytest
 
 import cs_pipeline
-from cs_pipeline import Annotator, DEFAULTS, tokenize
+from cs_pipeline import Annotator, DEFAULTS, is_other_token, tokenize
 
 
 def _make_annotator(turkish_top=(), turkish_all=(), english_words=()):
@@ -899,10 +899,10 @@ def test_annotate_representative_tr_en_mixed_sentence_exact_output():
 
 
 # --- tokenize() ----------------------------------------------------------
-# Module-level, pure regex function: r"\w+['’]?\w*|\w+|['’]". No Annotator
-# instance needed at all. Only current, verified regex behavior is tested
-# here -- several findings below are non-obvious and are documented as-is,
-# not normalized or "fixed".
+# Module-level, pure regex function (_TOKEN_RE). No Annotator instance
+# needed at all. Only current, verified regex behavior is tested here --
+# several findings below are non-obvious and are documented as-is, not
+# normalized or "fixed".
 
 @pytest.mark.parametrize("text, expected", [
     ("hello world", ["hello", "world"]),
@@ -915,7 +915,8 @@ def test_annotate_representative_tr_en_mixed_sentence_exact_output():
     ("   ", []),
     ("\n\t", []),
     ("a\tb\nc", ["a", "b", "c"]),
-    ("a-b", ["a", "b"]),        # hyphen is not \w -- dropped, not attached to either side
+    ("a-b", ["a-b"]),           # hyphen-joined alnum segments now kept as one token
+                                 # (so machine codes like "A7K-204" survive intact)
     ("---", []),                # pure punctuation run -- matches nothing at all
 ], ids=[
     "ordinary_whitespace_separated", "digits", "underscore", "underscore_with_digits",
@@ -934,6 +935,88 @@ def test_tokenize_punctuation_is_dropped_not_returned_as_tokens():
     # sense of separate punctuation entries appearing in the output.
     assert tokenize("hello, world!") == ["hello", "world"]
     assert tokenize("hello , world !") == ["hello", "world"]
+
+
+# --- regression: @mentions, #hashtags, URLs, emoji, and hyphen/underscore-
+# joined codes must survive tokenize() as single tokens instead of being
+# silently dropped (mentions/hashtags/emoji) or fragmented (URLs/codes) --
+# \w never matches '@', '#', or astral-plane emoji codepoints, so without
+# an explicit alternative for each, is_other_token() never even sees them.
+
+def test_tokenize_preserves_mention():
+    assert tokenize("hey @berkay check this") == ["hey", "@berkay", "check", "this"]
+
+
+def test_tokenize_preserves_hashtag():
+    assert tokenize("great day #tbt indeed") == ["great", "day", "#tbt", "indeed"]
+
+
+def test_tokenize_preserves_url():
+    assert tokenize("see https://example.com/path?x=1 now") == [
+        "see", "https://example.com/path?x=1", "now",
+    ]
+
+
+def test_tokenize_preserves_www_url():
+    assert tokenize("visit www.example.com today") == ["visit", "www.example.com", "today"]
+
+
+def test_tokenize_preserves_emoji_as_one_token():
+    assert tokenize("nice 😀 work") == ["nice", "😀", "work"]
+
+
+def test_tokenize_preserves_hyphenated_code():
+    assert tokenize("kod A7K-204 ve TR-9081-ZX burada") == [
+        "kod", "A7K-204", "ve", "TR-9081-ZX", "burada",
+    ]
+
+
+def test_tokenize_preserves_numeric_with_separators():
+    # Mirrors NUMERIC_RE's own separator support (.,:/- between digit
+    # groups); previously unreachable because tokenize() fragmented on
+    # those separators before is_other_token() ever ran.
+    assert tokenize("saat 10:30 fiyat 3.14") == ["saat", "10:30", "fiyat", "3.14"]
+
+
+def test_tokenize_digit_prefixed_word_not_split_by_numeric_alternative():
+    # Regression: the numeric-with-separators alternative must require at
+    # least one separator+digit group, or it wins (first-match, not
+    # longest-match) over \w+['’]?\w* on a bare leading digit run and
+    # wrongly splits ordinary digit-prefixed words like "20li"/"3d" into
+    # two tokens. Found via a real-corpus diff against the pre-fix build.
+    assert tokenize("kod 20li ve 3d ve 6da") == ["kod", "20li", "ve", "3d", "ve", "6da"]
+
+
+# --- is_other_token(): the new CODE_RE branch --------------------------
+
+def test_is_other_token_hyphenated_alnum_code():
+    assert is_other_token("A7K-204") is True
+    assert is_other_token("TR-9081-ZX") is True
+
+
+def test_is_other_token_underscore_alnum_code():
+    assert is_other_token("QR_77B") is True
+
+
+def test_is_other_token_code_requires_both_letter_and_digit():
+    # A hyphen-joined token with only letters is not a "code" in this
+    # sense -- plain hyphenated words stay off the OTHER path.
+    assert is_other_token("well-known") is False
+
+
+def test_is_other_token_pure_digit_hyphenated_uses_numeric_re_not_code_re():
+    # "12-34" is still classified OTHER, but via the pre-existing
+    # NUMERIC_RE branch (digits + separators), not the new CODE_RE branch
+    # (which requires at least one letter).
+    assert is_other_token("12-34") is True
+
+
+def test_is_other_token_mention_and_hashtag_reachable_after_tokenize():
+    # Historically dead: MENTION_RE/HASHTAG_RE checked tokens that had
+    # already lost their '@'/'#' inside tokenize(). Confirms the full
+    # pipeline (tokenize -> is_other_token) now classifies them OTHER.
+    tokens = tokenize("hey @berkay #tbt")
+    assert [is_other_token(t) for t in tokens] == [False, True, True]
 
 
 @pytest.mark.parametrize("text, expected", [

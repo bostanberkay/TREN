@@ -29,6 +29,34 @@ MENTION_RE = re.compile(r"@\w+")
 HASHTAG_RE = re.compile(r"#\w+")
 NUMERIC_RE = re.compile(r"^\d+([.,:/-]\d+)*$")
 EMOJI_RE   = re.compile(r"[\U00010000-\U0010ffff]", flags=re.UNICODE)
+# Alphanumeric machine codes (A7K-204, TR-9081-ZX, QR_77B): ASCII
+# letters/digits joined by at least one '-'/'_', containing both a letter
+# and a digit somewhere, so ordinary words are never matched.
+CODE_RE    = re.compile(r"^(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)"
+                         r"[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)+$")
+
+# Tokenizer alternation, longest/most-specific pattern first so a URL,
+# mention, hashtag, emoji run, separator-joined number, or hyphen/
+# underscore-joined code is captured whole instead of being fragmented by
+# the generic \w+ alternatives that follow. \w never matches '@', '#', or
+# astral-plane emoji codepoints, so without these explicit alternatives
+# those characters (and anything built out of them) are silently dropped
+# from the token stream rather than surviving as a single OTHER token.
+_TOKEN_RE = re.compile(
+    r"https?://\S+|www\.\S+"
+    r"|@\w+"
+    r"|#\w+"
+    r"|[\U00010000-\U0010ffff]+"
+    # requires at least one separator+digit GROUP ('+', not '*') -- a bare
+    # digit run like "20" in "20li" must NOT match here, or it would win
+    # over \w+['’]?\w* below and wrongly split "20li" into "20" + "li".
+    r"|\d+(?:[.,:/-]\d+)+"
+    r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)+"
+    r"|\w+['’]?\w*"
+    r"|\w+"
+    r"|['’]",
+    flags=re.UNICODE,
+)
 
 EN_CONTRACTIONS = {"s", "re", "ve", "m", "ll", "d", "t"}
 
@@ -105,6 +133,7 @@ def is_other_token(tok: str) -> bool:
     if not tok: return True
     if URL_RE.match(tok) or MENTION_RE.match(tok) or HASHTAG_RE.match(tok): return True
     if NUMERIC_RE.match(tok): return True
+    if CODE_RE.match(tok): return True
     if EMOJI_RE.search(tok): return True
     if re.fullmatch(r"[\W_]+", tok): return True
     return False
@@ -113,7 +142,7 @@ def clean_token(token: str) -> str:
     return re.sub(r"[^\w’']+", "", token)
 
 def tokenize(text: str):
-    return re.findall(r"\w+['’]?\w*|\w+|['’]", text)
+    return _TOKEN_RE.findall(text)
 
 class Annotator:
     def __init__(self, freq_tr="frequent_tr_words.txt", freq_en="frequent_en_words.txt", ft_path="lid.176.ftz"):

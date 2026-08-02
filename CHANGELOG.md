@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tokenizer** (`cs_pipeline.tokenize`): `@mentions`, `#hashtags`, emoji, and hyphen/underscore-joined alphanumeric codes (e.g. `A7K-204`, `TR-9081-ZX`) are now preserved as single tokens instead of being silently dropped (`@`/`#`/emoji, since `\w` never matches them) or fragmented on the separator (codes). `is_other_token` gained a `CODE_RE` check so these codes are correctly classified `OTHER`. This changes token boundaries (and therefore TXT-export row counts) for input containing any of the above — call this out when reviewing/consuming exports of text that includes them. Also fixes a related regression found during evaluation of this change: the separator-joined-number alternative previously matched on a bare leading digit run (`*`), so it wrongly won over the general word pattern and split digit-prefixed words like `20li`/`3d`/`6da` into two tokens; it now requires at least one actual separator group (`+`).
+- **`resources/frequent_tr_words.txt`**: removed three English function-word entries (`the`, `a`, `i`) that were present in the top-1000 Turkish frequency tier, causing them to resolve `TR` ahead of the English lexicon check regardless of context. `in` was also tried and reverted — a controlled evaluation against the real annotated corpus found one concrete regression (a genuine Turkish-context use of `in` that flipped from correctly `TR` to incorrectly `EN`), so it stays in the Turkish list pending a more targeted fix. `her` (a genuinely common Turkish word, "every/each") was intentionally left in place — its collision with the English possessive pronoun is a real cross-lingual ambiguity with no context-free fix, not a data error.
+
+Two further changes — a Turkish-stem morphological fallback for `Annotator._choose_label` (UID over-generation), and matching an apostrophe-split base against recognized NER entities in `Annotator._build_ne_map` (NE priority for `Ankara'da`-style tokens) — were implemented and evaluated against both the real annotated corpus and a synthetic benchmark, but reverted after the evaluation showed real regressions (the Turkish-stem fallback pre-empts MIXED detection and converts genuine `MIXED`/`UID` tokens to `TR`; the NE-priority change suppresses at least one genuine apostrophe-bearing `MIXED` form). Automatic `LANG3` production was also implemented and reverted: it conflicts with the previously-documented manual-only `LANG3` behavior, and real-corpus evaluation found real false positives with no real corpus examples to confirm a true positive. All three remain candidates for future work, not shipped here.
+
 ## [1.2.0] - 2026-07-29
 
 ### Added

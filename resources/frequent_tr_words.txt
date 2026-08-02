@@ -103,7 +103,6 @@ gün 222383
 ederim 222057
 nerede 221011
 tanrım 220531
-a 220467
 şeyi 219997
 merhaba 218209
 efendim 217448
@@ -127,7 +126,6 @@ siz 184880
 üzgünüm 182876
 ol 182869
 olabilir 182439
-i 182323
 olsun 181003
 küçük 179380
 size 176618
@@ -722,7 +720,6 @@ yaşında 33293
 michael 33257
 cidden 33183
 oradan 33163
-the 33111
 kahve 33002
 hata 32946
 seks 32861
