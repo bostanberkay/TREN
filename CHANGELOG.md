@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Added the **UID Review Tool** (`Tools → UID Review Tool`) for sequential review and correction of tokens labeled `UID`.
+- Added **Search** and **Find All Occurrences** to the UID Review Tool.
+- Added immediate synchronization between the UID Review Tool and the main annotation table.
+- Added **Merge Cells** and **Undo Merge Cells** to the main annotation interface (Annotation menu and grid context menu).
+- Added `MatrixLang`/`EmbedLang` recomputation after UID Review Tool edits and after Merge Cells/Undo Merge Cells.
+- Added model and permanent GUI regression tests (`tests/test_uid_review_tool_gui.py`).
+
 ## [1.3.0] - 2026-08-02
 
 ### Added

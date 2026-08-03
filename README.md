@@ -381,6 +381,8 @@ The **Annotation** menu provides tools for manual editing and structural modific
 • **Cut / Copy / Paste**: Edit selected cells in the grid.  
 • **Insert Row Before**: Insert a new annotation row.  
 • **Remove Row**: Delete the selected annotation row.
+- **Merge Cells**: Merge two or more adjacent, same-sentence token rows into one, with a confirmation dialog for the merged token, label, and gloss.
+- **Undo Merge Cells**: Reverse the most recent merge.
 
 ---
 
@@ -400,10 +402,11 @@ The Full Edit Window mirrors the main annotation grid and remains fully synchron
 
 The **Tools** menu provides access to auxiliary analytical and inspection windows.
 
-• **Auto-Glossing Tool**  
-• **Concordance (KWIC)**  
-• **Show Sentence (Context Viewer)**  
-• **Word Frequency List**
+- **Auto-Glossing Tool**
+- **UID Review Tool**
+- **Concordance (KWIC)**
+- **Show Sentence (Context Viewer)**
+- **Word Frequency List**
 
 ## Auto-Glossing Tool
 
@@ -447,6 +450,32 @@ When navigating away from an item, the current **Label** and **Gloss** values ar
 • Gloss output is intended for morphologically interpretable intra-word structures.  
 • Glossing follows a Leipzig-style abbreviation inventory and is designed for consistency across the corpus.  
 • Users retain full control and may overwrite or refine automatic suggestions.
+
+## UID Review Tool
+
+The **UID Review Tool** (`Tools → UID Review Tool`) is a focused window for sequentially reviewing and correcting tokens the pipeline could not confidently identify, currently labeled **UID**.
+
+### Scope and Data Selection
+
+- The tool lists every token currently labeled **UID**, in the same order as the main annotation grid.
+- Each item shows the full sentence context surrounding the token.
+
+### Interface Elements
+
+- **Search**: filter the list by typing part of a token; press Return or click **Search**.
+- **Find All Occurrences**: locate every occurrence of the selected (or searched) token, regardless of its current label.
+- **Label** and **Gloss** fields: edit the current token's label and gloss.
+- **First / Previous / Next / Last**: move through the list.
+- **Apply**: commit the edited label and gloss.
+- **Undo**: reverse the most recent Apply.
+
+### Synchronization
+
+- Applying an edit updates the shared annotation model and the main annotation grid immediately.
+- `MatrixLang`/`EmbedLang` for the affected sentence are recomputed automatically after each applied label change.
+- A token edited away from **UID** is removed from the list, and the tool advances to the next remaining UID item.
+
+The UID Review Tool works entirely offline: opening it does not invoke Stanza, fastText, the MIXED-token reranker, or any external AI service.
 
 ## Concordance (KWIC)
 

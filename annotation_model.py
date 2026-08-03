@@ -184,6 +184,121 @@ def iter_visible_rows(blocks, row_index_map, sep_rows):
         yield vis_r, bidx, ridx, row
 
 
+def collect_label_rows(blocks, row_index_map, sep_rows, labels):
+    """Collect every row whose label is in `labels` (an iterable of label
+    strings, e.g. {"UID"}), in corpus/visible order. Returns a list of
+    {"vis_r", "bidx", "ridx"} dicts. Used by the UID Review Tool for its
+    default UID list and, with a different label set, for other label-scoped
+    views."""
+    wanted = set(labels)
+    out = []
+    for vis_r, bidx, ridx, row in iter_visible_rows(blocks, row_index_map, sep_rows):
+        if str(row.get("label", "") or "").strip() in wanted:
+            out.append({"vis_r": vis_r, "bidx": bidx, "ridx": ridx})
+    return out
+
+
+def _normalize_for_match(tok, exact_surface, case_sensitive):
+    """Normalize a token for occurrence matching. Default policy (exact_surface=False,
+    case_sensitive=False): Unicode-aware casefold plus stripping only leading/trailing
+    punctuation -- the same edge-punctuation rule freq_normalize_token uses, not a
+    substring match. exact_surface=True compares the raw surface form instead (still
+    subject to case_sensitive)."""
+    if tok is None:
+        return None
+    s = str(tok)
+    if not exact_surface:
+        s = re.sub(r"^[\W_]+|[\W_]+$", "", s, flags=re.UNICODE)
+    if not s:
+        return None
+    if not case_sensitive:
+        s = s.casefold()
+    return s
+
+
+def find_occurrences(blocks, row_index_map, sep_rows, query, *,
+                      case_sensitive=False, exact_surface=False,
+                      label_filter=None, bidx_filter=None):
+    """Find every occurrence of `query` in corpus order. Returns a list of
+    {"vis_r", "bidx", "ridx"} dicts.
+
+    Default matching policy: normalized form (Unicode casefold + strip only
+    leading/trailing punctuation), NOT substring matching. Pass
+    exact_surface=True to compare raw surface forms instead (still subject to
+    case_sensitive). Pass bidx_filter=<int> to restrict to one sentence/block
+    ("current sentence only"). Pass label_filter=<iterable of labels> to
+    restrict to specific current labels.
+    """
+    target = _normalize_for_match(query, exact_surface, case_sensitive)
+    if not target:
+        return []
+    labels = set(label_filter) if label_filter is not None else None
+    out = []
+    for vis_r, bidx, ridx, row in iter_visible_rows(blocks, row_index_map, sep_rows):
+        if bidx_filter is not None and bidx != bidx_filter:
+            continue
+        tok = row.get("token", "")
+        if is_meta_row_token(tok):
+            continue
+        if _normalize_for_match(tok, exact_surface, case_sensitive) != target:
+            continue
+        if labels is not None and str(row.get("label", "") or "").strip() not in labels:
+            continue
+        out.append({"vis_r": vis_r, "bidx": bidx, "ridx": ridx})
+    return out
+
+
+def rows_are_adjacent_same_block(blocks, bidx, ridx_list):
+    """True iff ridx_list (2 or more row indices) are all within the same
+    block `bidx`, form a contiguous run of positions once sorted, and none
+    of them is a meta row (SentenceID/MatrixLang/EmbedLang/blank). Used to
+    gate token merging: no cross-sentence merge, no merge across a gap, and
+    no merge that would swallow a structural row."""
+    if ridx_list is None or len(ridx_list) < 2:
+        return False
+    if bidx is None or bidx < 0 or bidx >= len(blocks):
+        return False
+    rows = blocks[bidx]
+    sorted_ridx = sorted(ridx_list)
+    if len(set(sorted_ridx)) != len(sorted_ridx):
+        return False
+    for i in range(len(sorted_ridx) - 1):
+        if sorted_ridx[i + 1] != sorted_ridx[i] + 1:
+            return False
+    for ridx in sorted_ridx:
+        if ridx < 0 or ridx >= len(rows):
+            return False
+        if is_meta_row_token(rows[ridx].get("token", "")):
+            return False
+    return True
+
+
+def merge_token_rows(blocks, bidx, ridx_list, merged_token, merged_label, merged_gloss):
+    """Replace the contiguous rows at blocks[bidx][ridx] for ridx in
+    ridx_list with a single merged row. Requires
+    rows_are_adjacent_same_block(blocks, bidx, ridx_list) to be True --
+    raises ValueError otherwise (no cross-sentence merge, no merge across a
+    gap, no merge that includes a meta row). Caller must call
+    renumber_tokens(blocks) afterward. Never infers the merged label or
+    gloss -- both must be supplied explicitly by the caller (the UI's
+    confirmation dialog), matching the "do not automatically infer the
+    merged label" requirement."""
+    if not rows_are_adjacent_same_block(blocks, bidx, ridx_list):
+        raise ValueError(
+            "rows to merge must be 2+, contiguous, in the same sentence, "
+            "and contain no meta row"
+        )
+    merged_tok = str(merged_token).strip()
+    if not merged_tok:
+        raise ValueError("merged token must not be blank")
+    rows = blocks[bidx]
+    sorted_ridx = sorted(ridx_list)
+    first, last = sorted_ridx[0], sorted_ridx[-1]
+    new_row = {"idx": "", "token": merged_tok, "label": merged_label, "gloss": merged_gloss}
+    blocks[bidx] = rows[:first] + [new_row] + rows[last + 1:]
+    return True
+
+
 def build_grid_view(blocks, extra_headers, skip_separator_after_empty_block):
     """Build tksheet-ready row data plus row_index_map/sep_rows from blocks.
     Returns (data, row_index_map, sep_rows).

@@ -9,6 +9,7 @@ import re
 import csv
 import json
 import sys
+import copy
 
 from cs_pipeline import Annotator, DEFAULTS
 import annotation_model
@@ -480,6 +481,486 @@ VOC vocative
             pass
 
         self._ag_update_status()
+
+    # =====================================================================
+    # UID Review Tool
+    #
+    # A focused, sequential UID-labeling window. Operates on the exact same
+    # self.blocks / self._row_index_map / self._sep_rows model the main
+    # table uses -- it never keeps an independent copy of the corpus.
+    # Deliberately minimal per explicit design direction: no view/filter
+    # dropdown, no bulk editing, no remembered-correction system, no
+    # review-status tracking. Selecting a row, applying a label, and
+    # undoing all synchronize immediately with the main table through the
+    # same _rebuild_grid_from_model / set_cell_data mirroring the main
+    # sheet edit handlers already use, so Save and Export automatically
+    # stay in sync with zero extra wiring.
+    # =====================================================================
+
+    ALL_LABELS = ("TR", "EN", "MIXED", "UID", "NE", "OTHER", "LANG3")
+
+    def _update_block_matrix_embed(self, bidx):
+        """Recompute MatrixLang/EmbedLang for block `bidx` using the exact
+        same deterministic rule Annotator._decide_matrix_embed already
+        implements. That method is a pure function of (labels, cfg) with no
+        dependency on `self` (no lexicon/fastText/Stanza access), so it is
+        called unbound here -- this never instantiates a real Annotator and
+        never touches the production pipeline."""
+        try:
+            block = self.blocks[bidx]
+        except Exception:
+            return
+        labels = [r.get('label', '') for r in block if not self._is_meta_row_token(r.get('token', ''))]
+        matrix, embed = Annotator._decide_matrix_embed(None, labels, self.cfg)
+        for r in block:
+            tok = str(r.get('token', '') or '').strip()
+            if tok == 'MatrixLang':
+                r['label'] = matrix
+            elif tok == 'EmbedLang':
+                r['label'] = embed
+
+    def _uid_sentence_text(self, bidx):
+        """Full-sentence context: every non-meta token in the block, in order."""
+        try:
+            blk = self.blocks[bidx]
+        except Exception:
+            return ""
+        toks = [str(r.get('token', '') or '') for r in blk if not self._is_meta_row_token(r.get('token', ''))]
+        return " ".join(toks)
+
+    def _uid_sentence_preview(self, bidx, max_len=40):
+        text = self._uid_sentence_text(bidx)
+        return text if len(text) <= max_len else text[:max_len - 1] + "\u2026"
+
+    def _uid_jump_to_main(self, vis_r):
+        """Select/reveal the corresponding token in the main table (and the
+        Full Edit Window's sheet, if open). Deliberately does NOT move
+        keyboard focus to the main sheet -- doing so would steal focus away
+        from the UID Review Tool's own tree/controls after every selection
+        change (click, arrow key, Next/Prev/First/Last), breaking repeated
+        arrow-key navigation in the tool after the first press."""
+        if vis_r is None:
+            return
+        for sh in (self.sheet, self._full_sheet):
+            if sh is None:
+                continue
+            try:
+                sh.select_cell(vis_r, 2)
+                sh.see(vis_r, 2)
+            except Exception:
+                pass
+
+    # --- scoped undo history (Apply only; no app-wide undo/redo exists) ---
+
+    def _uid_push_undo(self, record):
+        self._uid_undo_stack.append(record)
+        if len(self._uid_undo_stack) > 200:
+            self._uid_undo_stack.pop(0)
+
+    def _uid_undo_last(self):
+        if not self._uid_undo_stack:
+            self.bell()
+            return
+        record = self._uid_undo_stack.pop()
+        bidx, ridx = record['bidx'], record['ridx']
+        try:
+            self.blocks[bidx][ridx]['label'] = record['old']['label']
+            self.blocks[bidx][ridx]['gloss'] = record['old']['gloss']
+        except Exception:
+            pass
+        self._update_block_matrix_embed(bidx)
+        self._rebuild_grid_from_model()
+        if getattr(self, '_uid_win', None) is not None and self._uid_win.winfo_exists():
+            self._uid_refresh_items(preserve_index=True)
+
+    def _uid_on_structural_change(self):
+        """Call this after ANY edit made outside the UID Review Tool that
+        changes row positions or row count in self.blocks (currently:
+        Merge Cells and Undo Merge Cells). self._uid_items and every entry
+        on self._uid_undo_stack hold positional (bidx, ridx, vis_r)
+        references; a structural edit elsewhere can silently invalidate
+        them, and a later UID Apply/Undo could then target the wrong row
+        or a row that no longer means what it did.
+
+        The undo stack is always cleared here rather than remapped: its
+        records point at specific (bidx, ridx) positions, and after rows
+        have been merged/split/renumbered there is no reliable way to know
+        whether "the same position" still means "the same edit" -- restoring
+        an old (label, gloss) pair into a position that now holds a
+        different, merged token would be a silent wrong-row mutation. This
+        is a deliberate simplicity/safety tradeoff: the user loses the
+        ability to undo a UID edit that happened before a merge, but can
+        never have a merge silently corrupt an unrelated row via a stale
+        undo record.
+
+        _uid_items itself is fully recomputed (never patched in place), so
+        it can never reference a stale ridx/vis_r. The previously selected
+        token is re-selected by matching (bidx, token text) against the
+        fresh list when possible; if that exact token no longer exists as
+        a UID (e.g. it was one of the merged rows), the closest remaining
+        item by list position is selected instead -- the same
+        preserve_index fallback already used after every Apply/Undo.
+        """
+        self._uid_undo_stack = []
+
+        if getattr(self, '_uid_win', None) is None or not self._uid_win.winfo_exists():
+            return
+
+        prev_bidx, prev_token = None, None
+        if self._uid_items and 0 <= self._uid_i < len(self._uid_items):
+            prev_it = self._uid_items[self._uid_i]
+            prev_bidx = prev_it['bidx']
+            try:
+                prev_token = self.blocks[prev_it['bidx']][prev_it['ridx']].get('token', '')
+            except Exception:
+                prev_token = None
+
+        old_i = self._uid_i
+        self._uid_items = self._uid_compute_items()
+
+        if self._uid_items:
+            new_i = None
+            if prev_token is not None:
+                for i, it in enumerate(self._uid_items):
+                    try:
+                        cur_tok = self.blocks[it['bidx']][it['ridx']].get('token', '')
+                    except Exception:
+                        continue
+                    if it['bidx'] == prev_bidx and cur_tok == prev_token:
+                        new_i = i
+                        break
+            if new_i is None:
+                new_i = max(0, min(old_i, len(self._uid_items) - 1))
+            self._uid_i = new_i
+        else:
+            self._uid_i = 0
+
+        self._uid_populate_tree()
+        if self._uid_items:
+            self._uid_load_current(sync_tree=True)
+        else:
+            self._uid_clear_editor()
+            self._uid_update_title()
+
+    # --- list computation / display ---
+
+    def _uid_compute_items(self):
+        if self._uid_mode == 'occurrences' and self._uid_query:
+            return annotation_model.find_occurrences(
+                self.blocks, self._row_index_map, self._sep_rows, self._uid_query)
+        raw = annotation_model.collect_label_rows(self.blocks, self._row_index_map, self._sep_rows, {"UID"})
+        if self._uid_search_var is not None:
+            needle = (self._uid_search_var.get() or "").strip().casefold()
+            if needle:
+                raw = [it for it in raw
+                       if needle in str(self.blocks[it['bidx']][it['ridx']].get('token', '') or '').casefold()]
+        return raw
+
+    def _uid_refresh_items(self, preserve_index=True):
+        old_i = getattr(self, '_uid_i', 0)
+        self._uid_items = self._uid_compute_items()
+        if preserve_index and self._uid_items:
+            self._uid_i = max(0, min(old_i, len(self._uid_items) - 1))
+        else:
+            self._uid_i = 0
+
+        if getattr(self, '_uid_win', None) is None or not self._uid_win.winfo_exists():
+            return
+
+        self._uid_populate_tree()
+        if self._uid_items:
+            self._uid_load_current(sync_tree=True)
+        else:
+            self._uid_clear_editor()
+            self._uid_update_title()
+
+    def _uid_populate_tree(self):
+        tree = self._uid_tree
+        tree.delete(*tree.get_children())
+        for i, it in enumerate(self._uid_items):
+            bidx, ridx = it['bidx'], it['ridx']
+            row = self.blocks[bidx][ridx]
+            tree.insert("", "end", iid=str(i), values=(
+                self._uid_sentence_preview(bidx), row.get('token', ''),
+                row.get('label', ''), row.get('gloss', '') or '',
+            ))
+
+    def _uid_clear_editor(self):
+        self._uid_label_var.set("")
+        self._uid_gloss_var.set("")
+        self._uid_context_var.set("")
+
+    def _uid_update_title(self):
+        n = len(self._uid_items)
+        i = (self._uid_i + 1) if n else 0
+        mode_word = "occurrence" if self._uid_mode == 'occurrences' else "UID"
+        self._uid_win.title(f"UID Review Tool \u2014 {mode_word} {i} of {n}" if n else "UID Review Tool \u2014 0 of 0")
+
+    # --- navigation ---
+
+    def _uid_on_tree_select(self, event=None):
+        sel = self._uid_tree.selection()
+        if not sel:
+            return
+        try:
+            i = int(sel[0])
+        except Exception:
+            return
+        if 0 <= i < len(self._uid_items):
+            self._uid_i = i
+            self._uid_load_current(sync_tree=False)
+
+    def _uid_on_tree_double_click(self, event=None):
+        # Focus the label dropdown for editing; must NOT change any value.
+        self._uid_on_tree_select(event)
+        try:
+            self._uid_label_combo.focus_set()
+        except Exception:
+            pass
+
+    def _uid_goto(self, i):
+        if not self._uid_items:
+            return
+        self._uid_i = max(0, min(i, len(self._uid_items) - 1))
+        self._uid_load_current(sync_tree=True)
+
+    def _uid_prev(self):
+        self._uid_goto(self._uid_i - 1)
+
+    def _uid_next(self):
+        self._uid_goto(self._uid_i + 1)
+
+    def _uid_first(self):
+        self._uid_goto(0)
+
+    def _uid_last(self):
+        self._uid_goto(len(self._uid_items) - 1)
+
+    def _uid_load_current(self, sync_tree=True):
+        if not self._uid_items:
+            self._uid_clear_editor()
+            self._uid_update_title()
+            return
+        it = self._uid_items[self._uid_i]
+        bidx, ridx, vis_r = it['bidx'], it['ridx'], it['vis_r']
+        try:
+            row = self.blocks[bidx][ridx]
+        except Exception:
+            return
+
+        self._uid_label_var.set(row.get('label', '') or '')
+        self._uid_gloss_var.set(row.get('gloss', '') or '')
+        self._uid_context_var.set(self._uid_sentence_text(bidx))
+
+        if sync_tree:
+            try:
+                self._uid_tree.selection_set(str(self._uid_i))
+                self._uid_tree.see(str(self._uid_i))
+                self._uid_tree.focus(str(self._uid_i))
+                # Navigation reached here via First/Previous/Next/Last (not
+                # a direct click/keypress on the tree itself), so real
+                # keyboard focus is currently on the button just clicked.
+                # Return it to the tree so arrow keys keep working right
+                # after using a nav button, without requiring an extra click.
+                self._uid_tree.focus_set()
+            except Exception:
+                pass
+
+        self._uid_jump_to_main(vis_r)
+        self._uid_update_title()
+
+    # --- editing ---
+
+    def _uid_apply(self):
+        if not self._uid_items:
+            return
+        it = self._uid_items[self._uid_i]
+        bidx, ridx, vis_r = it['bidx'], it['ridx'], it['vis_r']
+        row = self.blocks[bidx][ridx]
+        tok = row.get('token', '')
+        new_label = self._uid_label_var.get()
+        new_gloss = self._uid_gloss_var.get()
+
+        if annotation_model.is_matrixembed_locked(tok, new_label):
+            self.bell()
+            messagebox.showwarning("UID Review Tool", "MatrixLang/EmbedLang rows may only be set to TR or EN.")
+            return
+
+        old_label, old_gloss = row.get('label', ''), row.get('gloss', '')
+        if old_label != new_label or old_gloss != new_gloss:
+            self._uid_push_undo({
+                'bidx': bidx, 'ridx': ridx,
+                'old': {'label': old_label, 'gloss': old_gloss},
+                'new': {'label': new_label, 'gloss': new_gloss},
+            })
+            row['label'] = new_label
+            row['gloss'] = new_gloss
+            self._update_block_matrix_embed(bidx)
+            # Rebuild instead of patching only the edited label/gloss cells:
+            # MatrixLang/EmbedLang meta rows live at a DIFFERENT visible row
+            # than the token just edited, and _update_block_matrix_embed only
+            # touches self.blocks -- without a rebuild those meta-row cells
+            # would keep showing their pre-Apply value in both the main and
+            # full-edit sheets even though self.blocks is already correct.
+            # _rebuild_grid_from_model is the same shared helper _uid_undo_last
+            # and Merge Cells already use for this.
+            self._rebuild_grid_from_model(select_row=vis_r, select_col=2)
+
+        # Re-derive the list: a token whose label is no longer UID drops out
+        # of the default list at this same index, which naturally advances
+        # the selection to the next remaining UID. Leaving the label
+        # unchanged and pressing Next/Apply again simply keeps it as UID.
+        self._uid_refresh_items(preserve_index=True)
+
+    # --- search / find all occurrences ---
+
+    def _uid_on_search(self, event=None):
+        self._uid_mode = 'uid'
+        self._uid_query = ''
+        self._uid_refresh_items(preserve_index=False)
+        return 'break'
+
+    def open_uid_find_occurrences(self):
+        query = (self._uid_search_var.get() or '').strip()
+        if not query and self._uid_items:
+            it = self._uid_items[self._uid_i]
+            query = self.blocks[it['bidx']][it['ridx']].get('token', '')
+        if not query:
+            messagebox.showinfo("Find All Occurrences", "Type a token in Search, or select one first.")
+            return
+        self._uid_mode = 'occurrences'
+        self._uid_query = query
+        self._uid_refresh_items(preserve_index=False)
+
+    # --- main window construction ---
+
+    def open_uid_review_tool(self):
+        if getattr(self, '_uid_win', None) is not None and self._uid_win.winfo_exists():
+            try:
+                self._uid_win.deiconify()
+                self._uid_win.lift()
+                self._uid_win.focus_force()
+            except Exception:
+                pass
+            return
+
+        self._uid_mode = 'uid'
+        self._uid_query = ''
+        self._uid_undo_stack = []
+
+        win = tk.Toplevel(self)
+        win.title('UID Review Tool')
+        win.geometry('780x520')
+        win.minsize(680, 420)
+        win.configure(bg=DARK_BG)
+        win.transient(self)
+        # Not modal.
+
+        outer = ttk.Frame(win, style='Dark.TFrame')
+        outer.pack(fill='both', expand=True, padx=10, pady=10)
+
+        # --- search row ---
+        top = ttk.Frame(outer, style='Dark.TFrame')
+        top.pack(fill='x')
+        ttk.Label(top, text="Search:", style='Dark.TLabel').pack(side='left')
+        self._uid_search_var = tk.StringVar(value='')
+        search_entry = ttk.Entry(top, textvariable=self._uid_search_var, style='Dark.TEntry', width=20)
+        search_entry.pack(side='left', padx=(4, 6))
+        search_entry.bind('<Return>', self._uid_on_search)
+        self._uid_search_entry = search_entry
+        ttk.Button(top, text="Search", style='Dark.TButton', command=self._uid_on_search).pack(side='left')
+        ttk.Button(top, text="Find All Occurrences", style='Dark.TButton',
+                   command=self.open_uid_find_occurrences).pack(side='left', padx=(8, 0))
+
+        # --- list ---
+        cols = ("sentence", "token", "label", "gloss")
+        headers = {"sentence": "Sentence", "token": "Token", "label": "Current Label", "gloss": "Gloss"}
+        widths = {"sentence": 280, "token": 120, "label": 100, "gloss": 160}
+
+        listframe = ttk.Frame(outer, style='Dark.TFrame')
+        listframe.pack(fill='both', expand=True, pady=(8, 0))
+        tree = ttk.Treeview(listframe, columns=cols, show='headings', style='Conc.Treeview', selectmode='browse')
+        for c in cols:
+            tree.heading(c, text=headers[c])
+            tree.column(c, width=widths[c], anchor='w', stretch=(c == 'sentence'))
+        ysb = ttk.Scrollbar(listframe, orient='vertical', command=tree.yview)
+        tree.configure(yscrollcommand=ysb.set)
+        tree.pack(side='left', fill='both', expand=True)
+        ysb.pack(side='left', fill='y')
+        self._uid_tree = tree
+        tree.bind('<<TreeviewSelect>>', self._uid_on_tree_select)
+        tree.bind('<Double-1>', self._uid_on_tree_double_click)
+
+        # --- context ---
+        ctx_frame = ttk.Frame(outer, style='Dark.TFrame')
+        ctx_frame.pack(fill='x', pady=(8, 0))
+        ttk.Label(ctx_frame, text="Context:", style='Dark.TLabel').pack(side='left', anchor='n')
+        self._uid_context_var = tk.StringVar(value='')
+        ttk.Label(ctx_frame, textvariable=self._uid_context_var, style='Dark.TLabel',
+                  wraplength=680, justify='left').pack(side='left', padx=(6, 0), anchor='n')
+
+        # --- edit panel ---
+        edit = ttk.Frame(outer, style='Dark.TFrame')
+        edit.pack(fill='x', pady=(10, 0))
+        ttk.Label(edit, text="Label:", style='Dark.TLabel').pack(side='left')
+        self._uid_label_var = tk.StringVar(value='')
+        label_combo = ttk.Combobox(edit, textvariable=self._uid_label_var, values=list(self.ALL_LABELS),
+                                    width=8, state='readonly')
+        label_combo.pack(side='left', padx=(4, 12))
+        self._uid_label_combo = label_combo
+
+        ttk.Label(edit, text="Gloss:", style='Dark.TLabel').pack(side='left')
+        self._uid_gloss_var = tk.StringVar(value='')
+        ttk.Entry(edit, textvariable=self._uid_gloss_var, style='Dark.TEntry', width=28).pack(side='left', padx=(4, 0))
+
+        # --- navigation + actions ---
+        nav = ttk.Frame(outer, style='Dark.TFrame')
+        nav.pack(fill='x', pady=(10, 0))
+        ttk.Button(nav, text="First", style='Dark.TButton', command=self._uid_first).pack(side='left')
+        ttk.Button(nav, text="\u25c0 Previous", style='Dark.TButton', command=self._uid_prev).pack(side='left', padx=4)
+        ttk.Button(nav, text="Next \u25b6", style='Dark.TButton', command=self._uid_next).pack(side='left', padx=4)
+        ttk.Button(nav, text="Last", style='Dark.TButton', command=self._uid_last).pack(side='left', padx=4)
+        ttk.Button(nav, text="Apply", style='Dark.TButton', command=self._uid_apply).pack(side='left', padx=(16, 4))
+        ttk.Button(nav, text="Undo", style='Dark.TButton', command=self._uid_undo_last).pack(side='left', padx=4)
+        ttk.Button(nav, text="Close", style='Dark.TButton', command=lambda: _on_close()).pack(side='right')
+
+        # --- keyboard shortcuts ---
+        def _apply_shortcut(event=None):
+            self._uid_apply()
+            return 'break'
+
+        def _undo_shortcut(event=None):
+            self._uid_undo_last()
+            return 'break'
+
+        def _save_shortcut(event=None):
+            self.save_project_progress()
+            return 'break'
+
+        win.bind('<Control-Return>', _apply_shortcut)
+        win.bind('<Command-Return>', _apply_shortcut)
+        win.bind('<Control-z>', _undo_shortcut)
+        win.bind('<Command-z>', _undo_shortcut)
+        win.bind('<Control-s>', _save_shortcut)
+        win.bind('<Command-s>', _save_shortcut)
+        # Escape must never close the whole project unexpectedly -- not bound
+        # to closing this window at all.
+
+        def _on_close():
+            self._uid_win = None
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        win.protocol('WM_DELETE_WINDOW', _on_close)
+        self._uid_win = win
+        self._uid_refresh_items(preserve_index=False)
+        try:
+            tree.focus_set()
+        except Exception:
+            pass
+
     def __init__(self):
         super().__init__()
 
@@ -536,6 +1017,22 @@ VOC vocative
         self._sentence_win = None
         self._freq_win = None
         self._ag_win = None
+
+        # UID Review Tool state (deliberately minimal -- focused sequential
+        # UID labeling only; no view/filter mode, no review-status tracking,
+        # no remembered corrections).
+        self._uid_win = None
+        self._uid_items = []
+        self._uid_i = 0
+        self._uid_mode = 'uid'   # 'uid' | 'occurrences' -- internal only, no visible control
+        self._uid_query = ''    # last Find-All-Occurrences query
+        self._uid_search_var = None
+        # Scoped undo history for UID Review Tool Apply actions only (no
+        # app-wide undo/redo mechanism exists to hook into).
+        self._uid_undo_stack = []
+        # Scoped undo (single most-recent transaction) for the main table's
+        # Merge Cells command.
+        self._merge_cells_undo_stack = []
 
         # concordance (KWIC) state
         self._conc_query_var = tk.StringVar(value="")
@@ -772,6 +1269,9 @@ VOC vocative
         annm.add_separator()
         annm.add_command(label="Insert Row Before", command=self.insert_row_before)
         annm.add_command(label="Remove Row", command=self.remove_selected_row)
+        annm.add_separator()
+        annm.add_command(label="Merge Cells", command=self.merge_selected_cells)
+        annm.add_command(label="Undo Merge Cells", command=self.undo_merge_cells)
         menubar.add_cascade(label="Annotation", menu=annm)
 
         editm = tk.Menu(menubar, tearoff=False, bg=DARK_BG, fg=DARK_FG)
@@ -780,6 +1280,7 @@ VOC vocative
 
         toolsm = tk.Menu(menubar, tearoff=False, bg=DARK_BG, fg=DARK_FG)
         toolsm.add_command(label="Auto-Glossing Tool...", command=self.open_auto_glossing_tool)
+        toolsm.add_command(label="UID Review Tool...", command=self.open_uid_review_tool)
         toolsm.add_separator()
         toolsm.add_command(label="Concordance (KWIC)...", command=self.open_concordance)
         toolsm.add_command(label="Show Sentence (Context)", command=self.show_sentence_context)
@@ -836,6 +1337,8 @@ VOC vocative
         self._sep_rows = set()
         self._extra_headers = []
         self.cfg = DEFAULTS.copy()
+        self._uid_undo_stack = []
+        self._merge_cells_undo_stack = []
 
         try:
             self.txt_input.delete("1.0", "end")
@@ -936,6 +1439,8 @@ VOC vocative
         self.cfg = payload.get("cfg", DEFAULTS.copy())
         self.blocks = payload.get("blocks", [])
         self._extra_headers = payload.get("extra_headers", [])
+        self._uid_undo_stack = []
+        self._merge_cells_undo_stack = []
 
         self.txt_input.delete("1.0", "end")
         self.txt_input.insert("1.0", payload.get("input_text", ""))
@@ -989,6 +1494,8 @@ VOC vocative
             self.cfg = payload.get("cfg", DEFAULTS.copy())
             self.blocks = payload.get("blocks", [])
             self._extra_headers = payload.get("extra_headers", [])
+            self._uid_undo_stack = []
+            self._merge_cells_undo_stack = []
         except Exception:
             return
 
@@ -1144,6 +1651,9 @@ VOC vocative
             self._grid_menu.add_separator()
             self._grid_menu.add_command(label="Insert Row Before", command=self.insert_row_before)
             self._grid_menu.add_command(label="Remove Row", command=self.remove_selected_row)
+            self._grid_menu.add_separator()
+            self._grid_menu.add_command(label="Merge Cells", command=self.merge_selected_cells)
+            self._grid_menu.add_command(label="Undo Merge Cells", command=self.undo_merge_cells)
 
             def _popup_grid_menu(e):
                 try:
@@ -2659,6 +3169,145 @@ VOC vocative
 
         self._renumber_tokens()
         self._rebuild_grid_from_model(select_row=None, select_col=2)
+
+    # --- Merge Cells (main annotation table) --------------------------------
+    #
+    # Reuses the sheet's ALREADY-enabled multi-cell selection (drag_select /
+    # shift_select / ctrl_select, see _build_body's enable_bindings call --
+    # nothing about the sheet's selection configuration was changed) and the
+    # same annotation_model.merge_token_rows / rows_are_adjacent_same_block
+    # used for the (now-removed) UID Review Tool merge feature. Operates on
+    # self.blocks directly; never runs Stanza, fastText, or the reranker.
+
+    def merge_selected_cells(self):
+        if self.sheet is None:
+            return
+        try:
+            cells = self.sheet.get_selected_cells()
+        except Exception:
+            cells = None
+        if not cells:
+            messagebox.showinfo("Merge Cells", "Select two or more adjacent token rows to merge.")
+            return
+
+        vis_rows = sorted(set(r for r, _c in cells))
+        if len(vis_rows) < 2:
+            messagebox.showinfo("Merge Cells", "Select two or more adjacent token rows to merge.")
+            return
+
+        resolved = []
+        bidx_set = set()
+        for r in vis_rows:
+            if r in self._sep_rows:
+                messagebox.showerror("Merge Cells", "The selection includes a blank separator row; cannot merge.")
+                return
+            bidx, ridx = annotation_model.resolve_row(self._row_index_map, self._sep_rows, r)
+            if bidx is None:
+                messagebox.showerror("Merge Cells", "The selection includes a row that could not be resolved; cannot merge.")
+                return
+            resolved.append((r, bidx, ridx))
+            bidx_set.add(bidx)
+
+        if len(bidx_set) != 1:
+            messagebox.showerror("Merge Cells", "All selected rows must belong to the same sentence.")
+            return
+
+        bidx = next(iter(bidx_set))
+        ridx_list = [ridx for (_r, _b, ridx) in resolved]
+        if not annotation_model.rows_are_adjacent_same_block(self.blocks, bidx, ridx_list):
+            messagebox.showerror(
+                "Merge Cells",
+                "Selected rows must be adjacent, within the same sentence, and must not include a "
+                "MatrixLang/EmbedLang/SentenceID row.")
+            return
+
+        sorted_pairs = sorted(zip(ridx_list, (r for r, _b, _ri in resolved)), key=lambda p: p[0])
+        sorted_ridx = [p[0] for p in sorted_pairs]
+        first_vis_r = sorted_pairs[0][1]
+        tokens = [self.blocks[bidx][ri]['token'] for ri in sorted_ridx]
+        # Established token-merge convention: direct concatenation (the same
+        # convention split relies on in reverse -- see annotation_model).
+        joined = "".join(tokens)
+
+        self._open_merge_cells_confirm_dialog(bidx, sorted_ridx, first_vis_r, tokens, joined)
+
+    def _open_merge_cells_confirm_dialog(self, bidx, ridx_list, first_vis_r, tokens, joined_default):
+        win = tk.Toplevel(self)
+        win.title('Merge Cells')
+        win.configure(bg=DARK_BG)
+        win.transient(self)
+
+        frm = ttk.Frame(win, style='Dark.TFrame')
+        frm.pack(fill='both', expand=True, padx=14, pady=14)
+
+        ttk.Label(frm, text=" + ".join(tokens) + "  →  " + joined_default,
+                  style='Dark.TLabel').pack(anchor='w')
+
+        tok_var = tk.StringVar(value=joined_default)
+        lab_var = tk.StringVar(value='')
+        glo_var = tk.StringVar(value='')
+
+        row1 = ttk.Frame(frm, style='Dark.TFrame')
+        row1.pack(fill='x', pady=(10, 0))
+        ttk.Label(row1, text="Merged token:", style='Dark.TLabel').pack(side='left')
+        ttk.Entry(row1, textvariable=tok_var, style='Dark.TEntry', width=28).pack(side='left', padx=(6, 0))
+
+        row2 = ttk.Frame(frm, style='Dark.TFrame')
+        row2.pack(fill='x', pady=(8, 0))
+        ttk.Label(row2, text="Label:", style='Dark.TLabel').pack(side='left')
+        ttk.Combobox(row2, textvariable=lab_var, values=list(self.ALL_LABELS), width=8, state='readonly').pack(side='left', padx=(6, 0))
+
+        row3 = ttk.Frame(frm, style='Dark.TFrame')
+        row3.pack(fill='x', pady=(8, 0))
+        ttk.Label(row3, text="Gloss:", style='Dark.TLabel').pack(side='left')
+        ttk.Entry(row3, textvariable=glo_var, style='Dark.TEntry', width=28).pack(side='left', padx=(6, 0))
+
+        def _confirm():
+            if not tok_var.get().strip():
+                messagebox.showwarning("Merge Cells", "Merged token must not be blank.")
+                return
+            if not lab_var.get():
+                messagebox.showwarning("Merge Cells", "Choose a label for the merged token.")
+                return
+            old_rows = copy.deepcopy(self.blocks[bidx])
+            try:
+                annotation_model.merge_token_rows(self.blocks, bidx, ridx_list,
+                                                   tok_var.get(), lab_var.get(), glo_var.get())
+            except ValueError as e:
+                messagebox.showerror("Merge Cells", str(e))
+                return
+            self._renumber_tokens()
+            self._update_block_matrix_embed(bidx)
+            self._merge_cells_undo_stack.append({'bidx': bidx, 'old_rows': old_rows})
+            if len(self._merge_cells_undo_stack) > 50:
+                self._merge_cells_undo_stack.pop(0)
+            self._rebuild_grid_from_model(select_row=first_vis_r, select_col=2)
+            self._uid_on_structural_change()
+            win.destroy()
+
+        btns = ttk.Frame(frm, style='Dark.TFrame')
+        btns.pack(fill='x', pady=(14, 0))
+        ttk.Button(btns, text="Confirm", style='Dark.TButton', command=_confirm).pack(side='left')
+        ttk.Button(btns, text="Cancel", style='Dark.TButton', command=win.destroy).pack(side='right')
+        win.bind('<Escape>', lambda e: win.destroy())
+        win.grab_set()
+
+    def undo_merge_cells(self):
+        if not self._merge_cells_undo_stack:
+            self.bell()
+            messagebox.showinfo("Undo Merge Cells", "No merge to undo.")
+            return
+        entry = self._merge_cells_undo_stack.pop()
+        bidx = entry['bidx']
+        try:
+            self.blocks[bidx] = entry['old_rows']
+        except Exception:
+            self.bell()
+            return
+        self._renumber_tokens()
+        self._update_block_matrix_embed(bidx)
+        self._rebuild_grid_from_model()
+        self._uid_on_structural_change()
 
     # Focus & Edit utils
 

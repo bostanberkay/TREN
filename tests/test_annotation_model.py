@@ -13,6 +13,10 @@ from annotation_model import (
     iter_visible_rows,
     resolve_row,
     build_grid_view,
+    collect_label_rows,
+    find_occurrences,
+    rows_are_adjacent_same_block,
+    merge_token_rows,
 )
 
 
@@ -795,3 +799,188 @@ def test_build_grid_view_custom_header_backfill_and_mutation():
     assert data == [["", "a", "TR", "", "", ""], ["", "b", "EN", "", "", ""]]
     assert row_index_map == {0: (0, 0), 1: (0, 1)}
     assert sep_rows == set()
+
+
+def _grid(blocks):
+    """Shared helper for the UID Review Tool model-function tests below:
+    build (row_index_map, sep_rows) for `blocks` the same way the live app
+    does via build_grid_view, so these tests exercise the exact same
+    corpus-order/visible-row machinery the GUI relies on."""
+    _, row_index_map, sep_rows = build_grid_view(copy.deepcopy(blocks), [], skip_separator_after_empty_block=True)
+    return row_index_map, sep_rows
+
+
+# --- collect_label_rows ------------------------------------------------
+
+def test_collect_label_rows_uid_only_in_corpus_order():
+    blocks = [
+        [_row("Cafeye", "UID"), _row("gittik", "TR"), _row("kahveleri", "UID")],
+        [_row("Bodyci", "MIXED"), _row("abiler", "UID")],
+    ]
+    row_index_map, sep_rows = _grid(blocks)
+    result = collect_label_rows(blocks, row_index_map, sep_rows, {"UID"})
+    assert [(r["bidx"], r["ridx"]) for r in result] == [(0, 0), (0, 2), (1, 1)]
+
+
+def test_collect_label_rows_multiple_labels():
+    blocks = [[_row("a", "UID"), _row("b", "NE"), _row("c", "TR")]]
+    row_index_map, sep_rows = _grid(blocks)
+    result = collect_label_rows(blocks, row_index_map, sep_rows, {"UID", "NE"})
+    assert [(r["bidx"], r["ridx"]) for r in result] == [(0, 0), (0, 1)]
+
+
+def test_collect_label_rows_empty_project():
+    row_index_map, sep_rows = _grid([])
+    assert collect_label_rows([], row_index_map, sep_rows, {"UID"}) == []
+
+
+# --- find_occurrences ----------------------------------------------------
+
+def test_find_occurrences_default_policy_is_normalized_not_substring():
+    # "backend" and "backends" must NOT cross-match under the default
+    # (normalized, non-substring) policy.
+    blocks = [[_row("Backend", "EN"), _row("backends", "EN"), _row("backend.", "EN")]]
+    row_index_map, sep_rows = _grid(blocks)
+    result = find_occurrences(blocks, row_index_map, sep_rows, "backend")
+    # "Backend" (casefold) and "backend." (edge punctuation stripped) match;
+    # "backends" does not, because this is exact normalized matching, not substring.
+    assert [(r["bidx"], r["ridx"]) for r in result] == [(0, 0), (0, 2)]
+
+
+def test_find_occurrences_unicode_casefold():
+    blocks = [[_row("İstanbul", "NE"), _row("istanbul", "NE")]]
+    row_index_map, sep_rows = _grid(blocks)
+    result = find_occurrences(blocks, row_index_map, sep_rows, "i̇stanbul")
+    assert len(result) >= 1  # casefold must not crash on Turkish dotted-I; exact set is locale-sensitive
+
+
+def test_find_occurrences_case_sensitive():
+    blocks = [[_row("May", "NE"), _row("may", "TR")]]
+    row_index_map, sep_rows = _grid(blocks)
+    insensitive = find_occurrences(blocks, row_index_map, sep_rows, "may", case_sensitive=False)
+    sensitive = find_occurrences(blocks, row_index_map, sep_rows, "may", case_sensitive=True)
+    assert len(insensitive) == 2
+    assert [(r["bidx"], r["ridx"]) for r in sensitive] == [(0, 1)]
+
+
+def test_find_occurrences_exact_surface_form():
+    blocks = [[_row("backend.", "EN"), _row("backend", "EN")]]
+    row_index_map, sep_rows = _grid(blocks)
+    normalized = find_occurrences(blocks, row_index_map, sep_rows, "backend", exact_surface=False)
+    exact = find_occurrences(blocks, row_index_map, sep_rows, "backend", exact_surface=True)
+    assert len(normalized) == 2  # edge punctuation stripped by default
+    assert [(r["bidx"], r["ridx"]) for r in exact] == [(0, 1)]  # only the unpunctuated surface form
+
+
+def test_find_occurrences_current_sentence_only_vs_entire_project():
+    blocks = [[_row("data", "EN")], [_row("data", "TR")]]
+    row_index_map, sep_rows = _grid(blocks)
+    whole_project = find_occurrences(blocks, row_index_map, sep_rows, "data")
+    sentence_0_only = find_occurrences(blocks, row_index_map, sep_rows, "data", bidx_filter=0)
+    assert len(whole_project) == 2
+    assert [(r["bidx"], r["ridx"]) for r in sentence_0_only] == [(0, 0)]
+
+
+def test_find_occurrences_label_filter():
+    blocks = [[_row("data", "EN"), _row("data", "TR"), _row("data", "UID")]]
+    row_index_map, sep_rows = _grid(blocks)
+    result = find_occurrences(blocks, row_index_map, sep_rows, "data", label_filter={"EN", "UID"})
+    assert [(r["bidx"], r["ridx"]) for r in result] == [(0, 0), (0, 2)]
+
+
+def test_find_occurrences_skips_meta_rows():
+    blocks = [[_row("MatrixLang", "TR"), _row("EmbedLang", "EN")]]
+    row_index_map, sep_rows = _grid(blocks)
+    assert find_occurrences(blocks, row_index_map, sep_rows, "MatrixLang") == []
+
+
+def test_find_occurrences_no_query_returns_empty():
+    blocks = [[_row("a", "TR")]]
+    row_index_map, sep_rows = _grid(blocks)
+    assert find_occurrences(blocks, row_index_map, sep_rows, "") == []
+    assert find_occurrences(blocks, row_index_map, sep_rows, "***") == []  # normalizes to empty
+
+
+# --- rows_are_adjacent_same_block -------------------------------------------
+
+def test_rows_are_adjacent_same_block_true_for_contiguous_run():
+    blocks = [[_row("node"), _row("ları"), _row("vs")]]
+    assert rows_are_adjacent_same_block(blocks, 0, [0, 1]) is True
+    assert rows_are_adjacent_same_block(blocks, 0, [1, 2]) is True
+    assert rows_are_adjacent_same_block(blocks, 0, [0, 1, 2]) is True
+
+
+def test_rows_are_adjacent_same_block_false_for_gap():
+    blocks = [[_row("a"), _row("b"), _row("c")]]
+    assert rows_are_adjacent_same_block(blocks, 0, [0, 2]) is False
+
+
+def test_rows_are_adjacent_same_block_false_across_sentences():
+    blocks = [[_row("a")], [_row("b")]]
+    # even if a caller mistakenly passes ridx values from different blocks,
+    # this function only ever looks within ONE bidx -- cross-sentence
+    # merges must be rejected by construction at the call site (ridx_list
+    # can only reference one block's positions), and a single-block index
+    # list spanning bidx 0's single row plus a nonexistent bidx-0 position
+    # 1 (which is really block 1's row) must fail as out-of-range.
+    assert rows_are_adjacent_same_block(blocks, 0, [0, 1]) is False
+
+
+def test_rows_are_adjacent_same_block_false_for_meta_row():
+    blocks = [[_row("a", "TR"), _row("MatrixLang", "TR"), _row("b", "TR")]]
+    assert rows_are_adjacent_same_block(blocks, 0, [1, 2]) is False
+
+
+def test_rows_are_adjacent_same_block_false_for_single_row():
+    blocks = [[_row("a")]]
+    assert rows_are_adjacent_same_block(blocks, 0, [0]) is False
+
+
+# --- merge_token_rows -------------------------------------------------------
+
+
+def test_merge_token_rows_combines_adjacent_rows():
+    blocks = [[_row("before", "TR"), _row("node", "EN"), _row("ları", "TR"), _row("after", "TR")]]
+    merge_token_rows(blocks, 0, [1, 2], "nodeları", "MIXED", "node-PL")
+    assert [r["token"] for r in blocks[0]] == ["before", "nodeları", "after"]
+    assert blocks[0][1]["label"] == "MIXED"
+    assert blocks[0][1]["gloss"] == "node-PL"
+
+
+def test_merge_token_rows_renumbers_correctly_after_call():
+    blocks = [[_row("before", "TR"), _row("node", "EN"), _row("ları", "TR"), _row("after", "TR")]]
+    merge_token_rows(blocks, 0, [1, 2], "nodeları", "MIXED", "")
+    renumber_tokens(blocks)
+    assert [r["idx"] for r in blocks[0]] == [1, 2, 3]
+
+
+def test_merge_token_rows_does_not_infer_label_or_gloss():
+    # The function signature REQUIRES the caller to supply merged_label and
+    # merged_gloss explicitly -- there is no code path that derives them
+    # from the constituent rows' own labels/glosses.
+    blocks = [[_row("node", "EN", "n."), _row("ları", "TR", "pl.")]]
+    merge_token_rows(blocks, 0, [0, 1], "nodeları", "UID", "")
+    assert blocks[0][0]["label"] == "UID"  # explicitly supplied, NOT "EN" or "TR" from the originals
+    assert blocks[0][0]["gloss"] == ""     # explicitly supplied, NOT "n." or "pl." from the originals
+
+
+def test_merge_token_rows_rejects_non_adjacent():
+    blocks = [[_row("a"), _row("b"), _row("c")]]
+    with pytest.raises(ValueError):
+        merge_token_rows(blocks, 0, [0, 2], "ac", "TR", "")
+
+
+def test_merge_token_rows_rejects_cross_sentence():
+    blocks = [[_row("a")], [_row("b")]]
+    with pytest.raises(ValueError):
+        # ridx_list [0, 1] against bidx=0 only has one real row (index 0);
+        # index 1 does not exist in block 0 -- rejected as out-of-range,
+        # which is exactly the protection that makes a cross-sentence merge
+        # (by construction) impossible to express as a single-block call.
+        merge_token_rows(blocks, 0, [0, 1], "ab", "TR", "")
+
+
+def test_merge_token_rows_rejects_meta_row_included():
+    blocks = [[_row("a", "TR"), _row("MatrixLang", "TR")]]
+    with pytest.raises(ValueError):
+        merge_token_rows(blocks, 0, [0, 1], "aMatrixLang", "TR", "")
