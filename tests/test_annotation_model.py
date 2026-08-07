@@ -2,6 +2,8 @@ import copy
 
 import pytest
 
+import json
+
 from annotation_model import (
     is_meta_row_token,
     freq_normalize_token,
@@ -17,6 +19,18 @@ from annotation_model import (
     find_occurrences,
     rows_are_adjacent_same_block,
     merge_token_rows,
+    parse_annotated_text_to_blocks,
+    make_dataset,
+    next_default_dataset_name,
+    sanitize_dataset_filename,
+    datasets_to_payload,
+    datasets_from_payload,
+    blocks_to_export_rows,
+    blocks_to_conll,
+    blocks_to_jsonl,
+    blocks_to_jsonl_records,
+    CURRENT_PROJECT_SCHEMA_VERSION,
+    SUPPORTED_PROJECT_SCHEMA_VERSIONS,
 )
 
 
@@ -984,3 +998,641 @@ def test_merge_token_rows_rejects_meta_row_included():
     blocks = [[_row("a", "TR"), _row("MatrixLang", "TR")]]
     with pytest.raises(ValueError):
         merge_token_rows(blocks, 0, [0, 1], "aMatrixLang", "TR", "")
+
+
+# --- parse_annotated_text_to_blocks --------------------------------------
+
+def test_parse_annotated_text_to_blocks_two_field_lines():
+    text = "Bugun\tTR\nmeeting'e\tMIXED"
+    blocks = parse_annotated_text_to_blocks(text)
+    assert len(blocks) == 1
+    assert blocks[0][0] == {"idx": 0, "token": "Bugun", "label": "TR", "gloss": ""}
+    assert blocks[0][1] == {"idx": 0, "token": "meeting'e", "label": "MIXED", "gloss": ""}
+
+
+def test_parse_annotated_text_to_blocks_three_plus_field_lines_use_middle_two():
+    text = "1\tBugun\tTR\tsomegloss"
+    blocks = parse_annotated_text_to_blocks(text)
+    assert blocks[0][0]["token"] == "Bugun"
+    assert blocks[0][0]["label"] == "TR"
+    # gloss column in the input is ignored by the parser -- gloss always starts blank
+    assert blocks[0][0]["gloss"] == ""
+
+
+def test_parse_annotated_text_to_blocks_whitespace_fallback():
+    text = "Bugun TR"
+    blocks = parse_annotated_text_to_blocks(text)
+    assert blocks[0][0]["token"] == "Bugun"
+    assert blocks[0][0]["label"] == "TR"
+
+
+def test_parse_annotated_text_to_blocks_unmatched_line_skipped():
+    text = "not a valid annotation line"
+    blocks = parse_annotated_text_to_blocks(text)
+    assert blocks == [[]]
+
+
+def test_parse_annotated_text_to_blocks_blank_line_separates_blocks():
+    text = "a\tTR\n\nb\tEN"
+    blocks = parse_annotated_text_to_blocks(text)
+    assert len(blocks) == 2
+    assert blocks[0][0]["token"] == "a"
+    assert blocks[1][0]["token"] == "b"
+
+
+def test_parse_annotated_text_to_blocks_backfills_extra_headers():
+    blocks = parse_annotated_text_to_blocks("a\tTR", extra_headers=["Notes"])
+    assert blocks[0][0]["Notes"] == ""
+
+
+def test_parse_annotated_text_to_blocks_does_not_mutate_extra_headers_arg():
+    headers = ["Notes"]
+    parse_annotated_text_to_blocks("a\tTR", extra_headers=headers)
+    assert headers == ["Notes"]
+
+
+def test_parse_annotated_text_to_blocks_empty_text():
+    assert parse_annotated_text_to_blocks("") == [[]]
+
+
+# --- make_dataset ----------------------------------------------------------
+
+def test_make_dataset_defaults():
+    ds = make_dataset("Data 1")
+    assert ds["name"] == "Data 1"
+    assert ds["source_text"] == ""
+    assert ds["blocks"] == []
+    assert ds["extra_headers"] == []
+    assert ds["source_filename"] is None
+    assert isinstance(ds["id"], str) and ds["id"]
+
+
+def test_make_dataset_source_filename_optional():
+    ds = make_dataset("Data 1", source_filename="example.txt")
+    assert ds["source_filename"] == "example.txt"
+
+
+def test_make_dataset_source_filename_never_stores_a_full_path():
+    # Privacy: an absolute path can expose the user's account name and
+    # local directory structure if the project is shared. make_dataset is
+    # the single choke point that guarantees only the basename is ever
+    # stored, even if a caller passes a full path by mistake.
+    ds = make_dataset("Data 1", source_filename="/Users/alice/Desktop/private-folder/corpus.txt")
+    assert ds["source_filename"] == "corpus.txt"
+    assert "/Users/" not in ds["source_filename"]
+    assert "private-folder" not in ds["source_filename"]
+
+
+def test_make_dataset_generates_unique_ids():
+    a = make_dataset("Data 1")
+    b = make_dataset("Data 2")
+    assert a["id"] != b["id"]
+
+
+def test_make_dataset_explicit_id_preserved():
+    ds = make_dataset("Data 1", dataset_id="fixed-id")
+    assert ds["id"] == "fixed-id"
+
+
+def test_make_dataset_deep_copies_blocks():
+    original_blocks = [[_row("a", "TR")]]
+    ds = make_dataset("Data 1", blocks=original_blocks)
+    ds["blocks"][0][0]["label"] = "EN"
+    assert original_blocks[0][0]["label"] == "TR"
+
+
+def test_make_dataset_deep_copies_extra_headers():
+    headers = ["Notes"]
+    ds = make_dataset("Data 1", extra_headers=headers)
+    ds["extra_headers"].append("More")
+    assert headers == ["Notes"]
+
+
+def test_make_dataset_two_datasets_from_same_source_do_not_share_rows():
+    src = [[_row("a", "TR")]]
+    d1 = make_dataset("Data 1", blocks=src)
+    d2 = make_dataset("Data 2", blocks=src)
+    d1["blocks"][0][0]["label"] = "MIXED"
+    assert d2["blocks"][0][0]["label"] == "TR"
+
+
+# --- next_default_dataset_name ---------------------------------------------
+
+@pytest.mark.parametrize("existing, expected", [
+    ([], "Data 1"),
+    (["Data 1"], "Data 2"),
+    (["Data 1", "Data 2"], "Data 3"),
+    (["Data 1", "Data 3"], "Data 4"),
+    (["My Custom Name"], "Data 1"),
+    (["Data 1", "My Custom Name"], "Data 2"),
+    (["data 1"], "Data 1"),  # case-sensitive: "data 1" isn't the reserved pattern
+])
+def test_next_default_dataset_name(existing, expected):
+    assert next_default_dataset_name(existing) == expected
+
+
+def test_next_default_dataset_name_none():
+    assert next_default_dataset_name(None) == "Data 1"
+
+
+# --- sanitize_dataset_filename ----------------------------------------------
+
+@pytest.mark.parametrize("name, expected", [
+    ("Data 1", "Data_1"),
+    ("My/Weird:Name*?", "My_Weird_Name"),
+    ("  spaced  ", "spaced"),
+    ("", "dataset"),
+    (None, "dataset"),
+    ("Türkçe Veri 1", "Türkçe_Veri_1"),
+])
+def test_sanitize_dataset_filename(name, expected):
+    assert sanitize_dataset_filename(name) == expected
+
+
+def test_sanitize_dataset_filename_never_empty_for_all_symbols():
+    assert sanitize_dataset_filename("!!!") == "dataset"
+
+
+# --- datasets_to_payload / datasets_from_payload ----------------------------
+
+def test_datasets_to_payload_stamps_current_schema_version():
+    payload = datasets_to_payload([make_dataset("Data 1")], active_index=0)
+    assert payload["version"] == CURRENT_PROJECT_SCHEMA_VERSION == 2
+
+
+def test_datasets_to_payload_does_not_serialize_undo_stacks():
+    # Positional undo/redo records are session-only (see
+    # App._sync_active_dataset_from_live) and must never be written to disk.
+    ds = make_dataset("Data 1")
+    ds["uid_undo_stack"] = [{"bidx": 0, "ridx": 0, "old": {}, "new": {}}]
+    ds["merge_cells_undo_stack"] = [{"bidx": 0, "old_rows": []}]
+    payload = datasets_to_payload([ds], active_index=0)
+    saved_ds = payload["datasets"][0]
+    assert "uid_undo_stack" not in saved_ds
+    assert "merge_cells_undo_stack" not in saved_ds
+
+
+def test_datasets_round_trip_preserves_data():
+    ds1 = make_dataset("Data 1", "hello", [[_row("a", "TR")]], ["Notes"])
+    ds2 = make_dataset("Data 2", "world", [[_row("b", "EN")]])
+    payload = {"version": 1, "cfg": {}}
+    payload.update(datasets_to_payload([ds1, ds2], active_index=1))
+    assert payload["version"] == CURRENT_PROJECT_SCHEMA_VERSION  # stamped by datasets_to_payload
+
+    restored, active_index = datasets_from_payload(payload)
+    assert active_index == 1
+    assert len(restored) == 2
+    assert restored[0]["name"] == "Data 1"
+    assert restored[0]["source_text"] == "hello"
+    assert restored[0]["blocks"][0][0]["token"] == "a"
+    assert restored[0]["extra_headers"] == ["Notes"]
+    assert restored[1]["name"] == "Data 2"
+
+
+def test_datasets_round_trip_preserves_source_filename_when_set():
+    ds = make_dataset("Data 1", "hello", source_filename="example.txt")
+    payload = datasets_to_payload([ds], active_index=0)
+    assert payload["datasets"][0]["source_filename"] == "example.txt"
+
+    restored, _ = datasets_from_payload(payload)
+    assert restored[0]["source_filename"] == "example.txt"
+
+
+def test_datasets_to_payload_omits_source_filename_when_unset():
+    ds = make_dataset("Data 1", "hello")
+    payload = datasets_to_payload([ds], active_index=0)
+    assert "source_filename" not in payload["datasets"][0]
+
+
+def test_datasets_from_payload_v2_without_source_filename_still_loads():
+    # Existing version-2 projects saved before source_filename existed.
+    payload = {
+        "version": 2,
+        "datasets": [{"name": "Data 1", "blocks": [[_row("a", "TR")]]}],
+        "active_dataset_index": 0,
+    }
+    restored, _ = datasets_from_payload(payload)
+    assert restored[0]["source_filename"] is None
+
+
+def test_datasets_from_payload_reopening_never_requires_source_file_to_exist():
+    payload = {
+        "version": 2,
+        "datasets": [{
+            "name": "Data 1",
+            "source_text": "the real content",
+            "source_filename": "anywhere.txt",
+            "blocks": [[_row("a", "TR")]],
+        }],
+        "active_dataset_index": 0,
+    }
+    restored, _ = datasets_from_payload(payload)  # must not raise or touch the filesystem
+    assert restored[0]["source_text"] == "the real content"
+    assert restored[0]["source_filename"] == "anywhere.txt"
+
+
+def test_datasets_from_payload_invalid_source_filename_type_raises():
+    payload = {
+        "version": 2,
+        "datasets": [{"name": "Data 1", "blocks": [], "source_filename": 123}],
+    }
+    with pytest.raises(ValueError):
+        datasets_from_payload(payload)
+
+
+# --- Privacy: source_filename must never carry a full local path ----------
+
+def test_datasets_to_payload_serialized_json_contains_only_basename_not_full_path():
+    # The exact regression this fix exists for: a shared .trenproj must
+    # never leak the user's account name or local directory structure.
+    full_path = "/Users/alice/Desktop/private-folder/corpus.txt"
+    ds = make_dataset("Data 1", "hello", source_filename=full_path)
+    payload = datasets_to_payload([ds], active_index=0)
+
+    serialized = json.dumps(payload)
+    assert '"corpus.txt"' in serialized
+    assert "/Users/" not in serialized
+    assert "private-folder" not in serialized
+    assert full_path not in serialized
+    assert payload["datasets"][0]["source_filename"] == "corpus.txt"
+
+
+def test_datasets_from_payload_migrates_legacy_source_path_to_basename_only():
+    # A development-only payload from before this fix might still use the
+    # old "source_path" field name with a full path. It must be migrated to
+    # source_filename (basename only) in memory, and never re-persisted as
+    # "source_path" or as a full path on the next save.
+    legacy_full_path = "/Users/alice/Desktop/private-folder/corpus.txt"
+    payload = {
+        "version": 2,
+        "datasets": [{
+            "name": "Data 1",
+            "source_text": "hello",
+            "source_path": legacy_full_path,
+            "blocks": [],
+        }],
+        "active_dataset_index": 0,
+    }
+    restored, active_index = datasets_from_payload(payload)
+    assert restored[0]["source_filename"] == "corpus.txt"
+    assert "source_path" not in restored[0]
+
+    re_saved = datasets_to_payload(restored, active_index)
+    serialized = json.dumps(re_saved)
+    assert "source_path" not in serialized
+    assert "/Users/" not in serialized
+    assert "private-folder" not in serialized
+    assert re_saved["datasets"][0]["source_filename"] == "corpus.txt"
+
+
+def test_datasets_from_payload_malformed_legacy_source_path_ignored_safely():
+    payload = {
+        "version": 2,
+        "datasets": [{"name": "Data 1", "blocks": [], "source_path": 12345}],
+    }
+    restored, _ = datasets_from_payload(payload)  # must not raise
+    assert restored[0]["source_filename"] is None
+
+
+def test_datasets_from_payload_legacy_single_dataset_becomes_data_1():
+    payload = {
+        "version": 1,
+        "input_text": "hello world",
+        "blocks": [[_row("hello", "EN")]],
+        "extra_headers": ["Notes"],
+    }
+    datasets, active_index = datasets_from_payload(payload)
+    assert active_index == 0
+    assert len(datasets) == 1
+    assert datasets[0]["name"] == "Data 1"
+    assert datasets[0]["source_text"] == "hello world"
+    assert datasets[0]["blocks"][0][0]["token"] == "hello"
+    assert datasets[0]["extra_headers"] == ["Notes"]
+
+
+def test_datasets_from_payload_legacy_missing_keys_use_safe_defaults():
+    datasets, active_index = datasets_from_payload({"version": 1})
+    assert active_index == 0
+    assert datasets[0]["name"] == "Data 1"
+    assert datasets[0]["blocks"] == []
+    assert datasets[0]["source_text"] == ""
+
+
+# --- .trenproj schema version handling --------------------------------
+
+def test_datasets_from_payload_version_1_uses_legacy_path_even_with_extra_keys():
+    payload = {"version": 1, "input_text": "hi", "blocks": [[_row("hi", "EN")]]}
+    datasets, active_index = datasets_from_payload(payload)
+    assert active_index == 0
+    assert datasets[0]["name"] == "Data 1"
+    assert datasets[0]["source_text"] == "hi"
+
+
+def test_datasets_from_payload_version_2_uses_datasets_path():
+    payload = {
+        "version": 2,
+        "datasets": [{"name": "Data 1", "blocks": [[_row("a", "TR")]]}],
+        "active_dataset_index": 0,
+    }
+    datasets, active_index = datasets_from_payload(payload)
+    assert len(datasets) == 1
+    assert datasets[0]["blocks"][0][0]["token"] == "a"
+
+
+def test_datasets_from_payload_missing_version_with_datasets_key_rejected():
+    # Missing "version" defaults to 1, and version 1 REQUIRES the legacy
+    # shape -- a "datasets" key present (e.g. a hand-edited or
+    # half-migrated file) must be rejected as malformed, not silently
+    # accepted via shape-detection.
+    payload = {"datasets": [{"name": "Data 1", "blocks": [[_row("a", "TR")]]}]}
+    with pytest.raises(ValueError):
+        datasets_from_payload(payload)
+
+
+def test_datasets_from_payload_version_1_with_datasets_key_rejected():
+    payload = {
+        "version": 1,
+        "datasets": [{"name": "Data 1", "blocks": [[_row("a", "TR")]]}],
+    }
+    with pytest.raises(ValueError):
+        datasets_from_payload(payload)
+
+
+def test_datasets_from_payload_missing_version_with_legacy_shape_is_data_1():
+    payload = {"input_text": "hi", "blocks": [[_row("hi", "EN")]]}
+    datasets, active_index = datasets_from_payload(payload)
+    assert active_index == 0
+    assert datasets[0]["name"] == "Data 1"
+    assert datasets[0]["source_text"] == "hi"
+
+
+def test_datasets_from_payload_version_2_missing_datasets_key_raises():
+    with pytest.raises(ValueError):
+        datasets_from_payload({"version": 2, "input_text": "hi", "blocks": []})
+
+
+@pytest.mark.parametrize("bad_version", ["two", 2.0, None, [2], True])
+def test_datasets_from_payload_malformed_version_raises(bad_version):
+    with pytest.raises(ValueError):
+        datasets_from_payload({"version": bad_version, "datasets": [{"name": "Data 1", "blocks": []}]})
+
+
+@pytest.mark.parametrize("future_version", [0, 3, 99])
+def test_datasets_from_payload_unsupported_future_version_raises(future_version):
+    with pytest.raises(ValueError):
+        datasets_from_payload({"version": future_version, "datasets": [{"name": "Data 1", "blocks": []}]})
+
+
+def test_supported_project_schema_versions_matches_current():
+    assert CURRENT_PROJECT_SCHEMA_VERSION in SUPPORTED_PROJECT_SCHEMA_VERSIONS
+    assert SUPPORTED_PROJECT_SCHEMA_VERSIONS == (1, 2)
+
+
+@pytest.mark.parametrize("payload", [
+    {"version": 2, "datasets": []},
+    {"version": 2, "datasets": "not-a-list"},
+    {"version": 2, "datasets": [{"name": "", "blocks": []}]},
+    {"version": 2, "datasets": [{"blocks": []}]},
+    {"version": 2, "datasets": [{"name": "Data 1", "blocks": "not-a-list"}]},
+    {"version": 2, "datasets": [{"name": "Data 1", "blocks": [], "extra_headers": "not-a-list"}]},
+    {"version": 2, "datasets": [{"name": "Data 1", "blocks": [], "source_text": 123}]},
+    {"version": 2, "datasets": ["not-an-object"]},
+])
+def test_datasets_from_payload_malformed_raises_value_error(payload):
+    with pytest.raises(ValueError):
+        datasets_from_payload(payload)
+
+
+def test_datasets_from_payload_out_of_range_active_index_falls_back_to_zero():
+    payload = {"version": 2, "datasets": [{"name": "Data 1", "blocks": []}], "active_dataset_index": 99}
+    datasets, active_index = datasets_from_payload(payload)
+    assert active_index == 0
+
+
+def test_datasets_from_payload_duplicate_ids_are_regenerated():
+    payload = {
+        "version": 2,
+        "datasets": [
+            {"id": "same", "name": "Data 1", "blocks": []},
+            {"id": "same", "name": "Data 2", "blocks": []},
+        ]
+    }
+    datasets, _ = datasets_from_payload(payload)
+    assert datasets[0]["id"] != datasets[1]["id"]
+
+
+def test_datasets_from_payload_restored_datasets_do_not_share_row_dicts():
+    shared_row_source = [[_row("a", "TR")]]
+    payload = {
+        "version": 2,
+        "datasets": [
+            {"name": "Data 1", "blocks": shared_row_source},
+            {"name": "Data 2", "blocks": shared_row_source},
+        ]
+    }
+    datasets, _ = datasets_from_payload(payload)
+    datasets[0]["blocks"][0][0]["label"] = "MIXED"
+    assert datasets[1]["blocks"][0][0]["label"] == "TR"
+
+
+# --- blocks_to_export_rows ---------------------------------------------------
+
+def test_blocks_to_export_rows_basic_with_separator():
+    blocks = [[_row("a", "TR")], [_row("b", "EN")]]
+    rows = blocks_to_export_rows(blocks, [])
+    assert rows == [["1", "a", "TR", ""], ["", "", "", ""], ["2", "b", "EN", ""]]
+
+
+def test_blocks_to_export_rows_no_trailing_separator():
+    blocks = [[_row("a", "TR")]]
+    rows = blocks_to_export_rows(blocks, [])
+    assert rows == [["1", "a", "TR", ""]]
+
+
+def test_blocks_to_export_rows_includes_extra_headers():
+    blocks = [[{"idx": 0, "token": "a", "label": "TR", "gloss": "", "Notes": "n1"}]]
+    rows = blocks_to_export_rows(blocks, ["Notes"])
+    assert rows == [["1", "a", "TR", "", "n1"]]
+
+
+def test_blocks_to_export_rows_does_not_mutate_input():
+    blocks = [[_row("a", "TR", idx="")]]
+    blocks_to_export_rows(blocks, [])
+    assert blocks[0][0]["idx"] == ""
+
+
+# --- blocks_to_conll -----------------------------------------------------
+
+def _conll_block(sent_id="1", matrix="TR", embed="EN", tokens=(("Bugun", "TR", ""), ("meeting'e", "MIXED", "meeting-DAT"))):
+    rows = [{"idx": "", "token": "SentenceID", "label": sent_id, "gloss": ""}]
+    for tok, lab, glo in tokens:
+        rows.append(_row(tok, lab, glo))
+    if matrix:
+        rows.append({"idx": "", "token": "MatrixLang", "label": matrix, "gloss": ""})
+    if embed:
+        rows.append({"idx": "", "token": "EmbedLang", "label": embed, "gloss": ""})
+    return rows
+
+
+def test_blocks_to_conll_header_lines():
+    text = blocks_to_conll([_conll_block()])
+    lines = text.splitlines()
+    assert lines[0] == "# TREN CoNLL export"
+    assert lines[1] == "# columns = TokenIndex Token Label Gloss"
+
+
+def test_blocks_to_conll_sentence_comments_and_tab_separated_tokens():
+    text = blocks_to_conll([_conll_block()])
+    assert "# sent_id = 1" in text
+    assert "# matrix_lang = TR" in text
+    assert "# embedded_lang = EN" in text
+    assert "1\tBugun\tTR\t_" in text
+    assert "2\tmeeting'e\tMIXED\tmeeting-DAT" in text
+
+
+def test_blocks_to_conll_empty_gloss_becomes_underscore():
+    text = blocks_to_conll([_conll_block(tokens=(("a", "TR", ""),))])
+    assert "\ta\tTR\t_" in text
+
+
+def test_blocks_to_conll_blank_line_separates_sentences():
+    b1 = _conll_block(sent_id="1")
+    b2 = _conll_block(sent_id="2")
+    text = blocks_to_conll([b1, b2])
+    body = text.split("# columns = TokenIndex Token Label Gloss\n\n", 1)[1]
+    sentences = body.rstrip("\n").split("\n\n")
+    assert len(sentences) == 2
+    assert sentences[0].startswith("# sent_id = 1")
+    assert sentences[1].startswith("# sent_id = 2")
+
+
+def test_blocks_to_conll_skips_empty_blocks():
+    text = blocks_to_conll([_conll_block(sent_id="1"), [], _conll_block(sent_id="2")])
+    assert text.count("# sent_id") == 2
+
+
+def test_blocks_to_conll_no_metadata_rows_as_lexical_tokens():
+    text = blocks_to_conll([_conll_block()])
+    for ln in text.splitlines():
+        if "\t" in ln and not ln.startswith("#"):
+            fields = ln.split("\t")
+            assert fields[1] not in ("SentenceID", "MatrixLang", "EmbedLang")
+
+
+def test_blocks_to_conll_missing_matrix_embed_meta_rows_omits_those_comments():
+    text = blocks_to_conll([_conll_block(matrix=None, embed=None)])
+    assert "matrix_lang" not in text
+    assert "embedded_lang" not in text
+
+
+def test_blocks_to_conll_falls_back_to_position_when_no_sentence_id_row():
+    rows = [_row("a", "TR")]
+    text = blocks_to_conll([rows])
+    assert "# sent_id = 1" in text
+
+
+def test_blocks_to_conll_does_not_mutate_input():
+    block = _conll_block()
+    before = copy.deepcopy(block)
+    blocks_to_conll([block])
+    assert block == before
+
+
+def test_blocks_to_conll_escapes_embedded_tabs_and_newlines():
+    rows = [_row("weird\ttoken\nwith\rnewline", "TR", "gl\tos\ns")]
+    text = blocks_to_conll([rows])
+    line = [ln for ln in text.splitlines() if ln.startswith("1\t")][0]
+    fields = line.split("\t")
+    assert len(fields) == 4  # token/label/gloss internal tabs must not add fields
+    assert "\n" not in line and "\r" not in line
+
+
+def test_blocks_to_conll_unicode_preserved():
+    rows = [_row("Türkçe", "TR")]
+    text = blocks_to_conll([rows])
+    assert "Türkçe" in text
+
+
+def test_blocks_to_conll_deterministic():
+    blocks = [_conll_block()]
+    assert blocks_to_conll(blocks) == blocks_to_conll(blocks)
+
+
+def test_blocks_to_conll_empty_project():
+    text = blocks_to_conll([])
+    assert text.startswith("# TREN CoNLL export\n# columns = TokenIndex Token Label Gloss\n")
+    assert "sent_id" not in text
+
+
+# --- blocks_to_jsonl / blocks_to_jsonl_records -------------------------------
+
+def test_blocks_to_jsonl_one_line_per_sentence_and_valid_json():
+    blocks = [_conll_block(sent_id="1"), _conll_block(sent_id="2")]
+    text = blocks_to_jsonl(blocks, "Data 1")
+    lines = text.rstrip("\n").split("\n")
+    assert len(lines) == 2
+    for ln in lines:
+        json.loads(ln)  # must not raise
+
+
+def test_blocks_to_jsonl_token_schema():
+    blocks = [_conll_block()]
+    records = blocks_to_jsonl_records(blocks, "Data 1")
+    rec = records[0]
+    assert rec["sentence_id"] == "1"
+    assert rec["dataset"] == "Data 1"
+    assert rec["matrix_lang"] == "TR"
+    assert rec["embedded_lang"] == "EN"
+    assert rec["source_text"] == "Bugun meeting'e"
+    assert rec["tokens"] == [
+        {"index": 1, "token": "Bugun", "label": "TR", "gloss": ""},
+        {"index": 2, "token": "meeting'e", "label": "MIXED", "gloss": "meeting-DAT"},
+    ]
+
+
+def test_blocks_to_jsonl_excludes_meta_rows_from_tokens():
+    records = blocks_to_jsonl_records([_conll_block()], "Data 1")
+    tokens_text = [t["token"] for t in records[0]["tokens"]]
+    assert "SentenceID" not in tokens_text
+    assert "MatrixLang" not in tokens_text
+    assert "EmbedLang" not in tokens_text
+
+
+def test_blocks_to_jsonl_empty_gloss_is_empty_string_not_underscore():
+    records = blocks_to_jsonl_records([[_row("a", "TR", "")]], "Data 1")
+    assert records[0]["tokens"][0]["gloss"] == ""
+
+
+def test_blocks_to_jsonl_skips_empty_blocks():
+    records = blocks_to_jsonl_records([_conll_block(), [], _conll_block()], "Data 1")
+    assert len(records) == 2
+
+
+def test_blocks_to_jsonl_unicode_not_ascii_escaped():
+    text = blocks_to_jsonl([[_row("Türkçe", "TR")]], "Data 1")
+    assert "Türkçe" in text
+    assert "\\u" not in text
+
+
+def test_blocks_to_jsonl_deterministic():
+    blocks = [_conll_block()]
+    assert blocks_to_jsonl(blocks, "Data 1") == blocks_to_jsonl(blocks, "Data 1")
+
+
+def test_blocks_to_jsonl_does_not_mutate_input():
+    block = _conll_block()
+    before = copy.deepcopy(block)
+    blocks_to_jsonl([block], "Data 1")
+    assert block == before
+
+
+def test_blocks_to_jsonl_no_private_or_internal_fields():
+    records = blocks_to_jsonl_records([_conll_block()], "Data 1")
+    rec = records[0]
+    assert set(rec.keys()) == {"sentence_id", "dataset", "source_text", "matrix_lang", "embedded_lang", "tokens"}
+    for tok in rec["tokens"]:
+        assert set(tok.keys()) == {"index", "token", "label", "gloss"}
+
+
+def test_blocks_to_jsonl_empty_project():
+    assert blocks_to_jsonl([], "Data 1") == ""

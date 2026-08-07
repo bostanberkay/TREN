@@ -388,8 +388,12 @@ VOC vocative
         except Exception:
             return
 
-        row['label'] = self._ag_label_var.get()
-        row['gloss'] = self._ag_gloss_var.get()
+        new_label = self._ag_label_var.get()
+        new_gloss = self._ag_gloss_var.get()
+        if row.get('label', '') != new_label or row.get('gloss', '') != new_gloss:
+            self._mark_dirty()
+        row['label'] = new_label
+        row['gloss'] = new_gloss
 
         try:
             if getattr(self, 'sheet', None) is not None:
@@ -569,6 +573,7 @@ VOC vocative
         except Exception:
             pass
         self._update_block_matrix_embed(bidx)
+        self._mark_dirty()
         self._rebuild_grid_from_model()
         if getattr(self, '_uid_win', None) is not None and self._uid_win.winfo_exists():
             self._uid_refresh_items(preserve_index=True)
@@ -795,6 +800,7 @@ VOC vocative
             })
             row['label'] = new_label
             row['gloss'] = new_gloss
+            self._mark_dirty()
             self._update_block_matrix_embed(bidx)
             # Rebuild instead of patching only the edited label/gloss cells:
             # MatrixLang/EmbedLang meta rows live at a DIFFERENT visible row
@@ -983,16 +989,29 @@ VOC vocative
         self.current_output = ""
         self.current_path = None
 
-        # tablw model
-        self.blocks = []
+        self._core_headers = ["Token", "Item", "Label", "Gloss"]
+        self.cfg = DEFAULTS.copy()
+
+        # Project dirty-state tracking (see _mark_dirty/_mark_clean/
+        # _has_unsaved_progress). A real flag, not "does data exist" --
+        # otherwise closing right after a successful save would still
+        # prompt to save again.
+        self._dirty = False
+        self._suppress_dirty = False
+
+        # Multiple annotation datasets. self.blocks/_extra_headers always
+        # mirror the *active* dataset (self.datasets[self._active_dataset_index])
+        # -- see _sync_active_dataset_from_live/_load_dataset_into_live. While
+        # a dataset is active, self.blocks IS that dataset's "blocks" list
+        # (same object), which is what lets every existing self.blocks-mutating
+        # method keep working unchanged.
+        self.datasets = [annotation_model.make_dataset("Data 1", "", [], [])]
+        self._active_dataset_index = 0
+        self.blocks = self.datasets[0]["blocks"]
+        self._extra_headers = self.datasets[0]["extra_headers"]
         self._row_index_map = {}
         self._sep_rows = set()
-
-
-        self._core_headers = ["Token", "Item", "Label", "Gloss"]
-        self._extra_headers = []  # user-added columns
-
-        self.cfg = DEFAULTS.copy()
+        self._dataset_tabs_frame = None
 
         self._build_menu()
         self._build_toolbar()
@@ -1217,6 +1236,14 @@ VOC vocative
         style.configure('Dark.TCheckbutton', background=DARK_BG, foreground=DARK_FG)
         style.map('Dark.TCheckbutton', background=[('active', DARK_BG)])
 
+        # dataset tab bar
+        style.configure('DatasetTab.TButton', background="#2a2a2a", foreground="#a0a0a0",
+                         padding=(10, 3))
+        style.map('DatasetTab.TButton', background=[('active', '#3a3a3a')])
+        style.configure('DatasetTabActive.TButton', background=ACCENT, foreground="white",
+                         padding=(10, 3))
+        style.map('DatasetTabActive.TButton', background=[('active', ACCENT)])
+
         # generic dark ttk widgets
         style.configure('Dark.TFrame', background=DARK_BG)
         style.configure('Dark.TLabel', background=DARK_BG, foreground=DARK_FG)
@@ -1247,7 +1274,7 @@ VOC vocative
         filem = tk.Menu(menubar, tearoff=False, bg=DARK_BG, fg=DARK_FG)
         filem.add_command(label="Open Input (⌘O / Ctrl+O)", command=self.open_input)
         filem.add_command(label="Run (⌘R / Ctrl+R)", command=self.run_pipeline)
-        filem.add_command(label="Save Output As... (⌘S / Ctrl+S)", command=self.save_output)
+        filem.add_command(label="Export Table... (⌘S / Ctrl+S)", command=self.save_output)
         filem.add_separator()
         filem.add_command(label="Exit", command=self.destroy)
         menubar.add_cascade(label="File", menu=filem)
@@ -1291,68 +1318,455 @@ VOC vocative
 
 
     # Window close handling
-    def _has_unsaved_progress(self):
-        try:
-            if self.txt_input.get("1.0", "end-1c").strip():
-                return True
-        except Exception:
-            pass
-        try:
-            if getattr(self, 'blocks', None):
-                # non-empty blocks means there is annotation state
-                return True
-        except Exception:
-            pass
-        return False
+    # Project dirty-state tracking
+    #
+    # self._dirty is a real flag, not a "does the project contain data"
+    # test -- checking for data would keep prompting to save even
+    # immediately after a successful save with nothing further changed.
+    # Every mutation call site (manual table edits, UID Review Tool Apply/
+    # Undo, Merge Cells/Undo, running annotation, adding a dataset, typing
+    # in the input editor) calls _mark_dirty(); switching dataset tabs and
+    # exporting deliberately never do.
+    def _mark_dirty(self):
+        self._dirty = True
 
-    def _on_close_request(self):
-        # Ask to save progress before closing
-        if not self._has_unsaved_progress():
+    def _mark_clean(self):
+        self._dirty = False
+
+    def _on_text_modified(self, event=None):
+        """<<Modified>> fires on any change to txt_input, including the
+        programmatic delete/insert used to display a different dataset's
+        text -- _set_txt_input_text sets _suppress_dirty around those so
+        this handler treats them as "not a user edit"."""
+        if getattr(self, '_suppress_dirty', False):
             try:
-                self.destroy()
+                self.txt_input.edit_modified(False)
             except Exception:
                 pass
             return
+        try:
+            if self.txt_input.edit_modified():
+                self._mark_dirty()
+                self.txt_input.edit_modified(False)
+        except Exception:
+            pass
 
-        res = messagebox.askyesnocancel(
-            "Close",
-            "Save project progress before closing?"
-        )
+    def _set_txt_input_text(self, text):
+        """Replace the input editor's text without marking the project
+        dirty. Use this for anything that is *restoring* existing state
+        (switching dataset tabs, opening/auto-restoring a project, New
+        Project) rather than a user typing/pasting new content."""
+        self._suppress_dirty = True
+        try:
+            self.txt_input.delete("1.0", "end")
+            self.txt_input.insert("1.0", text or "")
+        finally:
+            try:
+                self.txt_input.edit_modified(False)
+            except Exception:
+                pass
+            self._suppress_dirty = False
+
+    def _has_unsaved_progress(self):
+        return getattr(self, '_dirty', False)
+
+    def _confirm_proceed_over_unsaved_changes(self, title, message):
+        """Shared unsaved-changes guard for New Project / Open Project /
+        Close. Returns True if the caller may proceed with its destructive
+        operation, False if it must abort and leave the current project
+        completely untouched.
+
+        - Clean project: proceeds immediately, no prompt.
+        - Dirty project: asks Save (Yes) / Discard (No) / Cancel.
+          - Save: proceeds only if save_project_progress() actually
+            succeeded (returns True) -- a cancelled name/overwrite dialog
+            or a write failure aborts the pending operation instead of
+            silently discarding the work.
+          - Discard: proceeds without saving.
+          - Cancel: aborts; nothing changes.
+        """
+        if not self._has_unsaved_progress():
+            return True
+        res = messagebox.askyesnocancel(title, message)
         if res is None:
-            return  # cancel
+            return False
         if res is True:
-            self.save_project_progress()
+            return self.save_project_progress()
+        return True
+
+    def _on_close_request(self):
+        if not self._confirm_proceed_over_unsaved_changes(
+            "Close", "Save project progress before closing?"
+        ):
+            return
         try:
             self.destroy()
         except Exception:
             pass
 
-    # Project Save/Load
-    def new_project(self):
-        if messagebox.askyesno("New Project", "Start a new project? Unsaved progress will be lost.") is False:
+    # Multiple annotation datasets
+    #
+    # self.blocks / self._extra_headers are always the *live* view of
+    # self.datasets[self._active_dataset_index] (see the __init__ comment).
+    # Every existing self.blocks-mutating method (grid edits, merge cells,
+    # UID Review Tool, auto-glossing, ...) keeps working unchanged because it
+    # is still mutating the same list object the active dataset dict points
+    # to. Switching datasets is the only place that list identity changes.
+    def _sync_active_dataset_from_live(self):
+        """Write the live self.blocks/_extra_headers/source-text/undo-stacks
+        back into the active dataset dict. Call before anything that reads
+        self.datasets directly (switching tabs, saving the project, export)."""
+        if not getattr(self, 'datasets', None):
             return
+        ds = self.datasets[self._active_dataset_index]
+        ds['blocks'] = self.blocks
+        ds['extra_headers'] = self._extra_headers
+        try:
+            ds['source_text'] = self.txt_input.get("1.0", "end-1c")
+        except Exception:
+            pass
+        ds['uid_undo_stack'] = list(getattr(self, '_uid_undo_stack', []) or [])
+        ds['merge_cells_undo_stack'] = list(getattr(self, '_merge_cells_undo_stack', []) or [])
 
-        self.blocks = []
+    def _load_dataset_into_live(self, index):
+        """Make dataset `index` active: point self.blocks/_extra_headers at
+        it, restore its source text into the input editor, and rebuild the
+        grid from it. Never runs the annotation pipeline -- switching tabs
+        must not re-annotate or reload NLP models."""
+        ds = self.datasets[index]
+        self._active_dataset_index = index
+        self.blocks = ds['blocks']
+        self._extra_headers = ds['extra_headers']
+        self._uid_undo_stack = list(ds.get('uid_undo_stack', []) or [])
+        self._merge_cells_undo_stack = list(ds.get('merge_cells_undo_stack', []) or [])
         self._row_index_map = {}
         self._sep_rows = set()
-        self._extra_headers = []
-        self.cfg = DEFAULTS.copy()
-        self._uid_undo_stack = []
-        self._merge_cells_undo_stack = []
 
         try:
-            self.txt_input.delete("1.0", "end")
+            self._set_txt_input_text(ds.get('source_text', ''))
         except Exception:
             pass
 
-        if self.sheet is not None:
+        self._close_dataset_scoped_windows()
+        self._renumber_tokens()
+        self._rebuild_grid_from_model()
+        self._update_dataset_tabs_ui()
+
+    def _switch_dataset(self, index):
+        """Switch the active dataset tab. A no-op if `index` is already
+        active -- re-clicking the current tab must never rebuild the grid,
+        clear scoped undo history, or prompt to save (switching tabs is
+        never a save point)."""
+        if not getattr(self, 'datasets', None) or index == self._active_dataset_index:
+            return
+        if not (0 <= index < len(self.datasets)):
+            return
+        self._sync_active_dataset_from_live()
+        self._load_dataset_into_live(index)
+
+    def _close_dataset_scoped_windows(self):
+        """Close every auxiliary window that reads/writes self.blocks by row
+        index (UID Review Tool, Auto-Glossing Tool, Concordance, Word
+        Frequency, Full Edit Window, Show Sentence). None of them are
+        dataset-aware, so leaving one open across a dataset switch would let
+        it silently read or edit the wrong dataset via a stale row index."""
+        for attr in ('_uid_win', '_ag_win', '_conc_win', '_freq_win', '_full_win'):
+            win = getattr(self, attr, None)
+            if win is not None:
+                try:
+                    if win.winfo_exists():
+                        win.destroy()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
+        sent = getattr(self, '_sentence_win', None)
+        if sent is not None:
+            win = sent[0] if isinstance(sent, tuple) else sent
             try:
-                self.sheet.headers(self._all_headers())
-                self.sheet.set_sheet_data([])
-                if hasattr(self.sheet, "refresh"):
-                    self.sheet.refresh()
+                if win.winfo_exists():
+                    win.destroy()
             except Exception:
                 pass
+            self._sentence_win = None
+
+        self._full_sheet = None
+        self._uid_items = []
+        self._uid_i = 0
+        self._uid_mode = 'uid'
+        self._uid_query = ''
+
+    def _build_dataset_tabs(self, parent):
+        """Compact dataset tab bar, packed immediately above the annotation
+        table. `parent` is the frame the table itself is packed into, so the
+        tab bar is added before it."""
+        frame = tk.Frame(parent, bg=DARK_BG)
+        frame.pack(fill="x", pady=(0, 4))
+        self._dataset_tabs_frame = frame
+        self._update_dataset_tabs_ui()
+
+    def _update_dataset_tabs_ui(self):
+        """Rebuild the tab bar's buttons from self.datasets. Cheap enough to
+        call after every dataset add/switch/rename -- it's a handful of
+        buttons, not a data-heavy widget."""
+        frame = getattr(self, '_dataset_tabs_frame', None)
+        if frame is None:
+            return
+        for child in list(frame.winfo_children()):
+            child.destroy()
+
+        for i, ds in enumerate(getattr(self, 'datasets', []) or []):
+            is_active = (i == self._active_dataset_index)
+            style = 'DatasetTabActive.TButton' if is_active else 'DatasetTab.TButton'
+            btn = ttk.Button(
+                frame, text=str(ds.get('name', 'Data')), style=style,
+                command=lambda idx=i: self._switch_dataset(idx),
+            )
+            btn.pack(side="left", padx=(0, 2))
+
+        plus_btn = ttk.Button(frame, text="+", width=3, style='Dark.TButton',
+                               command=self._open_add_new_data_dialog)
+        plus_btn.pack(side="left", padx=(4, 0))
+        self._make_tooltip(plus_btn, "Add New Data")
+
+    def _make_tooltip(self, widget, text):
+        """Minimal hover tooltip; no external dependency. Also used as this
+        control's accessibility text (the '+' button itself stays a bare
+        glyph so the tab bar stays compact)."""
+        state = {'win': None}
+
+        def _show(_event=None):
+            if state['win'] is not None:
+                return
+            try:
+                x = widget.winfo_rootx() + 10
+                y = widget.winfo_rooty() + widget.winfo_height() + 6
+            except Exception:
+                return
+            tw = tk.Toplevel(widget)
+            tw.wm_overrideredirect(True)
+            try:
+                tw.wm_geometry(f"+{x}+{y}")
+            except Exception:
+                pass
+            tk.Label(tw, text=text, bg="#333333", fg=DARK_FG, relief="solid",
+                     borderwidth=1, padx=6, pady=2).pack()
+            state['win'] = tw
+
+        def _hide(_event=None):
+            tw = state['win']
+            if tw is not None:
+                try:
+                    tw.destroy()
+                except Exception:
+                    pass
+                state['win'] = None
+
+        widget.bind("<Enter>", _show)
+        widget.bind("<Leave>", _hide)
+
+    def _ensure_annotator_ready(self):
+        """Lazily create the Annotator and load the reranker bundle, exactly
+        once, no matter how many datasets get annotated in this session."""
+        if self.annotator is None:
+            self.annotator = Annotator()
+        if not self._reranker_load_attempted:
+            self._reranker_bundle = reranker_integration.load_reranker_bundle()
+            self._reranker_load_attempted = True
+
+    def _run_annotation_pipeline(self, text):
+        """Run the full production pipeline (annotate -> reranker ->
+        matrix/embed consistency) on `text` and return the TXT-style output.
+        Shared by run_pipeline (active dataset) and Add New Data (a
+        new/other dataset) so both go through the exact same code path."""
+        self._ensure_annotator_ready()
+        out = self.annotator.annotate(text, self.cfg)
+        out = reranker_integration.apply_reranker(out, self.annotator, self.cfg, self._reranker_bundle)
+        out = self._ensure_matrix_embed_consistency(out)
+        return out
+
+    def _read_utf8_text_file(self, path):
+        """Read `path` as strict UTF-8. Raises UnicodeDecodeError/OSError on
+        failure -- callers must catch those and show a clear message, never
+        fall back silently to another encoding or another input source."""
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def _create_dataset_from_text(self, name, source_text, source_filename=None):
+        """Run the production pipeline on `source_text` and return a new,
+        fully independent dataset dict -- never touches self.blocks or any
+        existing dataset. Raises on annotation failure; the caller must not
+        create a tab/dataset in that case (no broken or empty tab).
+        `source_filename` is optional, display-only metadata (a basename
+        only -- see annotation_model.make_dataset, which enforces that even
+        if a full path is passed here) -- source_text is always what
+        actually gets annotated and saved."""
+        out = self._run_annotation_pipeline(source_text)
+        blocks = annotation_model.parse_annotated_text_to_blocks(out, [])
+        annotation_model.renumber_tokens(blocks)
+        return annotation_model.make_dataset(name, source_text, blocks, [], source_filename=source_filename)
+
+    def _open_add_new_data_dialog(self):
+        default_name = annotation_model.next_default_dataset_name(
+            [d.get('name', '') for d in self.datasets]
+        )
+
+        win = tk.Toplevel(self)
+        win.title("Add New Data")
+        win.configure(bg=DARK_BG)
+        win.transient(self)
+        win.geometry("480x440")
+        win.minsize(420, 400)
+
+        frm = ttk.Frame(win, style='Dark.TFrame')
+        frm.pack(fill='both', expand=True, padx=14, pady=14)
+
+        ttk.Label(frm, text="Name:", style='Dark.TLabel').pack(anchor='w')
+        name_var = tk.StringVar(value=default_name)
+        ttk.Entry(frm, textvariable=name_var, style='Dark.TEntry', width=32).pack(anchor='w', pady=(2, 10))
+
+        mode_var = tk.StringVar(value='enter')
+
+        ttk.Radiobutton(frm, text="Open New File", value='file', variable=mode_var,
+                         command=lambda: _set_mode('file')).pack(anchor='w')
+
+        file_row = ttk.Frame(frm, style='Dark.TFrame')
+        file_row.pack(fill='x', padx=(18, 0), pady=(2, 8))
+        ttk.Label(file_row, text="File:", style='Dark.TLabel').pack(side='left')
+        # Kept only for the lifetime of this dialog, solely to actually open
+        # the file if/when Create is pressed -- never stored on the dataset
+        # or written to .trenproj. Only its basename (file_display_var,
+        # below) ever leaves this closure, via source_filename in _confirm.
+        file_path_var = tk.StringVar(value='')
+        file_display_var = tk.StringVar(value='(none selected)')
+        file_label = ttk.Label(file_row, textvariable=file_display_var, style='Dark.TLabel',
+                                foreground="#a0a0a0", width=26)
+        file_label.pack(side='left', padx=(4, 6))
+
+        def _browse():
+            path = filedialog.askopenfilename(
+                title="Open New File",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            )
+            if not path:
+                return  # cancelling the file chooser changes nothing
+            file_path_var.set(path)
+            file_display_var.set(os.path.basename(path))
+            # Only steal the Name field while it still holds its own
+            # untouched "Data N" default -- never overwrite a name the user
+            # typed, and never re-stomp a name already set from a previous
+            # file pick.
+            if name_var.get().strip() == default_name:
+                stem = os.path.splitext(os.path.basename(path))[0].strip()
+                if stem:
+                    name_var.set(stem)
+
+        browse_btn = ttk.Button(file_row, text="Browse…", style='Dark.TButton', command=_browse)
+        browse_btn.pack(side='left')
+
+        ttk.Radiobutton(frm, text="Enter New Text", value='enter', variable=mode_var,
+                         command=lambda: _set_mode('enter')).pack(anchor='w')
+        ttk.Radiobutton(frm, text="Re-run Current Text", value='rerun', variable=mode_var,
+                         command=lambda: _set_mode('rerun')).pack(anchor='w', pady=(0, 8))
+
+        ttk.Label(frm, text="Text (used only for “Enter New Text”):",
+                  style='Dark.TLabel').pack(anchor='w')
+        text_box = ScrolledText(frm, wrap="word", height=8, bg="#1b1b1b", fg=DARK_FG,
+                                 insertbackground="white")
+        text_box.pack(fill='both', expand=True, pady=(2, 10))
+
+        def _set_mode(mode):
+            # Text and the selected file path are always preserved across
+            # mode switches while the dialog stays open -- only which
+            # controls are enabled changes; nothing is ever cleared here.
+            if mode == 'enter':
+                text_box.configure(state='normal', bg="#1b1b1b", fg=DARK_FG)
+            else:
+                text_box.configure(state='disabled', bg="#161616", fg="#666666")
+            browse_btn.configure(state=('normal' if mode == 'file' else 'disabled'))
+
+        _set_mode('enter')
+
+        status_var = tk.StringVar(value='')
+        ttk.Label(frm, textvariable=status_var, style='Dark.TLabel', foreground="#ffcc66").pack(anchor='w')
+
+        def _confirm():
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showwarning("Add New Data", "Enter a name for the new dataset.")
+                return
+
+            mode = mode_var.get()
+            source_filename = None
+
+            if mode == 'file':
+                path = file_path_var.get()
+                if not path:
+                    messagebox.showwarning("Add New Data", "Choose a file to open.")
+                    return
+                try:
+                    new_text = self._read_utf8_text_file(path)
+                except UnicodeDecodeError as e:
+                    messagebox.showerror(
+                        "Add New Data", f"The selected file is not valid UTF-8:\n{e}")
+                    return
+                except OSError as e:
+                    messagebox.showerror("Add New Data", f"Could not read the selected file:\n{e}")
+                    return
+                if not new_text.strip():
+                    messagebox.showwarning("Add New Data", "The selected file is empty.")
+                    return
+                # Only the basename ever leaves this dialog -- `path` (the
+                # full local path) is used here to read the file and then
+                # discarded; it is never stored on the dataset or persisted.
+                source_filename = os.path.basename(path)
+            elif mode == 'enter':
+                new_text = text_box.get("1.0", "end-1c")
+                if not new_text.strip():
+                    messagebox.showwarning("Add New Data", "Enter text to annotate.")
+                    return
+            else:
+                new_text = self.txt_input.get("1.0", "end-1c")
+                if not new_text.strip():
+                    messagebox.showwarning(
+                        "Add New Data", "The active dataset has no source text to re-run.")
+                    return
+
+            status_var.set("Running annotation pipeline…")
+            win.update_idletasks()
+            try:
+                new_ds = self._create_dataset_from_text(name, new_text, source_filename=source_filename)
+            except Exception as e:
+                # Annotation failed -- create no tab/dataset at all.
+                messagebox.showerror("Add New Data", f"Annotation failed:\n{e}")
+                status_var.set("")
+                return
+
+            self._sync_active_dataset_from_live()
+            self.datasets.append(new_ds)
+            self._mark_dirty()
+            self._load_dataset_into_live(len(self.datasets) - 1)
+            win.destroy()
+
+        btns = ttk.Frame(frm, style='Dark.TFrame')
+        btns.pack(fill='x')
+        ttk.Button(btns, text="Create", style='Dark.TButton', command=_confirm).pack(side='left')
+        ttk.Button(btns, text="Cancel", style='Dark.TButton', command=win.destroy).pack(side='right')
+        win.bind('<Escape>', lambda e: win.destroy())
+        win.grab_set()
+
+    # Project Save/Load
+    def new_project(self):
+        if not self._confirm_proceed_over_unsaved_changes(
+            "New Project", "Save changes to the current project before starting a new one?"
+        ):
+            return
+
+        self.cfg = DEFAULTS.copy()
+        self.datasets = [annotation_model.make_dataset("Data 1", "", [], [])]
+        self._close_dataset_scoped_windows()
+        self._load_dataset_into_live(0)
+        self._mark_clean()
 
         try:
             os.makedirs(APP_DIR, exist_ok=True)
@@ -1367,9 +1781,15 @@ VOC vocative
         self._last_pos = None
 
     def save_project_progress(self):
+        """Save the current project to a named `.trenproj` file.
+
+        Returns True if the file was actually written, False if the user
+        cancelled the name/overwrite prompt or the write itself failed --
+        callers (in particular _on_close_request) must treat False as "no
+        save happened" and must not discard unsaved work on that basis."""
         name = simpledialog.askstring("Save Project", "Name your project save:")
         if not name:
-            return
+            return False
 
         try:
             os.makedirs(APP_DIR, exist_ok=True)
@@ -1381,7 +1801,7 @@ VOC vocative
         # confirm overwrite
         if os.path.isfile(path):
             if messagebox.askyesno("Overwrite?", f"A save named '{name}' already exists. Overwrite?") is False:
-                return
+                return False
 
         try:
             text_cursor = self.txt_input.index("insert")
@@ -1394,23 +1814,23 @@ VOC vocative
         except Exception:
             grid_pos = None
 
+        self._sync_active_dataset_from_live()
+
         payload = {
-            "version": 1,
             "name": name,
-            "input_text": self.txt_input.get("1.0", "end-1c"),
             "cfg": self.cfg,
-            "blocks": self.blocks,
-            "extra_headers": self._extra_headers,
             "text_cursor": text_cursor,
             "grid_pos": grid_pos,
         }
+        # datasets_to_payload stamps "version": CURRENT_PROJECT_SCHEMA_VERSION.
+        payload.update(annotation_model.datasets_to_payload(self.datasets, self._active_dataset_index))
 
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
         except Exception as e:
             messagebox.showerror("Save error", str(e))
-            return
+            return False
 
         try:
             with open(LAST_PROJECT_PTR, "w", encoding="utf-8") as f:
@@ -1418,7 +1838,9 @@ VOC vocative
         except Exception:
             pass
 
+        self._mark_clean()
         messagebox.showinfo("Project saved", f"Saved project:\n{path}")
+        return True
 
     def open_project_save(self):
         path = filedialog.askopenfilename(
@@ -1436,17 +1858,26 @@ VOC vocative
             messagebox.showerror("Open error", str(e))
             return
 
+        try:
+            datasets, active_index = annotation_model.datasets_from_payload(payload)
+        except ValueError as e:
+            messagebox.showerror("Open error", f"Malformed project file:\n{e}")
+            return
+
+        # The file is now fully read and validated -- only now does opening
+        # it put the current project at risk, so the unsaved-changes guard
+        # runs here rather than before the file chooser (cancelling the
+        # chooser, or an unreadable/malformed file, must never even ask).
+        if not self._confirm_proceed_over_unsaved_changes(
+            "Open Project", "Save changes to the current project before opening another one?"
+        ):
+            return
+
         self.cfg = payload.get("cfg", DEFAULTS.copy())
-        self.blocks = payload.get("blocks", [])
-        self._extra_headers = payload.get("extra_headers", [])
-        self._uid_undo_stack = []
-        self._merge_cells_undo_stack = []
-
-        self.txt_input.delete("1.0", "end")
-        self.txt_input.insert("1.0", payload.get("input_text", ""))
-
-        self._renumber_tokens()
-        self._rebuild_grid_from_model()
+        self.datasets = datasets
+        self._close_dataset_scoped_windows()
+        self._load_dataset_into_live(active_index)
+        self._mark_clean()
 
         try:
             if payload.get("text_cursor"):
@@ -1491,25 +1922,20 @@ VOC vocative
             return
 
         try:
-            self.cfg = payload.get("cfg", DEFAULTS.copy())
-            self.blocks = payload.get("blocks", [])
-            self._extra_headers = payload.get("extra_headers", [])
-            self._uid_undo_stack = []
-            self._merge_cells_undo_stack = []
-        except Exception:
+            datasets, active_index = annotation_model.datasets_from_payload(payload)
+        except ValueError:
+            # Auto-restore is silent-best-effort; a malformed pointer target
+            # just means the app opens empty instead of crashing on startup.
             return
 
         try:
-            self.txt_input.delete("1.0", "end")
-            self.txt_input.insert("1.0", payload.get("input_text", ""))
+            self.cfg = payload.get("cfg", DEFAULTS.copy())
+            self.datasets = datasets
+            self._close_dataset_scoped_windows()
+            self._load_dataset_into_live(active_index)
+            self._mark_clean()
         except Exception:
-            pass
-
-        try:
-            self._renumber_tokens()
-            self._rebuild_grid_from_model()
-        except Exception:
-            pass
+            return
 
         try:
             if payload.get("text_cursor"):
@@ -1548,7 +1974,7 @@ VOC vocative
         btn_open = ttk.Button(bar, text="Open", command=self.open_input, style='Dark.TButton')
         btn_open.pack(side="right", padx=4)
 
-        btn_save = ttk.Button(bar, text="Save", command=self.save_output, style='Dark.TButton')
+        btn_save = ttk.Button(bar, text="Export", command=self.save_output, style='Dark.TButton')
         btn_save.pack(side="right", padx=4)
 
     def _build_body(self):
@@ -1573,6 +1999,16 @@ VOC vocative
         # Track active area
         self.txt_input.bind("<FocusIn>", lambda e: setattr(self, "_active_area", "text"))
         self.txt_input.bind("<Button-1>", lambda e: setattr(self, "_active_area", "text"))
+
+        # Dirty-state tracking for organic edits (typing/pasting). Text.
+        # edit_modified() fires <<Modified>> on any change; programmatic
+        # text replacement (dataset switch, project open/new) goes through
+        # _set_txt_input_text, which suppresses this so it never marks the
+        # project dirty on its own.
+        self.txt_input.bind("<<Modified>>", self._on_text_modified)
+
+        # Dataset tab bar (immediately above the annotation table)
+        self._build_dataset_tabs(right)
 
         # OUTPUT grid
         tbl_frame = tk.Frame(right, bg=DARK_BG)
@@ -2693,6 +3129,7 @@ VOC vocative
             self.bell()
             return
         self.blocks[bidx][ridx]['label'] = new_value
+        self._mark_dirty()
         try:
             self.sheet.set_cell_data(r, c, new_value)
             # keep selection on label cell
@@ -2715,7 +3152,10 @@ VOC vocative
             return False
 
     def _toggle(self, key, val):
-        self.cfg[key] = bool(val)
+        new_val = bool(val)
+        if self.cfg.get(key) != new_val:
+            self._mark_dirty()
+        self.cfg[key] = new_val
 
     # Dynamic columns
     def _all_headers(self):
@@ -2731,6 +3171,7 @@ VOC vocative
             return False, "Column already exists."
 
         self._extra_headers.append(name)
+        self._mark_dirty()
 
         # ensure model rows have the new key
         for blk in getattr(self, 'blocks', []) or []:
@@ -2811,6 +3252,7 @@ VOC vocative
         self.current_path = path
         self.txt_input.delete("1.0", "end")
         self.txt_input.insert("1.0", self.current_text)
+        self._mark_dirty()
 
     def run_pipeline(self):
         txt = self.txt_input.get("1.0", "end-1c")
@@ -2818,16 +3260,17 @@ VOC vocative
             messagebox.showwarning("Empty", "No input text.")
             return
         try:
-            if self.annotator is None:
-                self.annotator = Annotator()
-            if not self._reranker_load_attempted:
-                self._reranker_bundle = reranker_integration.load_reranker_bundle()
-                self._reranker_load_attempted = True
-            out = self.annotator.annotate(txt, self.cfg)
-            out = reranker_integration.apply_reranker(out, self.annotator, self.cfg, self._reranker_bundle)
-            out = self._ensure_matrix_embed_consistency(out)
+            out = self._run_annotation_pipeline(txt)
             self._populate_table(out)
             self.current_output = out
+            # _populate_table replaces self.blocks with a new list object;
+            # sync it (and the current input text) into the active dataset
+            # immediately rather than waiting for a later tab switch/save/
+            # export to notice. A failed pipeline raises before this point,
+            # so self.blocks (and the active dataset) are left untouched --
+            # never partially cleared.
+            self._sync_active_dataset_from_live()
+            self._mark_dirty()
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
@@ -2876,70 +3319,141 @@ VOC vocative
     def _sheet_rows_to_txt(self, rows):
         return annotation_model.sheet_rows_to_txt(rows, self._all_headers())
 
+    # Export Table
+    #
+    # save_output is the entry point the menu/toolbar/⌘S shortcut all still
+    # call; it now always opens the dataset+format chooser instead of going
+    # straight to a file dialog, per the "existing Export Table command
+    # should use this chooser" requirement -- even for a single-dataset
+    # project, so the workflow stays consistent as datasets are added.
+    _EXPORT_FORMATS = ("TXT", "CSV", "CoNLL", "JSONL")
+    _EXPORT_EXTENSIONS = {"TXT": ".txt", "CSV": ".csv", "CoNLL": ".conll", "JSONL": ".jsonl"}
+
     def save_output(self):
-        if not getattr(self, 'blocks', None):
-            messagebox.showwarning("Empty", "No output to save.")
+        self.open_export_dialog()
+
+    def open_export_dialog(self):
+        self._sync_active_dataset_from_live()
+        if not any(ds.get('blocks') for ds in self.datasets):
+            messagebox.showwarning("Empty", "No output to export.")
             return
 
-        path = filedialog.asksaveasfilename(
-            title="Save output",
-            defaultextension=".txt",
-            filetypes=[("Text", "*.txt"), ("CSV", "*.csv"), ("All", "*.*")]
-        )
-        if not path:
-            return
+        names = [ds.get('name', '') for ds in self.datasets]
+        active_name = names[self._active_dataset_index]
 
-        base, ext = os.path.splitext(path)
-        ext = ext.lower()
+        win = tk.Toplevel(self)
+        win.title("Export Table")
+        win.configure(bg=DARK_BG)
+        win.transient(self)
 
-        # Default to .txt
-        if ext not in (".txt", ".csv"):
-            ext = ".txt"
-            path = base + ext
+        frm = ttk.Frame(win, style='Dark.TFrame')
+        frm.pack(fill='both', expand=True, padx=14, pady=14)
 
-        # Prefer exporting from the visible grid
-        sheet_rows = self._get_sheet_rows_for_export()
+        row1 = ttk.Frame(frm, style='Dark.TFrame')
+        row1.pack(fill='x', pady=(0, 8))
+        ttk.Label(row1, text="Dataset:", style='Dark.TLabel', width=10).pack(side='left')
+        dataset_var = tk.StringVar(value=active_name)
+        dataset_combo = ttk.Combobox(row1, textvariable=dataset_var, values=names,
+                                      state='readonly', width=28)
+        dataset_combo.pack(side='left')
+        dataset_combo.current(self._active_dataset_index)
 
-        if ext == ".txt":
+        row2 = ttk.Frame(frm, style='Dark.TFrame')
+        row2.pack(fill='x', pady=(0, 14))
+        ttk.Label(row2, text="Format:", style='Dark.TLabel', width=10).pack(side='left')
+        format_var = tk.StringVar(value="TXT")
+        ttk.Combobox(row2, textvariable=format_var, values=list(self._EXPORT_FORMATS),
+                     state='readonly', width=28).pack(side='left')
+
+        def _do_export():
+            # Resolve by combobox *position*, not by the displayed name text
+            # -- dataset names are not required to be unique (spec: "do not
+            # need to be globally unique"), so matching by name text could
+            # silently export the wrong same-named dataset.
+            idx = dataset_combo.current()
+            if idx < 0 or idx >= len(self.datasets):
+                messagebox.showerror("Export Table", "Choose a dataset.")
+                return
+            ds = self.datasets[idx]
+            fmt = format_var.get()
+            if fmt not in self._EXPORT_FORMATS:
+                messagebox.showerror("Export Table", "Choose a format.")
+                return
+
+            ext = self._EXPORT_EXTENSIONS[fmt]
+            default_name = annotation_model.sanitize_dataset_filename(ds.get('name', '')) + ext
+            path = filedialog.asksaveasfilename(
+                title="Export Table",
+                defaultextension=ext,
+                initialfile=default_name,
+                filetypes=[(fmt, f"*{ext}"), ("All", "*.*")],
+            )
+            if not path:
+                return  # cancelling must create no file
+
+            try:
+                self._write_dataset_export(ds, fmt, path)
+            except Exception as e:
+                messagebox.showerror("Export error", str(e))
+                return
+
+            win.destroy()
+            messagebox.showinfo("Saved", f"Saved to:\n{path}")
+
+        btns = ttk.Frame(frm, style='Dark.TFrame')
+        btns.pack(fill='x')
+        ttk.Button(btns, text="Export", style='Dark.TButton', command=_do_export).pack(side='left')
+        ttk.Button(btns, text="Cancel", style='Dark.TButton', command=win.destroy).pack(side='right')
+        win.bind('<Escape>', lambda e: win.destroy())
+        win.grab_set()
+
+    def _write_dataset_export(self, ds, fmt, path):
+        """Write one dataset to `path` in the given format. Never mutates
+        `ds`/its blocks and never calls the annotation pipeline -- every
+        helper here works from a private deep copy when it needs to
+        renumber tokens for display."""
+        blocks = ds.get('blocks', [])
+        extra_headers = ds.get('extra_headers', [])
+        is_active = (ds is self.datasets[self._active_dataset_index])
+
+        if fmt == "TXT":
+            sheet_rows = self._get_sheet_rows_for_export() if is_active else None
             if sheet_rows is not None:
                 text = self._sheet_rows_to_txt(sheet_rows)
             else:
-                text = self._reconstruct_text_from_blocks()
+                text = annotation_model.reconstruct_text_from_blocks(copy.deepcopy(blocks), extra_headers)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
-            messagebox.showinfo("Saved", f"Saved to:\n{path}")
             return
 
-        # Save CSV only
-        try:
-            if sheet_rows is None:
-                # fallback: approximate from blocks and preserve block separators
-                sheet_rows = []
-                for bi, b in enumerate(getattr(self, 'blocks', [])):
-                    for r in b:
-                        rr = [
-                            str(r.get('idx', '')),
-                            str(r.get('token', '')),
-                            str(r.get('label', '')),
-                            str(r.get('gloss', '')),
-                        ]
-                        for h in self._extra_headers:
-                            rr.append(str(r.get(h, '')))
-                        sheet_rows.append(rr)
-                    if bi < len(getattr(self, 'blocks', [])) - 1:
-                        sheet_rows.append(["" for _ in self._all_headers()])  # block separator
-
+        if fmt == "CSV":
+            sheet_rows = self._get_sheet_rows_for_export() if is_active else None
+            if sheet_rows is not None:
+                headers = self._get_sheet_headers_for_export()
+                rows = sheet_rows
+            else:
+                headers = list(self._core_headers) + list(extra_headers)
+                rows = annotation_model.blocks_to_export_rows(blocks, extra_headers)
             with open(path, "w", encoding="utf-8", newline="") as cf:
                 w = csv.writer(cf)
-                # Preserve the UI headers exactly as shown in the grid
-                w.writerow(self._get_sheet_headers_for_export())
-                for rr in sheet_rows:
+                w.writerow(headers)
+                for rr in rows:
                     w.writerow(rr)
-        except Exception as e:
-            messagebox.showerror("Save error", str(e))
             return
 
-        messagebox.showinfo("Saved", f"Saved to:\n{path}")
+        if fmt == "CoNLL":
+            text = annotation_model.blocks_to_conll(blocks)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            return
+
+        if fmt == "JSONL":
+            text = annotation_model.blocks_to_jsonl(blocks, ds.get('name', ''))
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            return
+
+        raise ValueError(f"Unknown export format: {fmt}")
 
     # Grid context actions
     def copy_selected_cells(self):
@@ -3050,6 +3564,7 @@ VOC vocative
         # renumber tokens if Item column affected
         self._renumber_tokens()
         self._refresh_sheet_idx_column()
+        self._mark_dirty()
 
         try:
             if hasattr(self.sheet, "refresh"):
@@ -3104,6 +3619,7 @@ VOC vocative
 
         # refresh idx column if tokens changed
         self._refresh_sheet_idx_column()
+        self._mark_dirty()
         try:
             if hasattr(self.sheet, "refresh"):
                 self.sheet.refresh()
@@ -3136,6 +3652,7 @@ VOC vocative
 
         # renumber tokens
         self._renumber_tokens()
+        self._mark_dirty()
 
         # rebuild grid directly from the model so blank row is preserved
         self._rebuild_grid_from_model(select_row=r, select_col=2)
@@ -3168,6 +3685,7 @@ VOC vocative
             del self.blocks[bidx]
 
         self._renumber_tokens()
+        self._mark_dirty()
         self._rebuild_grid_from_model(select_row=None, select_col=2)
 
     # --- Merge Cells (main annotation table) --------------------------------
@@ -3281,6 +3799,7 @@ VOC vocative
             self._merge_cells_undo_stack.append({'bidx': bidx, 'old_rows': old_rows})
             if len(self._merge_cells_undo_stack) > 50:
                 self._merge_cells_undo_stack.pop(0)
+            self._mark_dirty()
             self._rebuild_grid_from_model(select_row=first_vis_r, select_col=2)
             self._uid_on_structural_change()
             win.destroy()
@@ -3306,6 +3825,7 @@ VOC vocative
             return
         self._renumber_tokens()
         self._update_block_matrix_embed(bidx)
+        self._mark_dirty()
         self._rebuild_grid_from_model()
         self._uid_on_structural_change()
 
@@ -3430,6 +3950,8 @@ VOC vocative
                 if key not in ("Token", "Item", "Label", "Gloss"):
                     self.blocks[bidx][ridx][key] = new_value
 
+        self._mark_dirty()
+
         try:
             self.sheet.set_cell_data(r, c, new_value)
             if hasattr(self.sheet, "refresh"):
@@ -3480,53 +4002,32 @@ VOC vocative
 
     # (tksheet)
     def _populate_table(self, text):
-        """Annotate çıktısını bloklara ayır, modelini kur, grid'e doldur (global idx ile)."""
-        self.blocks = []
-        self._row_index_map = {}
-        self._sep_rows = set()
+        """Annotate çıktısını bloklara ayır, modelini kur, grid'e doldur (global idx ile).
+
+        Transactional: parsing, renumbering, and grid construction all
+        happen on local variables first. Only once every preparation step
+        has succeeded does this method replace self.blocks/_row_index_map/
+        _sep_rows and push the result into the visible sheet. If parsing or
+        grid construction raises, self.blocks (and therefore the active
+        dataset, once the caller syncs it) and the visible table are left
+        completely unchanged -- run_pipeline's except branch is what the
+        caller sees, never a partial or empty result.
+        """
         if self.sheet is None:
             return
 
-        # 1) blocks
-        raw_blocks = []
-        for b in text.split("\n\n"):
-            rows = []
-            for ln in b.splitlines():
-                ln = ln.strip()
-                if not ln:
-                    continue
-
-                parts = ln.split("\t")
-                token = label = None
-
-                if len(parts) >= 2:
-                    if len(parts) == 2:
-                        token, label = parts[0].strip(), parts[1].strip()
-                    else:
-                        token, label = parts[1].strip(), parts[2].strip()
-                else:
-                    m = re.match(r"^(\S+)\s+(TR|EN|MIXED|UID|NE|OTHER|LANG3)\s*$", ln)
-                    if m:
-                        token, label = m.group(1), m.group(2)
-
-                if token is None:
-                    continue
-
-                rr = {"idx": 0, "token": token, "label": label, "gloss": ""}
-                for h in self._extra_headers:
-                    rr.setdefault(h, "")
-                rows.append(rr)
-            raw_blocks.append(rows)
-
-        self.blocks = raw_blocks
-
-        # 2) Global
-        self._renumber_tokens()
-
-        # 3) Grid
-        data, self._row_index_map, self._sep_rows = annotation_model.build_grid_view(
-            self.blocks, self._extra_headers, skip_separator_after_empty_block=True
+        new_blocks = annotation_model.parse_annotated_text_to_blocks(text, self._extra_headers)
+        annotation_model.renumber_tokens(new_blocks)
+        data, row_index_map, sep_rows = annotation_model.build_grid_view(
+            new_blocks, self._extra_headers, skip_separator_after_empty_block=True
         )
+
+        # Commit point: everything above can raise (and must leave prior
+        # state untouched if it does); everything from here on is local
+        # widget mutation, not project data, so it's safe to apply now.
+        self.blocks = new_blocks
+        self._row_index_map = row_index_map
+        self._sep_rows = sep_rows
 
         try:
             self.sheet.headers(self._all_headers())
@@ -3677,6 +4178,8 @@ VOC vocative
                     key = hdrs[c]
                     if key not in ("Token", "Item", "Label", "Gloss"):
                         self.blocks[bidx][ridx][key] = nv
+
+            self._mark_dirty()
 
             # propagate change to the other sheet (if open)
             for other in (self.sheet, self._full_sheet):

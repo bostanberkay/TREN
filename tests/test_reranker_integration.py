@@ -511,15 +511,43 @@ def test_apply_reranker_never_raises_on_malformed_block(real_bundle):
 # ---------------------------------------------------------------------------
 
 def test_run_pipeline_calls_reranker_in_the_expected_order():
+    # The lazy-load -> annotate -> rerank -> matrix/embed-consistency chain
+    # now lives in App._run_annotation_pipeline (extracted so the "Add New
+    # Data" / "Re-run Current Text" dataset flow can share the exact same
+    # wiring instead of duplicating it -- see
+    # test_create_dataset_from_text_shares_run_annotation_pipeline below).
+    # The lazy load itself is factored one level further into
+    # _ensure_annotator_ready, which _run_annotation_pipeline calls first.
+    # run_pipeline itself just calls _run_annotation_pipeline and then
+    # populates the active dataset's table from the result.
     import inspect
     import cs_annotator_app
-    src = inspect.getsource(cs_annotator_app.App.run_pipeline)
-    load_pos = src.index("reranker_integration.load_reranker_bundle")
-    annotate_pos = src.index(".annotate(")
-    apply_pos = src.index("reranker_integration.apply_reranker")
-    consistency_pos = src.index("_ensure_matrix_embed_consistency")
-    populate_pos = src.index("_populate_table")
-    assert load_pos < annotate_pos < apply_pos < consistency_pos < populate_pos
+
+    ready_src = inspect.getsource(cs_annotator_app.App._ensure_annotator_ready)
+    assert "reranker_integration.load_reranker_bundle" in ready_src
+
+    pipeline_src = inspect.getsource(cs_annotator_app.App._run_annotation_pipeline)
+    ready_pos = pipeline_src.index("self._ensure_annotator_ready(")
+    annotate_pos = pipeline_src.index(".annotate(")
+    apply_pos = pipeline_src.index("reranker_integration.apply_reranker")
+    consistency_pos = pipeline_src.index("_ensure_matrix_embed_consistency")
+    assert ready_pos < annotate_pos < apply_pos < consistency_pos
+
+    run_pipeline_src = inspect.getsource(cs_annotator_app.App.run_pipeline)
+    run_annotation_pos = run_pipeline_src.index("self._run_annotation_pipeline(")
+    populate_pos = run_pipeline_src.index("_populate_table")
+    assert run_annotation_pos < populate_pos
+
+
+def test_create_dataset_from_text_shares_run_annotation_pipeline():
+    # The "Add New Data" (Enter New Text / Re-run Current Text) flow must go
+    # through the exact same _run_annotation_pipeline wiring as the main
+    # Run button -- not a second, divergent copy of the lazy-load/rerank
+    # sequence.
+    import inspect
+    import cs_annotator_app
+    src = inspect.getsource(cs_annotator_app.App._create_dataset_from_text)
+    assert "self._run_annotation_pipeline(" in src
 
 
 def test_app_init_declares_reranker_cache_slots():

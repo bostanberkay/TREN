@@ -7,14 +7,15 @@ The system consists of an interactive graphical annotation interface and an unde
 
 TREN’s features include, for instance:
 
-• semi-automatic token-level language identification for Turkish and English  
-• support for the annotation of intra-word code-switching structures  
-• rule-based detection of Turkish morphemes attached to English stems  
-• morphological glossing based on the Leipzig Glossing Rules  
-• interactive manual correction and user supervision of automatic labels  
-• concordance (KWIC) and frequency-based inspection tools  
-• automatic computation of Matrix Language and Embedded Language at the sentence level  
-• flexible export of annotated data in `.csv` and `.txt` formats  
+- semi-automatic token-level language identification for Turkish and English
+- support for the annotation of intra-word code-switching structures
+- rule-based detection of Turkish morphemes attached to English stems
+- morphological glossing based on the Leipzig Glossing Rules
+- interactive manual correction and user supervision of automatic labels
+- concordance (KWIC) and frequency-based inspection tools
+- automatic computation of Matrix Language and Embedded Language at the sentence level
+- multiple independent annotation datasets within a single project, switchable via tabs
+- flexible export of annotated data in `.csv`, `.txt`, TREN CoNLL-style, and `.jsonl` formats
 
 TREN is intended for use by researchers working on bilingual and multilingual language data, particularly in contexts where fine-grained annotation of code-switching is required.
 
@@ -285,6 +286,35 @@ The grid supports:
 
 ---
 
+### Multiple Data Sets
+
+A single TREN project can hold more than one independent annotation dataset. A compact tab bar sits directly above the annotation grid:
+
+```
+[ Data 1 ] [ Data 2 ] [ + ]
+┌─────────────────────────────────┐
+│ Annotation grid (active dataset) │
+└─────────────────────────────────┘
+```
+
+Each dataset has its own source text, annotation rows, labels/glosses, and Matrix/Embedded Language values. Editing one dataset never changes another. Only one dataset is displayed at a time; switching tabs swaps the grid and input panel to that dataset's content without re-running the annotation pipeline or reloading any NLP model.
+
+Each dataset also maintains its own Merge Cells / UID Review Tool undo history while the project stays open in the current session. This undo history is **not** saved to `.trenproj` and is not restored across an application restart — reopening a project always starts every dataset with empty undo history, even though its annotation data is fully restored.
+
+#### Add New Data
+
+Clicking **+** opens an **Add New Data** dialog with a name field (defaulting to `Data 2`, `Data 3`, ...) and three choices:
+
+- **Open New File** — pick a `.txt` file (or, via "All Files", any text file) through the native file chooser. The file is read as strict UTF-8; its complete contents become the new dataset's source text, and the annotation pipeline runs on it only after you press Create. If the Name field still holds its untouched automatic `Data N` default at the moment you pick a file, it's pre-filled with the file's stem — typing your own name, or a name already set from a previous pick, is never overwritten. Only the file's **name** (e.g. `corpus.txt`, never its full local path) is kept as optional, display-only metadata on the dataset — a full path could expose your account name and local folder structure if the project is later shared, and reopening the project never depends on the original file still existing anyway (the file's full text is what's actually saved in `.trenproj`).
+- **Enter New Text** — paste or type new text in the dialog; the production annotation pipeline runs on it only when you confirm, and the result becomes a new dataset. The currently active dataset is left untouched.
+- **Re-run Current Text** — re-runs the pipeline on the *active* dataset's own source text and stores the result as a new, independent dataset, useful for comparing an alternative annotation pass against the original.
+
+Only the controls belonging to the currently selected mode are enabled; switching between modes preserves whatever text you've typed and whichever file you've selected for as long as the dialog stays open. If the name is blank, no file is selected (in Open New File mode), the resulting text is empty, or annotation fails, no tab is created and the active dataset, its table, and its undo history are all left exactly as they were — selecting a file by itself never marks the project as having unsaved changes; only successfully creating the dataset does.
+
+Switching datasets automatically closes dataset-scoped tool windows (UID Review Tool, Auto-Glossing Tool, Concordance, Word Frequency List, Full Edit Window, Show Sentence) so none of them can be left editing the wrong dataset by a stale row reference.
+
+---
+
 ### Relabel Panel
 
 The relabel panel provides quick-access buttons for assigning or modifying labels in the currently selected grid cell. This design minimizes manual typing and helps maintain labeling consistency across the dataset.
@@ -315,9 +345,9 @@ The toolbar at the top of the main window allows users to manage the annotation 
 
 Core actions include:
 
-• Open: Loading input text.  
-• Run: Running the annotation pipeline.  
-• Save: Saving annotated output.  
+- Open: Loading input text.
+- Run: Running the annotation pipeline.
+- Export: Opens the Export Table dialog to choose a dataset and format (see [Export Table](#export-table)).
 
 Feature toggles allow users to enable or disable optional components:
 
@@ -350,10 +380,10 @@ The menu bar provides access to core application functions, project management u
 
 The **File** menu contains basic actions for managing input and output during the annotation workflow.
 
-• **Open Input**: Load a raw text file into the input panel.  
-• **Run**: Execute the annotation pipeline on the current input text.  
-• **Save Output As**: Export the annotated data to disk.  
-• **Exit**: Close the application.
+- **Open Input**: Load a raw text file into the input panel.
+- **Run**: Execute the annotation pipeline on the current input text.
+- **Export Table**: Open the Export Table dialog to choose a dataset and format (TXT, CSV, TREN CoNLL-style, or JSONL) and export it to disk. See [Export Table](#export-table).
+- **Exit**: Close the application.
 
 ---
 
@@ -367,7 +397,11 @@ The **Project** menu is used to manage annotation sessions.
 • **Open Project Save**: Load a previously saved project file (`.trenproj`).  
 • **Save Project Progress**: Save the current annotation state for later continuation.
 
-Project files store the input text, annotation data, configuration settings, and interface state.
+Project files store every dataset (name, source text, annotation blocks, and Matrix/Embedded Language values), which dataset was active, configuration settings, and cursor/selection position. They do **not** store Merge Cells / UID Review Tool undo history, which is session-only (see [Multiple Data Sets](#multiple-data-sets)).
+
+New Project, Open Project Save, and closing the application all share the same unsaved-changes check: if nothing has changed since the project was last saved (or opened/created), the action proceeds immediately with no prompt. Otherwise you're asked to Save, Discard, or Cancel — Save only proceeds once the save has actually completed, Discard proceeds without saving, and Cancel leaves the current project untouched. Opening a project defers this check until after the selected file has been fully read and validated, so cancelling the file chooser or picking an invalid file never touches your current work.
+
+`.trenproj` files carry a schema version, and which version a file declares strictly determines how it must be shaped — the loader never guesses the shape from whichever keys happen to be present. Version 2 is the current format and requires a non-empty `"datasets"` list. Version 1 is the older, single-dataset format from before this feature and requires the legacy `"blocks"`/`"input_text"`/`"extra_headers"` top-level shape; a version 1 file that also contains a `"datasets"` key (for example a hand-edited or half-migrated file) is rejected as malformed rather than silently accepted. A file with no `"version"` key at all predates versioning and is treated as version 1, so the same requirement applies to it. A version 1 project still opens correctly and appears as a single dataset named `Data 1`; it is not rewritten on disk (and stays version 1) until you explicitly save it again, at which point it is written as version 2. An unrecognized future version is likewise rejected with a clear error rather than being misread.
 
 ---
 
@@ -407,6 +441,57 @@ The **Tools** menu provides access to auxiliary analytical and inspection window
 - **Concordance (KWIC)**
 - **Show Sentence (Context Viewer)**
 - **Word Frequency List**
+
+## Export Table
+
+**File ▸ Export Table** (or the toolbar's **Export** button) opens a small dialog:
+
+```
+Dataset: [ Data 1 ▼ ]
+Format:  [ TXT ▼ ]
+```
+
+Choose which dataset to export (defaulting to the currently active one) and a format — **TXT**, **CSV**, **TREN CoNLL-style**, or **JSONL** — then choose a destination file. Exactly one dataset is written per export; datasets are never merged into a single file. The suggested filename is derived from the dataset's name (sanitized for the filesystem). Cancelling at any point creates no file, and exporting never modifies the annotation data or re-runs the annotation pipeline.
+
+### TXT and CSV
+
+Unchanged from previous versions — see [`docs/file-formats.md`](docs/file-formats.md) for the exact column and separator rules. Exporting the active dataset still reflects exactly what the grid currently displays (including any as-yet-uncommitted edits); exporting any other dataset is built from its stored annotation data.
+
+### TREN CoNLL-style (`.conll`)
+
+A deterministic, TREN-specific export format — **not** CoNLL-U and not compatible with any particular external shared-task format. A file-level header, then one comment block plus one tab-separated line per token for each sentence, with token indices restarting at `1` in every sentence:
+
+```
+# TREN CoNLL export
+# columns = TokenIndex Token Label Gloss
+
+# sent_id = 1
+# matrix_lang = TR
+# embedded_lang = EN
+1	Bugün	TR	_
+2	meetinge	MIXED	meeting-DAT
+3	katıldım	TR	_
+```
+
+- `sent_id` comes from the sentence's `SentenceID` row when present, otherwise its 1-based position in the dataset.
+- `matrix_lang` / `embedded_lang` comment lines are included only when the corresponding `MatrixLang`/`EmbedLang` row is present (never fabricated).
+- An empty gloss is written as `_`. A stray tab or newline inside a token/label/gloss is replaced with a space so it can never split or extend a line.
+- Sentences are separated by a single blank line; `SentenceID`/`MatrixLang`/`EmbedLang` are never emitted as token lines. The file is valid UTF-8 with Unicode preserved exactly.
+
+### JSONL (`.jsonl`)
+
+One JSON object per sentence, one physical line per object, produced with Python's standard `json` module (`ensure_ascii=False`, so Unicode is written directly rather than escaped):
+
+```json
+{"sentence_id": "1", "dataset": "Data 1", "source_text": "Bugün meetinge katıldım", "matrix_lang": "TR", "embedded_lang": "EN", "tokens": [{"index": 1, "token": "Bugün", "label": "TR", "gloss": ""}, {"index": 2, "token": "meetinge", "label": "MIXED", "gloss": "meeting-DAT"}, {"index": 3, "token": "katıldım", "label": "TR", "gloss": ""}]}
+```
+
+- `source_text` is the sentence's token sequence joined with spaces (reflecting current annotation state, not necessarily the original raw input line).
+- `matrix_lang`/`embedded_lang` are empty strings, not omitted, when their meta row is absent.
+- Empty glosses are empty strings (`""`), not `_`. `SentenceID`/`MatrixLang`/`EmbedLang` rows are excluded from `tokens`.
+- Token indices also restart at `1` per sentence, matching the CoNLL-style export.
+
+Both `blocks_to_conll` and `blocks_to_jsonl` (in `annotation_model.py`) are pure functions with no GUI or pipeline dependency, and are deterministic for identical input.
 
 ## Auto-Glossing Tool
 
