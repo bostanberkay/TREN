@@ -189,7 +189,7 @@ Batch C is included by default; pass `--exclude-batch-c-features` to disable it.
 
 ```
 Input -> tokenizer -> rule-based annotator -> NE Policies C/D -> frozen Phase 5F reranker
-      -> strict residual verbal MIXED detector -> Matrix/Embedded consistency -> output
+      -> strict residual verbal MIXED detector -> UID->TR resolver -> Matrix/Embedded consistency -> output
 ```
 
 ### Active components
@@ -201,28 +201,44 @@ Input -> tokenizer -> rule-based annotator -> NE Policies C/D -> frozen Phase 5F
 | NE Policy D | Withholds NE status from guarded English-lexical/compound-entity matches | Active |
 | Frozen Phase 5F reranker | Promotes eligible `UID`/`NE`/`TR` candidates to `MIXED` at threshold 0.85 | Active, frozen |
 | Residual verbal MIXED detector | Promotes eligible `UID`/`TR` verbal candidates to `MIXED`, strict-lexicon evidence only | Active |
-| UID→TR resolver | Offline-validated | **Not integrated** |
+| UID→TR resolver (`uid_resolver.py`) | Promotes eligible, still-`UID` tokens to `TR` using a conservative, multi-signal, explainable evidence model — after both stages above, `UID`→`TR` only | **Active**, behind `reranker_integration.UID_TR_RESOLVER_ENABLED` (default `True`; set `False` to restore the exact pre-integration output) |
 
 ### Real-corpus metrics (primary evidence)
+
+**Historical baseline** (measured at commit `5d644ae`, 2026-08-02, before the UID→TR resolver):
 
 | Accuracy | Weighted F1 | Auto macro F1 | Lexical macro F1 | MIXED P/R/F1 |
 |---:|---:|---:|---:|---|
 | 0.8725 | 0.9041 | 0.6877 | 0.8698 | 0.8661 / 0.8899 / 0.8778 |
 
+**Re-measured, 2026-08-09** (same unchanged pipeline code/corpus files — see the UID→TR resolver section below for why this differs from the row above by ~0.3pp; the exact original prediction file no longer exists, so this is a from-scratch, methodology-reconciled re-measurement, not a replacement of the historical number):
+
+| Condition | Accuracy | Weighted F1 | Auto macro F1 | Lexical macro F1 | MIXED P/R/F1 |
+|---|---:|---:|---:|---:|---|
+| Without UID→TR resolver | 0.8751 | 0.9070 | 0.6916 | 0.8684 | 0.8655 / 0.8935 / 0.8793 |
+| **With UID→TR resolver (current production)** | **0.8846** | **0.9121** | **0.6950** | 0.8684 (MIXED F1 unchanged) | 0.8655 / 0.8935 / 0.8793 (unchanged) |
+
 ### Synthetic benchmarks (secondary, diagnostic — not external validation)
 
-| Benchmark | Accuracy | Weighted F1 | Auto macro F1 | Lexical macro F1 | MIXED P/R/F1 |
-|---|---:|---:|---:|---:|---|
-| First synthetic (100 sent.) | 0.8660 | 0.8897 | 0.5621 | 0.8673 | 0.7907 / 0.6800 / 0.7312 |
-| Synthetic v2, adjudicated gold (100 sent., 622 tok.) | 0.9212 | 0.9406 | 0.7245 | 0.9064 | 0.8000 / 0.9231 / 0.8571 |
+| Benchmark | Condition | Accuracy | Weighted F1 | MIXED P/R/F1 |
+|---|---|---:|---:|---|
+| First synthetic (100 sent.) | Without UID→TR resolver | 0.8655 | 0.8894 | 0.7907 / 0.6800 / 0.7312 |
+| First synthetic (100 sent.) | **With UID→TR resolver** | **0.8828** | **0.8987** | 0.7907 / 0.6800 / 0.7312 (unchanged) |
+| Synthetic v2, adjudicated gold (100 sent., 622 tok.) | Without UID→TR resolver | 0.9212 | 0.9406 | 0.8000 / 0.9231 / 0.8571 |
+| Synthetic v2, adjudicated gold (100 sent., 622 tok.) | **With UID→TR resolver** | **0.9341** | **0.9476** | 0.8000 / 0.9231 / 0.8571 (unchanged) |
 
-Both benchmarks are synthetic and LLM-authored — diagnostic secondary evidence, not external validation. Benchmark v2's frozen original gold was preserved unchanged; three high-confidence gold corrections (`soundtrack` MIXED→EN, `dress` TR→EN, `code` TR→EN) live only in a separate adjudicated-gold file, never in the frozen original.
+Both benchmarks are synthetic and LLM-authored — diagnostic secondary evidence, not external validation. Benchmark v2's frozen original gold was preserved unchanged; three high-confidence gold corrections (`soundtrack` MIXED→EN, `dress` TR→EN, `code` TR→EN) live only in a separate adjudicated-gold file, never in the frozen original. (First-synthetic numbers above were re-measured together with the UID→TR resolver work after fixing a gold-alignment bug in the evaluation harness itself — see CHANGELOG.)
+
+### UID→TR resolver
+
+Integrated after offline validation across the real corpus and both synthetic benchmarks above: **zero harmful `UID`→`TR` changes and zero regression on any other label (`NE`/`EN`/`OTHER`/`LANG3`/`MIXED` all byte-identical) on every data source measured.** Scope is deliberately narrow — `UID → TR` only, never `UID → EN` — using an additive, explainable, multi-signal evidence model (trusted-lexicon match, valid Turkish suffix-chain analysis, strong fastText support, Turkish orthographic evidence, plus a capped sentence-level `MatrixLang` bonus that alone is never sufficient) behind a conservative promotion threshold, with hard exclusion gates for URLs/mentions/hashtags/emails/codes/numbers/punctuation/emoji/apostrophe-bearing tokens/acronyms/probable proper names/direct English matches, and — critically — for any token with an English-root-plus-Turkish-suffix analysis, so it can never pre-empt a MIXED promotion the way an earlier, reverted Turkish-stem fallback once did. Runs strictly after the residual verbal detector, on whatever is still `UID`, inside `reranker_integration.apply_reranker()`. See `uid_resolver.py`'s module docstring for the full design and `tests/test_uid_resolver.py` / `tests/test_reranker_integration.py` for its test coverage (46 + 15 tests).
 
 ### Production guarantees
 
 - Frozen Phase 5F model and threshold (0.85) unchanged.
 - Residual verbal detection runs after the reranker, strict-lexicon evidence only, and can only promote `UID`/`TR` to `MIXED` — it never touches `NE`/`EN`/`OTHER`/`LANG3`/an already-`MIXED` token.
-- `LANG3` remains manual-only. The UID resolver is not integrated. No benchmark-specific rules are present anywhere in production.
+- The UID→TR resolver runs after the residual verbal detector, only ever promotes `UID`→`TR`, and never touches `TR`/`EN`/`MIXED`/`NE`/`OTHER`/`LANG3`/`SentenceID`/`MatrixLang`/`EmbedLang` otherwise; a resolver exception for one token leaves that token unchanged and never interrupts the rest of the block; disabling `UID_TR_RESOLVER_ENABLED` restores the exact prior output.
+- `LANG3` remains manual-only. No benchmark-specific rules are present anywhere in production.
 
 ### Known limitations
 

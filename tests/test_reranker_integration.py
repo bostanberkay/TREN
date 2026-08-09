@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cs_pipeline import Annotator, DEFAULTS
 import reranker_integration as ri
+import uid_resolver as ur
 
 REAL_MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "models")
 
@@ -702,3 +703,181 @@ def test_residual_production_native_controls_never_promote_via_apply_reranker(to
     with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)):
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert f"{token}\tMIXED" not in result, f"{token} was incorrectly promoted: {result}"
+
+
+# ---------------------------------------------------------------------------
+# UID->TR resolver -- production integration inside apply_reranker() (see
+# reranker_integration.py's module docstring for the authorized brief this
+# implements: real corpus + both synthetic benchmarks re-evaluated with zero
+# harmful changes and zero regression on any other label). This file tests
+# PLACEMENT, the UID_TR_RESOLVER_ENABLED flag, byte-identical non-UID
+# handling, Matrix/Embed recomputation, and fail-safety through the FULL
+# apply_reranker() wiring. The resolver's own gate/evidence/threshold logic
+# is tested exhaustively, in isolation, in tests/test_uid_resolver.py.
+# ---------------------------------------------------------------------------
+
+def _disable_frozen_and_residual_stages():
+    """Context-manager-friendly pair of patches that make the frozen
+    reranker pass and the residual verbal pass both permanently decline,
+    so any promotion observed in a test using this is attributable ONLY to
+    the UID->TR resolver stage (mirrors the existing convention above for
+    isolating the residual stage from the frozen reranker)."""
+    return (
+        mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)),
+        mock.patch("reranker_integration.mr.evaluate_residual_verbal_promotion",
+                    return_value=(False, None, "disabled_for_test")),
+    )
+
+
+def test_uid_to_tr_resolver_stage_runs_after_both_frozen_and_residual_stages_in_source():
+    import inspect
+    src = inspect.getsource(ri.apply_reranker)
+    rerank_pos = src.index("_rerank_token_label(")
+    residual_pos = src.index("_apply_residual_verbal_promotion(")
+    resolver_pos = src.index("_apply_uid_to_tr_resolver_stage(")
+    assert rerank_pos < residual_pos < resolver_pos
+
+
+def test_uid_to_tr_resolver_stage_safe_promotion_via_apply_reranker(real_bundle):
+    obj = _make_annotator(turkish_all={"meyler"})
+    original = _sentence_block(1, [("meyler", "UID")], matrix="TR", embed="-")
+    p1, p2 = _disable_frozen_and_residual_stages()
+    with p1, p2, \
+         mock.patch.object(obj, "_ft_predict", return_value=("TR", 0.95)), \
+         mock.patch.object(obj, "_has_valid_turkish_nominal_analysis", return_value=True):
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert "meyler\tTR" in result
+    assert "UID" not in result
+
+
+def test_uid_to_tr_resolver_stage_never_reconsiders_a_token_already_promoted_to_mixed(real_bundle):
+    # A token the frozen reranker promotes to MIXED must never even reach
+    # the resolver stage -- proven by spying on ur.decide, not just by
+    # checking the final label (which could coincidentally also be right).
+    obj = _make_annotator(english_words={"boost"})
+    original = _sentence_block(1, [("boostlamak", "UID")], matrix="-", embed="-")
+    with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.95)), \
+         mock.patch("reranker_integration.ur.decide") as mock_decide:
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert "boostlamak\tMIXED" in result
+    mock_decide.assert_not_called()
+
+
+def test_uid_to_tr_resolver_stage_never_overrides_english_root_turkish_suffix_candidate(real_bundle):
+    # End-to-end, real (unmocked) uid_resolver.decide(): "uploadın" = stem
+    # "upload" (English lexicon) + Turkish genitive suffix "ın" -- exactly
+    # the shape the frozen reranker/residual stage treat as a MIXED
+    # candidate, so the resolver's own hard gate must block it, leaving it
+    # UID (neither stage promotes it here since classify_candidate/
+    # evaluate_residual_verbal_promotion are disabled below).
+    obj = _make_annotator(english_words={"upload"})
+    original = _sentence_block(1, [("uploadın", "UID")], matrix="-", embed="-")
+    p1, p2 = _disable_frozen_and_residual_stages()
+    with p1, p2, mock.patch.object(obj, "_ft_predict", return_value=("XX", 0.0)):
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert "uploadın\tUID" in result
+
+
+@pytest.mark.parametrize("label", ["NE", "EN", "OTHER", "LANG3"])
+def test_uid_to_tr_resolver_stage_leaves_other_labels_byte_identical(label, real_bundle):
+    obj = _make_annotator(turkish_all={"meyler"})
+    original = _sentence_block(1, [("meyler", label)], matrix="-", embed="-")
+    p1, p2 = _disable_frozen_and_residual_stages()
+    with p1, p2, \
+         mock.patch.object(obj, "_ft_predict", return_value=("TR", 0.95)), \
+         mock.patch.object(obj, "_has_valid_turkish_nominal_analysis", return_value=True), \
+         mock.patch("reranker_integration.ur.decide") as mock_decide:
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert result == original
+    mock_decide.assert_not_called()
+
+
+def test_uid_to_tr_resolver_stage_recomputes_matrix_embed_only_on_promotion(real_bundle):
+    obj = _make_annotator(turkish_all={"meyler"})
+    original = _sentence_block(1, [("ben", "TR"), ("meyler", "UID")], matrix="TR", embed="-")
+    p1, p2 = _disable_frozen_and_residual_stages()
+    with p1, p2, \
+         mock.patch.object(obj, "_ft_predict", return_value=("TR", 0.95)), \
+         mock.patch.object(obj, "_has_valid_turkish_nominal_analysis", return_value=True), \
+         mock.patch.object(obj, "_decide_matrix_embed", wraps=obj._decide_matrix_embed) as spy:
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    spy.assert_called_once()
+    assert "meyler\tTR" in result
+    assert "MatrixLang\tTR" in result
+    assert "EmbedLang\t-" in result
+
+
+def test_uid_to_tr_resolver_stage_recompute_skipped_when_no_promotion(real_bundle):
+    obj = _make_annotator()
+    original = _sentence_block(1, [("zzqxwv", "UID")], matrix="TR", embed="-")
+    p1, p2 = _disable_frozen_and_residual_stages()
+    with p1, p2, \
+         mock.patch.object(obj, "_ft_predict", return_value=("XX", 0.0)), \
+         mock.patch.object(obj, "_has_valid_turkish_nominal_analysis", return_value=False), \
+         mock.patch.object(obj, "_decide_matrix_embed", wraps=obj._decide_matrix_embed) as spy:
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    spy.assert_not_called()
+    assert result == original
+
+
+def test_uid_to_tr_resolver_stage_exception_is_fail_safe(real_bundle):
+    obj = _make_annotator(turkish_all={"meyler"})
+    original = _sentence_block(1, [("meyler", "UID")], matrix="-", embed="-")
+    p1, p2 = _disable_frozen_and_residual_stages()
+    with p1, p2, mock.patch("reranker_integration.ur.decide", side_effect=RuntimeError("boom")):
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert result == original  # unchanged, no crash
+
+
+def test_uid_to_tr_resolver_stage_never_raises_preserves_label_and_continues(real_bundle):
+    # Mirrors test_residual_promotion_never_raises_preserves_label_and_continues:
+    # one token's resolver failure must not interrupt the rest of the block.
+    obj = _make_annotator(turkish_all={"meyler"})
+    original = _sentence_block(1, [("zzqxwv", "UID"), ("meyler", "UID")], matrix="-", embed="-")
+    p1, p2 = _disable_frozen_and_residual_stages()
+
+    real_decide = ur.decide
+
+    def flaky_decide(item, label, annotator, cfg, matrix_lang=None):
+        if item == "zzqxwv":
+            raise RuntimeError("boom")
+        return real_decide(item, label, annotator, cfg, matrix_lang=matrix_lang)
+
+    with p1, p2, \
+         mock.patch.object(obj, "_ft_predict", return_value=("TR", 0.95)), \
+         mock.patch.object(obj, "_has_valid_turkish_nominal_analysis", return_value=True), \
+         mock.patch("reranker_integration.ur.decide", side_effect=flaky_decide):
+        result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert "zzqxwv\tUID" in result  # the token whose evaluation raised: untouched
+    assert "meyler\tTR" in result  # the other token in the same block: still promoted
+
+
+def test_full_production_pipeline_output_is_deterministic(real_bundle):
+    obj = _make_annotator(turkish_all={"meyler"}, english_words={"boost"})
+    original = _sentence_block(1, [("boostlamak", "UID"), ("meyler", "UID")], matrix="-", embed="-")
+    with mock.patch.object(obj, "_ft_predict", return_value=("TR", 0.95)), \
+         mock.patch.object(obj, "_has_valid_turkish_nominal_analysis", return_value=True):
+        result1 = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+        result2 = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+    assert result1 == result2
+
+
+def test_uid_to_tr_resolver_disabled_flag_restores_previous_output(real_bundle):
+    # Flipping UID_TR_RESOLVER_ENABLED to False must restore EXACTLY the
+    # pre-integration output -- i.e. the frozen reranker + residual verbal
+    # stages still run (unaffected by this flag), but nothing further
+    # touches a still-UID token.
+    obj = _make_annotator(turkish_all={"meyler"})
+    original = _sentence_block(1, [("meyler", "UID")], matrix="TR", embed="-")
+    p1, p2 = _disable_frozen_and_residual_stages()
+
+    with p1, p2, \
+         mock.patch.object(obj, "_ft_predict", return_value=("TR", 0.95)), \
+         mock.patch.object(obj, "_has_valid_turkish_nominal_analysis", return_value=True):
+        enabled_result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+        with mock.patch("reranker_integration.UID_TR_RESOLVER_ENABLED", False):
+            disabled_result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
+
+    assert "meyler\tTR" in enabled_result
+    assert disabled_result == original
+    assert disabled_result != enabled_result

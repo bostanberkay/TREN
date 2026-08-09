@@ -33,6 +33,27 @@ it is a separate, purely rule/lexicon-based layer. cs_annotator_app.py is
 unchanged: this stage is folded into apply_reranker() itself, not a new
 production entry point.
 
+As of the UID->TR resolver integration (offline-validated across the real
+corpus and two synthetic benchmarks with zero harmful changes and zero
+regression on any other label -- see CHANGELOG/README "UID->TR Resolver"
+section), apply_reranker() runs a THIRD, independent post-processing stage
+internally, strictly after the residual verbal detector above and before
+Matrix/Embedded Language is recomputed: uid_resolver.decide() (see
+uid_resolver.py -- a separate, independently-testable, purely
+rule/lexicon/fastText-based module, not duplicated here) may promote a
+token STILL labeled UID after both prior stages to TR, when its
+conservative, explainable, multi-signal evidence threshold is met. This
+stage is gated behind UID_TR_RESOLVER_ENABLED (a named, explicit production
+constant -- flip to False to restore the exact pre-integration output
+byte-for-byte; see test_uid_to_tr_resolver_disabled_flag_restores_previous_output).
+It never touches NE/EN/MIXED/OTHER/LANG3, never touches a token already
+promoted to MIXED by either prior stage, never performs UID->EN, and never
+retrains/rethresholds/modifies the frozen Phase 5F model, resources/models/*,
+or any lexicon -- see uid_resolver.py's own module docstring for the full
+hard-exclusion-gate and evidence-model design. cs_annotator_app.py is
+unchanged: this stage, like the residual verbal detector before it, is
+folded into apply_reranker() itself, not a new production entry point.
+
 Model artifacts live in resources/models/ (model.joblib, vectorizer.joblib,
 metadata.json), copied byte-for-byte from the frozen Phase 5F experiment
 (artifacts/mixed_reranker/phase5f_batch_acg_pruned/) -- never regenerated or
@@ -75,6 +96,17 @@ import scipy.sparse as sp
 
 import annotation_model
 import mixed_reranker as mr
+import uid_resolver as ur
+
+# Named production feature flag for the UID->TR resolver stage (see module
+# docstring). True = integrated (current production default, authorized by
+# the offline evaluation in CHANGELOG/README). Set to False to disable the
+# stage entirely and restore apply_reranker()'s exact pre-integration
+# output -- covered by
+# test_uid_to_tr_resolver_disabled_flag_restores_previous_output in
+# tests/test_reranker_integration.py. Does not affect the frozen reranker
+# or residual verbal detector stages, which run unconditionally either way.
+UID_TR_RESOLVER_ENABLED = True
 
 DEFAULT_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "models")
 MODEL_FILENAME = "model.joblib"
@@ -389,6 +421,41 @@ def _apply_residual_verbal_promotion(item: str, label: str, annotator, cfg: dict
         return label
 
 
+# UID->TR resolver: eligible ONLY for UID (never TR/NE/EN/MIXED/OTHER/LANG3)
+# -- see uid_resolver.check_eligibility for the full hard-exclusion-gate
+# list. Checked against a token's CURRENT label, i.e. after BOTH the frozen
+# reranker pass and the residual verbal detector pass have already run for
+# that token, so this stage only ever sees a token neither prior stage
+# promoted -- it can never pre-empt a MIXED promotion, only ever act on
+# whatever is left labeled UID once both have finished.
+_UID_TR_RESOLVER_ELIGIBLE_LABELS = frozenset({"UID"})
+
+
+def _apply_uid_to_tr_resolver_stage(item: str, label: str, annotator, cfg: dict,
+                                     matrix_lang: Optional[str]) -> str:
+    """Return the (possibly overridden) label for one token via the
+    experimental-but-now-integrated UID->TR resolver (uid_resolver.decide(),
+    UID->TR only -- see uid_resolver.py's module docstring for the complete
+    hard-exclusion-gate and evidence-model design). Returns `label`
+    unchanged, with no effect at all, whenever UID_TR_RESOLVER_ENABLED is
+    False. Never raises -- any unexpected failure leaves the label
+    untouched, mirroring _rerank_token_label's and
+    _apply_residual_verbal_promotion's own fail-safe contract, so a single
+    token's resolver failure cannot interrupt annotation of the rest of the
+    block.
+    """
+    if not UID_TR_RESOLVER_ENABLED:
+        return label
+    if label not in _UID_TR_RESOLVER_ELIGIBLE_LABELS:
+        return label
+    try:
+        decision = ur.decide(item, label, annotator, cfg, matrix_lang=matrix_lang)
+        return decision.proposed_label if decision.promote else label
+    except Exception as e:
+        _warn(f"UID->TR resolver failed for {item!r} (label={label!r}), keeping original: {e}")
+        return label
+
+
 def apply_reranker(annotated_text: str, annotator, cfg: dict, bundle: Optional[ReRankerBundle]) -> str:
     """Post-process Annotator.annotate()'s raw text output with the frozen
     Phase 5F reranker.
@@ -400,22 +467,28 @@ def apply_reranker(annotated_text: str, annotator, cfg: dict, bundle: Optional[R
     Label, when the residual verbal detector (strict evidence only, see
     _apply_residual_verbal_promotion) subsequently promotes a still-UID/TR
     candidate to MIXED -- always AFTER (1), never touching NE, and never
-    reconsidering a token (1) already promoted; (2) an existing
-    MatrixLang/EmbedLang row's value, recomputed via the unmodified
-    Annotator._decide_matrix_embed, and only for blocks where a label
-    actually changed by either stage. Blocks with no label change are
-    returned byte-for-byte identical to the input.
+    reconsidering a token (1) already promoted; (1c) a token row's Label,
+    when the UID->TR resolver (see _apply_uid_to_tr_resolver_stage,
+    gated behind UID_TR_RESOLVER_ENABLED) subsequently promotes a
+    still-UID candidate to TR -- always AFTER (1) and (1b), never touching
+    TR/EN/MIXED/NE/OTHER/LANG3, and never reconsidering a token either
+    prior stage already promoted; (2) an existing MatrixLang/EmbedLang
+    row's value, recomputed via the unmodified Annotator._decide_matrix_embed,
+    and only for blocks where a label actually changed by any of the three
+    stages. Blocks with no label change are returned byte-for-byte
+    identical to the input.
 
     If `bundle` is None (model unavailable), returns `annotated_text`
     completely unchanged -- this is the fallback path when
     load_reranker_bundle() failed for any reason, so annotation output is
     identical to the original rule-based-only behavior, INCLUDING the
-    residual verbal stage (it does not run in this fallback path either,
-    since it is defined as a stage that follows the frozen reranker, not a
-    replacement for it). Never raises. Performs no parser or
-    candidate-generation changes -- called from cs_annotator_app.py's
-    run_pipeline() on every annotation request, right after
-    Annotator.annotate() and before _ensure_matrix_embed_consistency().
+    residual verbal stage and the UID->TR resolver stage (neither runs in
+    this fallback path either, since both are defined as stages that
+    follow the frozen reranker, not a replacement for it). Never raises.
+    Performs no parser or candidate-generation changes -- called from
+    cs_annotator_app.py's run_pipeline() on every annotation request,
+    right after Annotator.annotate() and before
+    _ensure_matrix_embed_consistency().
     """
     if bundle is None:
         return annotated_text
@@ -424,6 +497,9 @@ def apply_reranker(annotated_text: str, annotator, cfg: dict, bundle: Optional[R
     new_blocks = []
     for block in blocks:
         records = _parse_block_lines(block)
+        matrix_lang = next(
+            (rec["value"] for rec in records if rec["kind"] == "meta" and rec["name"] == "MatrixLang"),
+            None)
 
         changed = False
         for rec in records:
@@ -438,6 +514,14 @@ def apply_reranker(annotated_text: str, annotator, cfg: dict, bundle: Optional[R
             if rec["kind"] != "token":
                 continue
             new_label = _apply_residual_verbal_promotion(rec["item"], rec["label"], annotator, cfg)
+            if new_label != rec["label"]:
+                rec["label"] = new_label
+                changed = True
+
+        for rec in records:
+            if rec["kind"] != "token":
+                continue
+            new_label = _apply_uid_to_tr_resolver_stage(rec["item"], rec["label"], annotator, cfg, matrix_lang)
             if new_label != rec["label"]:
                 rec["label"] = new_label
                 changed = True
