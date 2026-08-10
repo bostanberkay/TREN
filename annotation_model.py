@@ -233,14 +233,24 @@ def iter_visible_rows(blocks, row_index_map, sep_rows):
 
 
 def collect_label_rows(blocks, row_index_map, sep_rows, labels):
-    """Collect every row whose label is in `labels` (an iterable of label
-    strings, e.g. {"UID"}), in corpus/visible order. Returns a list of
-    {"vis_r", "bidx", "ridx"} dicts. Used by the UID Review Tool for its
-    default UID list and, with a different label set, for other label-scoped
-    views."""
+    """Collect every TOKEN row whose label is in `labels` (an iterable of
+    label strings, e.g. {"UID"}), in corpus/visible order. Returns a list of
+    {"vis_r", "bidx", "ridx"} dicts. Used by the Confidence Review Tool for
+    its default UID list and, with a different label set, for its other
+    label-scoped views.
+
+    Meta rows (MatrixLang/EmbedLang/SentenceID) are always excluded, even
+    when their own value happens to match `labels` -- e.g. a MatrixLang row
+    is stored as {"token": "MatrixLang", "label": "TR"}, so filtering for
+    {"TR"} would otherwise incorrectly collect it as if it were a TR TOKEN.
+    This never mattered while the only caller filtered for {"UID"} (no meta
+    row's value is ever "UID"), but matters as soon as a caller filters for
+    TR/EN, so it is fixed here rather than left as a latent trap."""
     wanted = set(labels)
     out = []
     for vis_r, bidx, ridx, row in iter_visible_rows(blocks, row_index_map, sep_rows):
+        if is_meta_row_token(row.get("token", "")):
+            continue
         if str(row.get("label", "") or "").strip() in wanted:
             out.append({"vis_r": vis_r, "bidx": bidx, "ridx": ridx})
     return out

@@ -1,6 +1,8 @@
-# tests/test_uid_review_tool_gui.py
+# tests/test_confidence_review_tool_gui.py
 """
-Permanent GUI regression tests for the UID Review Tool and the main
+Permanent GUI regression tests for the Confidence Review Tool (formerly
+"UID Review Tool" -- it now reviews uncertain/low-confidence tokens across
+any of the 7 schema labels, not just UID; see confidence.py) and the main
 annotation table's Merge Cells feature.
 
 These tests drive REAL Tk widgets with REAL event_generate calls -- mouse
@@ -31,6 +33,7 @@ with no X server/Xvfb), the module is skipped entirely via the
 import copy
 import os
 import sys
+from unittest import mock
 
 import pytest
 
@@ -40,6 +43,7 @@ import tkinter as tk  # noqa: E402
 
 import cs_annotator_app as caa  # noqa: E402
 import annotation_model  # noqa: E402
+import confidence as cf  # noqa: E402
 
 
 def _tk_available():
@@ -148,18 +152,54 @@ def make_app(blocks):
     return app
 
 
+def uncertain_confidence(label="UID", band="LOW", score=0.4):
+    """A confidence record whose review_recommended=True -- makes a row
+    eligible for the "All Uncertain" default view (confidence.
+    is_review_required), regardless of its label. Mirrors
+    ConfidenceRecord.to_dict()'s shape exactly."""
+    return {
+        "token": "", "rule_based_label": label, "final_label": label,
+        "confidence_score": score, "confidence_band": band,
+        "uncertainty_reasons": [], "evidence_summary": [],
+        "review_recommended": True, "promoted_by": None,
+        "calibration_note": cf.CALIBRATION_NOTE,
+    }
+
+
+def confident_confidence(label="TR", score=0.95):
+    """A confidence record whose review_recommended=False -- must NEVER
+    appear in the "All Uncertain" default view."""
+    return {
+        "token": "", "rule_based_label": label, "final_label": label,
+        "confidence_score": score, "confidence_band": "HIGH",
+        "uncertainty_reasons": [], "evidence_summary": [],
+        "review_recommended": False, "promoted_by": None,
+        "calibration_note": cf.CALIBRATION_NOTE,
+    }
+
+
 def two_sentence_blocks():
+    """Both UID tokens ("backend", "cat") carry a review-required
+    confidence record and the TR token ("sunucusu") carries a confident
+    (review_recommended=False) one, so the tool's new "All Uncertain"
+    default view yields the exact same [backend, cat] list/order every
+    test below has always assumed -- these fixtures now exercise the new
+    default path instead of the old fixed UID-only path, with no change to
+    any test body."""
     return [
         [
             {"idx": "", "token": "SentenceID", "label": "1", "gloss": ""},
-            {"idx": 1, "token": "backend", "label": "UID", "gloss": ""},
-            {"idx": 2, "token": "sunucusu", "label": "TR", "gloss": ""},
+            {"idx": 1, "token": "backend", "label": "UID", "gloss": "",
+             "confidence": uncertain_confidence("UID")},
+            {"idx": 2, "token": "sunucusu", "label": "TR", "gloss": "",
+             "confidence": confident_confidence("TR")},
             {"idx": "", "token": "MatrixLang", "label": "TR", "gloss": ""},
             {"idx": "", "token": "EmbedLang", "label": "EN", "gloss": ""},
         ],
         [
             {"idx": "", "token": "SentenceID", "label": "2", "gloss": ""},
-            {"idx": 3, "token": "cat", "label": "UID", "gloss": ""},
+            {"idx": 3, "token": "cat", "label": "UID", "gloss": "",
+             "confidence": uncertain_confidence("UID")},
             {"idx": "", "token": "MatrixLang", "label": "TR", "gloss": ""},
             {"idx": "", "token": "EmbedLang", "label": "EN", "gloss": ""},
         ],
@@ -191,7 +231,7 @@ def expected_matrix_embed(app, bidx):
 
 
 # =========================================================================
-# UID Review Tool: real click / keyboard interaction
+# Confidence Review Tool: real click / keyboard interaction
 # =========================================================================
 
 def test_real_click_on_uid_row_selects_it():
@@ -611,15 +651,16 @@ def _confirm_merge_directly(app, bidx, ridx_list, first_vis_r, merged_token, mer
 
 
 def test_apply_after_merge_targets_intended_token_not_a_neighbor():
-    """1. Open UID Review Tool. 2. Select a UID. 3. Merge earlier rows in the
-    same sentence. 4. Apply a UID edit. 5. Confirm the intended token -- not
-    a neighboring token -- changes."""
+    """1. Open the Confidence Review Tool. 2. Select a UID token. 3. Merge
+    earlier rows in the same sentence. 4. Apply a UID edit. 5. Confirm the
+    intended token -- not a neighboring token -- changes."""
     blocks = [
         [
             {"idx": "", "token": "SentenceID", "label": "1", "gloss": ""},
             {"idx": 1, "token": "a", "label": "TR", "gloss": ""},
             {"idx": 2, "token": "b", "label": "TR", "gloss": ""},
-            {"idx": 3, "token": "target", "label": "UID", "gloss": ""},
+            {"idx": 3, "token": "target", "label": "UID", "gloss": "",
+             "confidence": uncertain_confidence("UID")},
             {"idx": 4, "token": "c", "label": "TR", "gloss": ""},
             {"idx": "", "token": "MatrixLang", "label": "TR", "gloss": ""},
             {"idx": "", "token": "EmbedLang", "label": "EN", "gloss": ""},
@@ -662,7 +703,8 @@ def test_undo_merge_cells_keeps_uid_list_valid():
             {"idx": "", "token": "SentenceID", "label": "1", "gloss": ""},
             {"idx": 1, "token": "a", "label": "TR", "gloss": ""},
             {"idx": 2, "token": "b", "label": "TR", "gloss": ""},
-            {"idx": 3, "token": "target", "label": "UID", "gloss": ""},
+            {"idx": 3, "token": "target", "label": "UID", "gloss": "",
+             "confidence": uncertain_confidence("UID")},
             {"idx": "", "token": "MatrixLang", "label": "TR", "gloss": ""},
             {"idx": "", "token": "EmbedLang", "label": "EN", "gloss": ""},
         ],
@@ -701,7 +743,8 @@ def test_apply_then_merge_then_uid_undo_causes_no_wrong_row_mutation():
     blocks = [
         [
             {"idx": "", "token": "SentenceID", "label": "1", "gloss": ""},
-            {"idx": 1, "token": "first", "label": "UID", "gloss": ""},
+            {"idx": 1, "token": "first", "label": "UID", "gloss": "",
+             "confidence": uncertain_confidence("UID")},
             {"idx": 2, "token": "a", "label": "TR", "gloss": ""},
             {"idx": 3, "token": "b", "label": "TR", "gloss": ""},
             {"idx": "", "token": "MatrixLang", "label": "TR", "gloss": ""},
@@ -735,5 +778,171 @@ def test_apply_then_merge_then_uid_undo_causes_no_wrong_row_mutation():
             "UID Undo after a structural change must never mutate any row"
         ab_row = next(r for r in app.blocks[0] if r['token'] == 'ab')
         assert ab_row['label'] == 'MIXED', "the merged row must not be touched by the stale undo attempt"
+    finally:
+        app.destroy()
+
+
+# =========================================================================
+# Terminology rename: "UID Review Tool" -> "Confidence Review Tool"
+# (user-facing text only; internal method/attribute names like
+# open_uid_review_tool/_uid_win are unchanged, see task scope).
+# =========================================================================
+
+def test_window_title_says_confidence_review_tool_not_uid_review_tool():
+    app = make_app(two_sentence_blocks())
+    try:
+        app.open_uid_review_tool()
+        app.update()
+        title = app._uid_win.title()
+        assert title.startswith("Confidence Review Tool")
+        assert "UID Review Tool" not in title
+    finally:
+        app.destroy()
+
+
+def test_tools_menu_label_says_confidence_review_tool():
+    app = caa.App()
+    try:
+        menubar = app.nametowidget(app.cget('menu'))
+
+        def find_tools_menu(mb):
+            end = mb.index('end')
+            if end is None:
+                return None
+            for i in range(end + 1):
+                if mb.type(i) == 'cascade' and mb.entrycget(i, 'label') == 'Tools':
+                    return mb.nametowidget(mb.entrycget(i, 'menu'))
+            return None
+
+        toolsm = find_tools_menu(menubar)
+        assert toolsm is not None
+        entries = [toolsm.entrycget(i, 'label') for i in range(toolsm.index('end') + 1)
+                   if toolsm.type(i) not in ('separator',)]
+        assert any(e.startswith('Confidence Review Tool') for e in entries)
+        assert not any('UID Review Tool' in e for e in entries)
+    finally:
+        app.destroy()
+
+
+def test_matrixembed_locked_warning_uses_confidence_review_tool_title():
+    """Direct-call regression for the (defensive, currently unreachable via
+    normal list navigation since MatrixLang/EmbedLang rows are meta rows
+    and never appear in _uid_items) is_matrixembed_locked guard inside
+    _uid_apply -- the messagebox title must say "Confidence Review Tool",
+    not the old "UID Review Tool"."""
+    blocks = two_sentence_blocks()
+    app = make_app(blocks)
+    try:
+        # Point _uid_items directly at the MatrixLang row (bidx=0, ridx=3 in
+        # two_sentence_blocks: SentenceID, backend, sunucusu, MatrixLang,
+        # EmbedLang) to exercise the guard without relying on it being
+        # reachable via the tool's own filtered list.
+        assert blocks[0][3]['token'] == 'MatrixLang'
+        app._uid_items = [{'bidx': 0, 'ridx': 3, 'vis_r': 3}]
+        app._uid_i = 0
+        app._uid_label_var = tk.StringVar(value='MIXED')  # not TR/EN -> locked
+        app._uid_gloss_var = tk.StringVar(value='')
+
+        with mock.patch.object(caa.messagebox, 'showwarning') as mock_warn:
+            app._uid_apply()
+            app.update()
+        assert mock_warn.called
+        title_arg = mock_warn.call_args[0][0]
+        assert title_arg == "Confidence Review Tool"
+    finally:
+        app.destroy()
+
+
+# =========================================================================
+# Evidence panel cleanup: no corpus-analysis/calibration-disclosure line,
+# no stray "NOT", and real "not" text in token/sentence content preserved.
+# =========================================================================
+
+def _confidence_dict(band="LOW", score=0.4, reasons=None, evidence=None):
+    return {
+        "token": "", "rule_based_label": "UID", "final_label": "UID",
+        "confidence_score": score, "confidence_band": band,
+        "uncertainty_reasons": reasons or [], "evidence_summary": evidence or [],
+        "review_recommended": True, "promoted_by": None,
+        "calibration_note": cf.CALIBRATION_NOTE,
+    }
+
+
+def test_evidence_panel_has_no_calibration_or_corpus_analysis_text():
+    app = make_app(two_sentence_blocks())
+    try:
+        row = app.blocks[0][1]  # "backend", UID
+        row['confidence'] = _confidence_dict(
+            band="LOW", score=0.4,
+            reasons=["label_uid_by_definition_below_lid_confidence_threshold"],
+            evidence=["no lexicon/suffix/fastText evidence found for any label (genuinely unresolvable)"],
+        )
+        text = app._uid_evidence_text(row)
+
+        # The calibration_note itself must never appear in this per-token
+        # display (it is a fixed, dataset-level disclosure, not per-token
+        # evidence -- see confidence.py's CALIBRATION_NOTE).
+        assert cf.CALIBRATION_NOTE not in text
+        assert "corpus" not in text.lower()
+        # The disclosure text is the only place "NOT" (capitalized) would
+        # have come from; with it gone, it must not appear stray/floating.
+        assert "NOT" not in text
+
+        # Useful per-token evidence must still be present.
+        assert "Label:" in text
+        assert "Confidence:" in text
+        assert "LOW" in text
+        assert "Uncertainty reasons:" in text
+        assert "Evidence:" in text
+    finally:
+        app.destroy()
+
+
+def test_evidence_panel_omits_calibration_note_even_when_present_in_record():
+    """The stored confidence dict (and to_dict()) still legitimately carries
+    calibration_note -- only this ONE display was cleaned up, per the task
+    scope (do not change confidence calculations)."""
+    app = make_app(two_sentence_blocks())
+    try:
+        row = app.blocks[0][1]
+        conf = _confidence_dict()
+        row['confidence'] = conf
+        # The stored record is untouched.
+        assert cf.get_confidence(row)['calibration_note'] == cf.CALIBRATION_NOTE
+        # Only the rendered evidence text excludes it.
+        assert cf.CALIBRATION_NOTE not in app._uid_evidence_text(row)
+    finally:
+        app.destroy()
+
+
+def test_evidence_panel_and_context_preserve_real_word_not_in_sentence():
+    """The word 'not' appearing as real token/sentence content must never
+    be stripped -- the cleanup only removed the calibration_note line, not
+    any generic 'not'-scrubbing logic (none exists)."""
+    blocks = [
+        [
+            {"idx": "", "token": "SentenceID", "label": "1", "gloss": ""},
+            {"idx": 1, "token": "I", "label": "EN", "gloss": ""},
+            {"idx": 2, "token": "did", "label": "EN", "gloss": ""},
+            {"idx": 3, "token": "not", "label": "EN", "gloss": ""},
+            {"idx": 4, "token": "go", "label": "EN", "gloss": ""},
+            {"idx": "", "token": "MatrixLang", "label": "EN", "gloss": ""},
+            {"idx": "", "token": "EmbedLang", "label": "-", "gloss": ""},
+        ],
+    ]
+    app = make_app(blocks)
+    try:
+        row = blocks[0][3]  # "not"
+        row['confidence'] = _confidence_dict(
+            band="MEDIUM", score=0.7,
+            reasons=["other_label_does_not_match_any_automatic_exclusion_pattern"],
+            evidence=["token in English frequency lexicon"],
+        )
+        context = app._uid_sentence_text(0)
+        assert context == "I did not go"
+        evidence_text = app._uid_evidence_text(row)
+        # The reason string genuinely contains "not" as a substring
+        # ("does_not_match") -- it must survive completely intact.
+        assert "other_label_does_not_match_any_automatic_exclusion_pattern" in evidence_text
     finally:
         app.destroy()

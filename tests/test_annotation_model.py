@@ -816,7 +816,7 @@ def test_build_grid_view_custom_header_backfill_and_mutation():
 
 
 def _grid(blocks):
-    """Shared helper for the UID Review Tool model-function tests below:
+    """Shared helper for the Confidence Review Tool model-function tests below:
     build (row_index_map, sep_rows) for `blocks` the same way the live app
     does via build_grid_view, so these tests exercise the exact same
     corpus-order/visible-row machinery the GUI relies on."""
@@ -846,6 +846,21 @@ def test_collect_label_rows_multiple_labels():
 def test_collect_label_rows_empty_project():
     row_index_map, sep_rows = _grid([])
     assert collect_label_rows([], row_index_map, sep_rows, {"UID"}) == []
+
+
+def test_collect_label_rows_excludes_meta_rows_even_when_value_matches():
+    # MatrixLang/EmbedLang rows are stored as {"token": "MatrixLang",
+    # "label": "TR"} -- filtering for {"TR"} must never collect them as if
+    # they were TR *tokens* (regression: the confidence-review tool now
+    # filters on arbitrary labels, including TR/EN, not just "UID").
+    blocks = [[
+        _row("SentenceID", "1"), _row("kelime", "TR"), _row("cool", "EN"),
+        _row("MatrixLang", "TR"), _row("EmbedLang", "EN"),
+    ]]
+    row_index_map, sep_rows = _grid(blocks)
+    result = collect_label_rows(blocks, row_index_map, sep_rows, {"TR", "EN"})
+    tokens = [blocks[r["bidx"]][r["ridx"]]["token"] for r in result]
+    assert tokens == ["kelime", "cool"]
 
 
 # --- find_occurrences ----------------------------------------------------

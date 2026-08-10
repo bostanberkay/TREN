@@ -14,6 +14,7 @@ import copy
 from cs_pipeline import Annotator, DEFAULTS
 import annotation_model
 import reranker_integration
+import confidence
 
 try:
     import tksheet
@@ -487,21 +488,39 @@ VOC vocative
         self._ag_update_status()
 
     # =====================================================================
-    # UID Review Tool
+    # Confidence Review Tool
     #
-    # A focused, sequential UID-labeling window. Operates on the exact same
-    # self.blocks / self._row_index_map / self._sep_rows model the main
-    # table uses -- it never keeps an independent copy of the corpus.
-    # Deliberately minimal per explicit design direction: no view/filter
-    # dropdown, no bulk editing, no remembered-correction system, no
-    # review-status tracking. Selecting a row, applying a label, and
-    # undoing all synchronize immediately with the main table through the
-    # same _rebuild_grid_from_model / set_cell_data mirroring the main
-    # sheet edit handlers already use, so Save and Export automatically
-    # stay in sync with zero extra wiring.
+    # A focused, sequential review window for uncertain/low-confidence
+    # tokens across any of the 7 schema labels (not UID-only -- see
+    # confidence.py), filterable by label and by confidence band. Operates
+    # on the exact same self.blocks / self._row_index_map / self._sep_rows
+    # model the main table uses -- it never keeps an independent copy of
+    # the corpus. Deliberately minimal beyond that filtering: no bulk
+    # editing, no remembered/learned-correction system. Selecting a row,
+    # applying a label, and undoing all synchronize immediately with the
+    # main table through the same _rebuild_grid_from_model / set_cell_data
+    # mirroring the main sheet edit handlers already use, so Save and
+    # Export automatically stay in sync with zero extra wiring.
     # =====================================================================
 
     ALL_LABELS = ("TR", "EN", "MIXED", "UID", "NE", "OTHER", "LANG3")
+
+    # Confidence bands the review tool's checkbox-based filter can restrict
+    # to (see confidence.py). An empty self._review_band_filter set means
+    # "no restriction".
+    REVIEW_BANDS = (confidence.BAND_HIGH, confidence.BAND_MEDIUM, confidence.BAND_LOW)
+
+    # View-combobox presets. "All Uncertain" is the tool's default (see
+    # _review_view_mode/_uid_compute_items): every token, any label, whose
+    # confidence record has review_recommended=True. "UID Only" reproduces
+    # the tool's original pre-confidence-layer default (label filter
+    # {"UID"}, no band restriction). "Custom" means the label/band
+    # checkboxes below are in direct control (set automatically whenever
+    # one of them is touched directly).
+    REVIEW_VIEW_ALL_UNCERTAIN = "All Uncertain"
+    REVIEW_VIEW_UID_ONLY = "UID Only"
+    REVIEW_VIEW_CUSTOM = "Custom"
+    REVIEW_VIEWS = (REVIEW_VIEW_ALL_UNCERTAIN, REVIEW_VIEW_UID_ONLY, REVIEW_VIEW_CUSTOM)
 
     def _update_block_matrix_embed(self, bidx):
         """Recompute MatrixLang/EmbedLang for block `bidx` using the exact
@@ -540,7 +559,7 @@ VOC vocative
         """Select/reveal the corresponding token in the main table (and the
         Full Edit Window's sheet, if open). Deliberately does NOT move
         keyboard focus to the main sheet -- doing so would steal focus away
-        from the UID Review Tool's own tree/controls after every selection
+        from the Confidence Review Tool's own tree/controls after every selection
         change (click, arrow key, Next/Prev/First/Last), breaking repeated
         arrow-key navigation in the tool after the first press."""
         if vis_r is None:
@@ -570,6 +589,9 @@ VOC vocative
         try:
             self.blocks[bidx][ridx]['label'] = record['old']['label']
             self.blocks[bidx][ridx]['gloss'] = record['old']['gloss']
+            if 'confidence' in record['old']:
+                self.blocks[bidx][ridx]['confidence'] = record['old']['confidence']
+            self.blocks[bidx][ridx]['reviewed'] = record['old'].get('reviewed', False)
         except Exception:
             pass
         self._update_block_matrix_embed(bidx)
@@ -579,7 +601,7 @@ VOC vocative
             self._uid_refresh_items(preserve_index=True)
 
     def _uid_on_structural_change(self):
-        """Call this after ANY edit made outside the UID Review Tool that
+        """Call this after ANY edit made outside the Confidence Review Tool that
         changes row positions or row count in self.blocks (currently:
         Merge Cells and Undo Merge Cells). self._uid_items and every entry
         on self._uid_undo_stack hold positional (bidx, ridx, vis_r)
@@ -653,7 +675,33 @@ VOC vocative
         if self._uid_mode == 'occurrences' and self._uid_query:
             return annotation_model.find_occurrences(
                 self.blocks, self._row_index_map, self._sep_rows, self._uid_query)
-        raw = annotation_model.collect_label_rows(self.blocks, self._row_index_map, self._sep_rows, {"UID"})
+
+        if self._review_view_mode == 'all_uncertain':
+            # Default view: every token whose confidence record has
+            # review_recommended=True (confidence.is_review_required),
+            # across ALL 7 labels -- never defined by label name. A row
+            # with no confidence record at all is excluded (no evidence
+            # either way), never assumed uncertain.
+            raw = annotation_model.collect_label_rows(
+                self.blocks, self._row_index_map, self._sep_rows, set(self.ALL_LABELS))
+            raw = [it for it in raw
+                   if confidence.is_review_required(self.blocks[it['bidx']][it['ridx']])]
+        else:
+            labels = self._review_label_filter or {"UID"}
+            raw = annotation_model.collect_label_rows(self.blocks, self._row_index_map, self._sep_rows, labels)
+            # Confidence-band filter (requirement: "optionally show all
+            # LOW-confidence or selected MEDIUM-confidence tokens"). An
+            # empty self._review_band_filter means "no restriction" --
+            # rows with no confidence data at all (legacy projects, or
+            # rows never re-annotated since this layer was added) are then
+            # included rather than silently dropped, matching the tool's
+            # original unfiltered-by-confidence behavior.
+            if self._review_band_filter:
+                raw = [it for it in raw
+                       if confidence.band_of(self.blocks[it['bidx']][it['ridx']]) in self._review_band_filter]
+        if self._review_hide_reviewed:
+            raw = [it for it in raw
+                   if not confidence.is_reviewed(self.blocks[it['bidx']][it['ridx']])]
         if self._uid_search_var is not None:
             needle = (self._uid_search_var.get() or "").strip().casefold()
             if needle:
@@ -685,21 +733,68 @@ VOC vocative
         for i, it in enumerate(self._uid_items):
             bidx, ridx = it['bidx'], it['ridx']
             row = self.blocks[bidx][ridx]
+            conf = confidence.get_confidence(row)
+            band = conf.get('confidence_band', '-') if conf else '-'
+            score = f"{conf['confidence_score']:.2f}" if conf else '-'
+            reviewed = 'Yes' if confidence.is_reviewed(row) else 'No'
             tree.insert("", "end", iid=str(i), values=(
                 self._uid_sentence_preview(bidx), row.get('token', ''),
                 row.get('label', ''), row.get('gloss', '') or '',
+                band, score, reviewed,
             ))
 
     def _uid_clear_editor(self):
         self._uid_label_var.set("")
         self._uid_gloss_var.set("")
         self._uid_context_var.set("")
+        self._uid_evidence_var.set("")
+
+    def _uid_evidence_text(self, row):
+        """Human-readable confidence/evidence block for the currently
+        selected row (requirement: "show current label, confidence,
+        reasons, and evidence"). Never fabricates data for a row with no
+        confidence record (legacy project, or a manual edit -- see
+        confidence.note_manual_edit) -- shows a plain "not available" note
+        instead.
+
+        Deliberately does NOT include the record's calibration_note (the
+        "NOT statistically calibrated against a ... gold-labeled
+        confidence corpus" disclosure) -- that is a fixed, dataset-level
+        disclaimer about the scoring METHOD as a whole, not per-token
+        evidence, and showing it here read as a stray corpus-analysis/
+        status line rather than something about the selected token. The
+        disclosure itself is untouched in confidence.py/to_dict() and still
+        persisted -- only this one display was cleaned up."""
+        conf = confidence.get_confidence(row)
+        if not conf:
+            return "Confidence: not available for this row."
+        lines = [
+            f"Label: {conf.get('final_label') or row.get('label') or '-'}"
+            f"  |  Confidence: {conf.get('confidence_band')} ({conf.get('confidence_score')})"
+            f"  |  Reviewed: {'Yes' if confidence.is_reviewed(row) else 'No'}"
+            f"  |  Rule-based label: {conf.get('rule_based_label') or '-'}"
+            f"  |  Promoted by: {conf.get('promoted_by') or '-'}",
+        ]
+        reasons = conf.get('uncertainty_reasons') or []
+        if reasons:
+            lines.append("Uncertainty reasons: " + "; ".join(reasons))
+        evidence = conf.get('evidence_summary') or []
+        if evidence:
+            lines.append("Evidence: " + "; ".join(evidence))
+        return "\n".join(lines)
 
     def _uid_update_title(self):
         n = len(self._uid_items)
         i = (self._uid_i + 1) if n else 0
-        mode_word = "occurrence" if self._uid_mode == 'occurrences' else "UID"
-        self._uid_win.title(f"UID Review Tool \u2014 {mode_word} {i} of {n}" if n else "UID Review Tool \u2014 0 of 0")
+        if self._uid_mode == 'occurrences':
+            mode_word = "occurrence"
+        elif self._review_view_mode == 'all_uncertain':
+            mode_word = "uncertain"
+        elif self._review_label_filter == {"UID"}:
+            mode_word = "UID"
+        else:
+            mode_word = "item"
+        self._uid_win.title(f"Confidence Review Tool \u2014 {mode_word} {i} of {n}" if n else "Confidence Review Tool \u2014 0 of 0")
 
     # --- navigation ---
 
@@ -756,6 +851,7 @@ VOC vocative
         self._uid_label_var.set(row.get('label', '') or '')
         self._uid_gloss_var.set(row.get('gloss', '') or '')
         self._uid_context_var.set(self._uid_sentence_text(bidx))
+        self._uid_evidence_var.set(self._uid_evidence_text(row))
 
         if sync_tree:
             try:
@@ -788,18 +884,24 @@ VOC vocative
 
         if annotation_model.is_matrixembed_locked(tok, new_label):
             self.bell()
-            messagebox.showwarning("UID Review Tool", "MatrixLang/EmbedLang rows may only be set to TR or EN.")
+            messagebox.showwarning("Confidence Review Tool", "MatrixLang/EmbedLang rows may only be set to TR or EN.")
             return
 
         old_label, old_gloss = row.get('label', ''), row.get('gloss', '')
         if old_label != new_label or old_gloss != new_gloss:
             self._uid_push_undo({
                 'bidx': bidx, 'ridx': ridx,
-                'old': {'label': old_label, 'gloss': old_gloss},
+                'old': {'label': old_label, 'gloss': old_gloss,
+                        'confidence': row.get('confidence'), 'reviewed': row.get('reviewed', False)},
                 'new': {'label': new_label, 'gloss': new_gloss},
             })
             row['label'] = new_label
             row['gloss'] = new_gloss
+            # The confidence record computed for old_label now describes a
+            # label this row no longer carries -- replace it with a manual-
+            # edit marker rather than leaving stale/misleading evidence
+            # text around (see confidence.note_manual_edit's docstring).
+            confidence.note_manual_edit(row)
             self._mark_dirty()
             self._update_block_matrix_embed(bidx)
             # Rebuild instead of patching only the edited label/gloss cells:
@@ -853,11 +955,22 @@ VOC vocative
         self._uid_mode = 'uid'
         self._uid_query = ''
         self._uid_undo_stack = []
+        # Reset the review filter to its default on every fresh open
+        # (mirrors the _uid_mode/_uid_query reset above): "All Uncertain"
+        # -- every token, any label, whose confidence record has
+        # review_recommended=True. The checkbox-based label/band filters
+        # (used by the "UID Only"/"Custom" views) reset to their own
+        # backward-compatible defaults (UID-only, no band restriction) so
+        # switching to either of those views starts from a known state.
+        self._review_view_mode = 'all_uncertain'
+        self._review_label_filter = {"UID"}
+        self._review_band_filter = set()
+        self._review_hide_reviewed = False
 
         win = tk.Toplevel(self)
-        win.title('UID Review Tool')
-        win.geometry('780x520')
-        win.minsize(680, 420)
+        win.title('Confidence Review Tool')
+        win.geometry('860x640')
+        win.minsize(720, 480)
         win.configure(bg=DARK_BG)
         win.transient(self)
         # Not modal.
@@ -878,10 +991,82 @@ VOC vocative
         ttk.Button(top, text="Find All Occurrences", style='Dark.TButton',
                    command=self.open_uid_find_occurrences).pack(side='left', padx=(8, 0))
 
+        # --- review filter row (requirement: optionally review any of the
+        # 7 labels, filtered to LOW and/or selected MEDIUM confidence) ---
+        def _on_filter_changed():
+            # Direct checkbox interaction always means the checkbox-based
+            # filter is now in control -- the view combobox reflects that
+            # as "Custom" rather than silently drifting out of sync with
+            # what's actually being shown.
+            self._review_view_mode = 'checkbox_based'
+            self._review_view_var.set(self.REVIEW_VIEW_CUSTOM)
+            labels = {lab for lab, v in self._review_label_check_vars.items() if v.get()}
+            self._review_label_filter = labels or {"UID"}
+            self._review_band_filter = {b for b, v in self._review_band_check_vars.items() if v.get()}
+            self._review_hide_reviewed = bool(self._review_hide_reviewed_var.get())
+            self._uid_refresh_items(preserve_index=False)
+
+        def _on_review_view_changed(event=None):
+            choice = self._review_view_var.get()
+            if choice == self.REVIEW_VIEW_ALL_UNCERTAIN:
+                self._review_view_mode = 'all_uncertain'
+            elif choice == self.REVIEW_VIEW_UID_ONLY:
+                self._review_view_mode = 'checkbox_based'
+                self._review_label_filter = {"UID"}
+                self._review_band_filter = set()
+                for lab, v in self._review_label_check_vars.items():
+                    v.set(lab == "UID")
+                for v in self._review_band_check_vars.values():
+                    v.set(False)
+            else:  # Custom -- leave whatever the checkboxes currently say
+                self._review_view_mode = 'checkbox_based'
+            self._uid_refresh_items(preserve_index=False)
+
+        view_row = ttk.Frame(outer, style='Dark.TFrame')
+        view_row.pack(fill='x', pady=(2, 0))
+        ttk.Label(view_row, text="View:", style='Dark.TLabel').pack(side='left')
+        self._review_view_var = tk.StringVar(value=self.REVIEW_VIEW_ALL_UNCERTAIN)
+        view_combo = ttk.Combobox(view_row, textvariable=self._review_view_var, values=list(self.REVIEW_VIEWS),
+                                   width=14, state='readonly')
+        view_combo.pack(side='left', padx=(4, 0))
+        view_combo.bind('<<ComboboxSelected>>', _on_review_view_changed)
+        self._review_view_combo = view_combo
+        self._make_tooltip(
+            view_combo,
+            "All Uncertain (default): every token, any label, whose confidence score flags it for review.\n"
+            "UID Only: the tool's original view -- UID-labeled tokens only.\n"
+            "Custom: whatever the Labels/Confidence checkboxes below currently say.")
+
+        filt = ttk.Frame(outer, style='Dark.TFrame')
+        filt.pack(fill='x', pady=(6, 0))
+        ttk.Label(filt, text="Labels:", style='Dark.TLabel').pack(side='left')
+        self._review_label_check_vars = {}
+        for lab in self.ALL_LABELS:
+            v = tk.BooleanVar(value=(lab in self._review_label_filter))
+            ttk.Checkbutton(filt, text=lab, style='Dark.TCheckbutton', variable=v,
+                             command=_on_filter_changed).pack(side='left', padx=(2, 0))
+            self._review_label_check_vars[lab] = v
+
+        filt2 = ttk.Frame(outer, style='Dark.TFrame')
+        filt2.pack(fill='x', pady=(4, 0))
+        ttk.Label(filt2, text="Confidence:", style='Dark.TLabel').pack(side='left')
+        self._review_band_check_vars = {}
+        for band in self.REVIEW_BANDS:
+            v = tk.BooleanVar(value=(band in self._review_band_filter))
+            ttk.Checkbutton(filt2, text=band.title(), style='Dark.TCheckbutton', variable=v,
+                             command=_on_filter_changed).pack(side='left', padx=(2, 0))
+            self._review_band_check_vars[band] = v
+        self._review_hide_reviewed_var = tk.BooleanVar(value=self._review_hide_reviewed)
+        ttk.Checkbutton(filt2, text="Hide reviewed", style='Dark.TCheckbutton',
+                         variable=self._review_hide_reviewed_var,
+                         command=_on_filter_changed).pack(side='left', padx=(16, 0))
+
         # --- list ---
-        cols = ("sentence", "token", "label", "gloss")
-        headers = {"sentence": "Sentence", "token": "Token", "label": "Current Label", "gloss": "Gloss"}
-        widths = {"sentence": 280, "token": 120, "label": 100, "gloss": 160}
+        cols = ("sentence", "token", "label", "gloss", "band", "score", "reviewed")
+        headers = {"sentence": "Sentence", "token": "Token", "label": "Current Label", "gloss": "Gloss",
+                   "band": "Confidence", "score": "Score", "reviewed": "Reviewed"}
+        widths = {"sentence": 240, "token": 110, "label": 90, "gloss": 130,
+                  "band": 80, "score": 55, "reviewed": 65}
 
         listframe = ttk.Frame(outer, style='Dark.TFrame')
         listframe.pack(fill='both', expand=True, pady=(8, 0))
@@ -904,6 +1089,15 @@ VOC vocative
         self._uid_context_var = tk.StringVar(value='')
         ttk.Label(ctx_frame, textvariable=self._uid_context_var, style='Dark.TLabel',
                   wraplength=680, justify='left').pack(side='left', padx=(6, 0), anchor='n')
+
+        # --- confidence / evidence (requirement: show current label,
+        # confidence, reasons, and evidence) ---
+        ev_frame = ttk.Frame(outer, style='Dark.TFrame')
+        ev_frame.pack(fill='x', pady=(6, 0))
+        ttk.Label(ev_frame, text="Evidence:", style='Dark.TLabel').pack(side='left', anchor='n')
+        self._uid_evidence_var = tk.StringVar(value='')
+        ttk.Label(ev_frame, textvariable=self._uid_evidence_var, style='Dark.TLabel',
+                  wraplength=760, justify='left').pack(side='left', padx=(6, 0), anchor='n')
 
         # --- edit panel ---
         edit = ttk.Frame(outer, style='Dark.TFrame')
@@ -985,6 +1179,12 @@ VOC vocative
         self.annotator = None
         self._reranker_bundle = None
         self._reranker_load_attempted = False
+        # Pre-reranker (rule-based) text from the most recent
+        # _run_annotation_pipeline() call -- kept solely so the confidence
+        # layer (confidence.py) can recover each token's rule-based label
+        # without a second, expensive Annotator.annotate() call. Never
+        # shown in the UI and never persisted.
+        self._last_rule_based_output = ""
         self.current_text = ""
         self.current_output = ""
         self.current_path = None
@@ -1037,16 +1237,43 @@ VOC vocative
         self._freq_win = None
         self._ag_win = None
 
-        # UID Review Tool state (deliberately minimal -- focused sequential
-        # UID labeling only; no view/filter mode, no review-status tracking,
-        # no remembered corrections).
+        # Confidence Review Tool state: focused sequential review of any
+        # label, filterable by label and/or confidence band (see
+        # _review_label_filter/_review_band_filter below), with per-row
+        # reviewed-status tracking (confidence.py) -- no remembered/learned
+        # corrections.
         self._uid_win = None
         self._uid_items = []
         self._uid_i = 0
         self._uid_mode = 'uid'   # 'uid' | 'occurrences' -- internal only, no visible control
         self._uid_query = ''    # last Find-All-Occurrences query
         self._uid_search_var = None
-        # Scoped undo history for UID Review Tool Apply actions only (no
+        self._uid_evidence_var = None
+        # Confidence-review filter state (confidence.py).
+        #
+        # _review_view_mode is the primary switch:
+        #   'all_uncertain'  -- default. Every token (any of the 7 labels)
+        #                       whose confidence record has
+        #                       review_recommended=True (confidence.
+        #                       is_review_required) -- never label-based.
+        #   'checkbox_based' -- the label/band checkboxes below decide the
+        #                       list, exactly as before this default
+        #                       changed (this is what "UID Only" and
+        #                       "Custom" in the view combobox both use;
+        #                       they differ only in which checkboxes are
+        #                       set, not in the filtering mechanism).
+        # _review_label_filter/_review_band_filter's own defaults
+        # ({"UID"}/no restriction) reproduce the tool's original,
+        # pre-confidence-layer behavior and are what "UID Only" selects.
+        self._review_view_mode = 'all_uncertain'
+        self._review_view_var = None
+        self._review_label_filter = {"UID"}
+        self._review_band_filter = set()
+        self._review_hide_reviewed = False
+        self._review_label_check_vars = {}
+        self._review_band_check_vars = {}
+        self._review_hide_reviewed_var = None
+        # Scoped undo history for Confidence Review Tool Apply actions only (no
         # app-wide undo/redo mechanism exists to hook into).
         self._uid_undo_stack = []
         # Scoped undo (single most-recent transaction) for the main table's
@@ -1307,7 +1534,7 @@ VOC vocative
 
         toolsm = tk.Menu(menubar, tearoff=False, bg=DARK_BG, fg=DARK_FG)
         toolsm.add_command(label="Auto-Glossing Tool...", command=self.open_auto_glossing_tool)
-        toolsm.add_command(label="UID Review Tool...", command=self.open_uid_review_tool)
+        toolsm.add_command(label="Confidence Review Tool...", command=self.open_uid_review_tool)
         toolsm.add_separator()
         toolsm.add_command(label="Concordance (KWIC)...", command=self.open_concordance)
         toolsm.add_command(label="Show Sentence (Context)", command=self.show_sentence_context)
@@ -1323,7 +1550,7 @@ VOC vocative
     # self._dirty is a real flag, not a "does the project contain data"
     # test -- checking for data would keep prompting to save even
     # immediately after a successful save with nothing further changed.
-    # Every mutation call site (manual table edits, UID Review Tool Apply/
+    # Every mutation call site (manual table edits, Confidence Review Tool Apply/
     # Undo, Merge Cells/Undo, running annotation, adding a dataset, typing
     # in the input editor) calls _mark_dirty(); switching dataset tabs and
     # exporting deliberately never do.
@@ -1409,7 +1636,7 @@ VOC vocative
     # self.blocks / self._extra_headers are always the *live* view of
     # self.datasets[self._active_dataset_index] (see the __init__ comment).
     # Every existing self.blocks-mutating method (grid edits, merge cells,
-    # UID Review Tool, auto-glossing, ...) keeps working unchanged because it
+    # Confidence Review Tool, auto-glossing, ...) keeps working unchanged because it
     # is still mutating the same list object the active dataset dict points
     # to. Switching datasets is the only place that list identity changes.
     def _sync_active_dataset_from_live(self):
@@ -1466,7 +1693,7 @@ VOC vocative
 
     def _close_dataset_scoped_windows(self):
         """Close every auxiliary window that reads/writes self.blocks by row
-        index (UID Review Tool, Auto-Glossing Tool, Concordance, Word
+        index (Confidence Review Tool, Auto-Glossing Tool, Concordance, Word
         Frequency, Full Edit Window, Show Sentence). None of them are
         dataset-aware, so leaving one open across a dataset switch would let
         it silently read or edit the wrong dataset via a stale row index."""
@@ -1581,9 +1808,31 @@ VOC vocative
         new/other dataset) so both go through the exact same code path."""
         self._ensure_annotator_ready()
         out = self.annotator.annotate(text, self.cfg)
+        # Stashed for the confidence layer (confidence.py) -- see
+        # _attach_confidence, which diffs this against the final output to
+        # recover each token's pre-reranker rule-based label. Purely an
+        # internal side channel: never shown in the UI, never persisted,
+        # and reading/writing it has no effect on the annotation output
+        # returned below.
+        self._last_rule_based_output = out
         out = reranker_integration.apply_reranker(out, self.annotator, self.cfg, self._reranker_bundle)
         out = self._ensure_matrix_embed_consistency(out)
         return out
+
+    def _attach_confidence(self, blocks):
+        """Best-effort: compute and attach the confidence layer's per-token
+        records (confidence.py) to `blocks` in place. Never allowed to
+        interrupt annotation -- a failure here is caught and silently
+        ignored, leaving `blocks` with no/partial "confidence" keys rather
+        than raising. Uses self._last_rule_based_output (set by the
+        _run_annotation_pipeline call that must immediately precede this)
+        to recover each token's pre-reranker rule-based label."""
+        try:
+            rule_blocks = annotation_model.parse_annotated_text_to_blocks(self._last_rule_based_output, [])
+            confidence.attach_confidence_to_blocks(
+                blocks, rule_blocks, self.annotator, self.cfg, bundle=self._reranker_bundle)
+        except Exception as e:
+            print(f"[confidence] failed to attach confidence data, continuing without it: {e}", file=sys.stderr)
 
     def _read_utf8_text_file(self, path):
         """Read `path` as strict UTF-8. Raises UnicodeDecodeError/OSError on
@@ -1604,6 +1853,7 @@ VOC vocative
         out = self._run_annotation_pipeline(source_text)
         blocks = annotation_model.parse_annotated_text_to_blocks(out, [])
         annotation_model.renumber_tokens(blocks)
+        self._attach_confidence(blocks)
         return annotation_model.make_dataset(name, source_text, blocks, [], source_filename=source_filename)
 
     def _open_add_new_data_dialog(self):
@@ -3262,6 +3512,7 @@ VOC vocative
         try:
             out = self._run_annotation_pipeline(txt)
             self._populate_table(out)
+            self._attach_confidence(self.blocks)
             self.current_output = out
             # _populate_table replaces self.blocks with a new list object;
             # sync it (and the current input text) into the active dataset
@@ -3694,7 +3945,7 @@ VOC vocative
     # shift_select / ctrl_select, see _build_body's enable_bindings call --
     # nothing about the sheet's selection configuration was changed) and the
     # same annotation_model.merge_token_rows / rows_are_adjacent_same_block
-    # used for the (now-removed) UID Review Tool merge feature. Operates on
+    # used for the (now-removed) Confidence Review Tool merge feature. Operates on
     # self.blocks directly; never runs Stanza, fastText, or the reranker.
 
     def merge_selected_cells(self):

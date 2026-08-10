@@ -315,7 +315,7 @@ A single TREN project can hold more than one independent annotation dataset. A c
 
 Each dataset has its own source text, annotation rows, labels/glosses, and Matrix/Embedded Language values. Editing one dataset never changes another. Only one dataset is displayed at a time; switching tabs swaps the grid and input panel to that dataset's content without re-running the annotation pipeline or reloading any NLP model.
 
-Each dataset also maintains its own Merge Cells / UID Review Tool undo history while the project stays open in the current session. This undo history is **not** saved to `.trenproj` and is not restored across an application restart — reopening a project always starts every dataset with empty undo history, even though its annotation data is fully restored.
+Each dataset also maintains its own Merge Cells / Confidence Review Tool undo history while the project stays open in the current session. This undo history is **not** saved to `.trenproj` and is not restored across an application restart — reopening a project always starts every dataset with empty undo history, even though its annotation data is fully restored.
 
 #### Add New Data
 
@@ -327,7 +327,7 @@ Clicking **+** opens an **Add New Data** dialog with a name field (defaulting to
 
 Only the controls belonging to the currently selected mode are enabled; switching between modes preserves whatever text you've typed and whichever file you've selected for as long as the dialog stays open. If the name is blank, no file is selected (in Open New File mode), the resulting text is empty, or annotation fails, no tab is created and the active dataset, its table, and its undo history are all left exactly as they were — selecting a file by itself never marks the project as having unsaved changes; only successfully creating the dataset does.
 
-Switching datasets automatically closes dataset-scoped tool windows (UID Review Tool, Auto-Glossing Tool, Concordance, Word Frequency List, Full Edit Window, Show Sentence) so none of them can be left editing the wrong dataset by a stale row reference.
+Switching datasets automatically closes dataset-scoped tool windows (Confidence Review Tool, Auto-Glossing Tool, Concordance, Word Frequency List, Full Edit Window, Show Sentence) so none of them can be left editing the wrong dataset by a stale row reference.
 
 ---
 
@@ -413,7 +413,7 @@ The **Project** menu is used to manage annotation sessions.
 • **Open Project Save**: Load a previously saved project file (`.trenproj`).  
 • **Save Project Progress**: Save the current annotation state for later continuation.
 
-Project files store every dataset (name, source text, annotation blocks, and Matrix/Embedded Language values), which dataset was active, configuration settings, and cursor/selection position. They do **not** store Merge Cells / UID Review Tool undo history, which is session-only (see [Multiple Data Sets](#multiple-data-sets)).
+Project files store every dataset (name, source text, annotation blocks, and Matrix/Embedded Language values), which dataset was active, configuration settings, and cursor/selection position. They do **not** store Merge Cells / Confidence Review Tool undo history, which is session-only (see [Multiple Data Sets](#multiple-data-sets)).
 
 New Project, Open Project Save, and closing the application all share the same unsaved-changes check: if nothing has changed since the project was last saved (or opened/created), the action proceeds immediately with no prompt. Otherwise you're asked to Save, Discard, or Cancel — Save only proceeds once the save has actually completed, Discard proceeds without saving, and Cancel leaves the current project untouched. Opening a project defers this check until after the selected file has been fully read and validated, so cancelling the file chooser or picking an invalid file never touches your current work.
 
@@ -453,7 +453,7 @@ The Full Edit Window mirrors the main annotation grid and remains fully synchron
 The **Tools** menu provides access to auxiliary analytical and inspection windows.
 
 - **Auto-Glossing Tool**
-- **UID Review Tool**
+- **Confidence Review Tool**
 - **Concordance (KWIC)**
 - **Show Sentence (Context Viewer)**
 - **Word Frequency List**
@@ -552,19 +552,32 @@ When navigating away from an item, the current **Label** and **Gloss** values ar
 • Glossing follows a Leipzig-style abbreviation inventory and is designed for consistency across the corpus.  
 • Users retain full control and may overwrite or refine automatic suggestions.
 
-## UID Review Tool
+## Confidence Review Tool
 
-The **UID Review Tool** (`Tools → UID Review Tool`) is a focused window for sequentially reviewing and correcting tokens the pipeline could not confidently identify, currently labeled **UID**.
+The **Confidence Review Tool** (`Tools → Confidence Review Tool`) is a focused window for sequentially reviewing and correcting tokens the pipeline is uncertain about. It is not limited to **UID** — every automatically-annotated token gets a deterministic confidence score, band (**HIGH** / **MEDIUM** / **LOW**), and set of evidence/uncertainty reasons (see `confidence.py`), and the tool can list tokens for any of the 7 labels, filtered to any combination of confidence bands.
+
+**The tool opens with "All Uncertain" selected by default**: every token, across all 7 labels, whose confidence record is flagged for review (its `review_recommended` flag — see `confidence.is_review_required`) — never decided by label name. A confidently-labeled token never appears in this default view no matter its label, and an uncertain token always appears no matter its label.
+
+### View
+
+A **View** combobox above the label/confidence filters selects between three presets:
+
+- **All Uncertain** (default): every token, any label, currently flagged for review by its confidence score.
+- **UID Only**: the tool's original view — every token currently labeled **UID**, regardless of confidence.
+- **Custom**: whatever the **Labels**/**Confidence** checkboxes below currently say; selected automatically the moment either checkbox row is touched directly.
 
 ### Scope and Data Selection
 
-- The tool lists every token currently labeled **UID**, in the same order as the main annotation grid.
-- Each item shows the full sentence context surrounding the token.
+- **Labels**: checkboxes for all 7 labels (TR/EN/MIXED/UID/NE/OTHER/LANG3) choose which currently-labeled tokens appear in the list when the view is **UID Only** or **Custom**.
+- **Confidence**: checkboxes for High/Medium/Low further restrict the list to those confidence bands (also only under **UID Only**/**Custom** — **All Uncertain** already filters by the review flag directly).
+- **Hide reviewed**: excludes tokens already marked reviewed (see Synchronization below) from the list, under any view.
+- Each item shows the full sentence context surrounding the token, and the list itself shows each token's current label, confidence band/score, and reviewed status.
 
 ### Interface Elements
 
 - **Search**: filter the list by typing part of a token; press Return or click **Search**.
 - **Find All Occurrences**: locate every occurrence of the selected (or searched) token, regardless of its current label.
+- **Evidence**: shows the selected token's current label, confidence score/band, uncertainty reasons, and the relevant pipeline evidence behind them (lexicon/fastText/morphology signals, frozen-reranker or UID→TR-resolver evidence, MatrixLang/EmbedLang consistency, etc., as applicable).
 - **Label** and **Gloss** fields: edit the current token's label and gloss.
 - **First / Previous / Next / Last**: move through the list.
 - **Apply**: commit the edited label and gloss.
@@ -572,11 +585,12 @@ The **UID Review Tool** (`Tools → UID Review Tool`) is a focused window for se
 
 ### Synchronization
 
-- Applying an edit updates the shared annotation model and the main annotation grid immediately.
+- Applying an edit updates the shared annotation model and the main annotation grid immediately, and marks the token reviewed.
 - `MatrixLang`/`EmbedLang` for the affected sentence are recomputed automatically after each applied label change.
-- A token edited away from **UID** is removed from the list, and the tool advances to the next remaining UID item.
+- A token edited so it no longer matches the active view/filter (e.g. no longer flagged uncertain, or given a label outside the active filter) drops out of the list, and the tool advances to the next remaining item.
+- Switching datasets closes the tool; reopening it for the newly active dataset resets to the **All Uncertain** default and never shows another dataset's tokens.
 
-The UID Review Tool works entirely offline: opening it does not invoke Stanza, fastText, the MIXED-token reranker, or any external AI service.
+The Confidence Review Tool works entirely offline: opening it does not invoke Stanza, fastText, the MIXED-token reranker, or any external AI service. The confidence score itself is a deterministic, rule-based estimate — it is **not** a statistically calibrated probability (see `confidence.py`'s module docstring).
 
 ## Concordance (KWIC)
 
