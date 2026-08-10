@@ -454,6 +454,7 @@ The **Tools** menu provides access to auxiliary analytical and inspection window
 
 - **Auto-Glossing Tool**
 - **Confidence Review Tool**
+- **TDK Checker**
 - **Concordance (KWIC)**
 - **Show Sentence (Context Viewer)**
 - **Word Frequency List**
@@ -591,6 +592,41 @@ A **View** combobox above the label/confidence filters selects between three pre
 - Switching datasets closes the tool; reopening it for the newly active dataset resets to the **All Uncertain** default and never shows another dataset's tokens.
 
 The Confidence Review Tool works entirely offline: opening it does not invoke Stanza, fastText, the MIXED-token reranker, or any external AI service. The confidence score itself is a deterministic, rule-based estimate — it is **not** a statistically calibrated probability (see `confidence.py`'s module docstring).
+
+## TDK Checker
+
+The **TDK Checker** (`Tools → TDK Checker`) is a **separate tool from the Confidence Review Tool** — it does not replace or rename it. It looks up a token, a hierarchically-parsed root/lemma, and each proposed suffix segment against the Turkish Language Association's (TDK) online dictionary, to help a reviewer judge whether a token is a lexicalized Turkish word, a code-switched form, or something else. **TDK membership is evidence of Turkish lexicalization, not a language-ID verdict**: a TDK match never forces a token to `TR`, a missing match never forces `EN`/`MIXED`, and a match never automatically removes an existing `MIXED` label. This tool never reads or writes a token's **label** or **gloss** at all — Gloss is handled entirely by the main table and the Auto-Glossing Tool; this tool only ever writes a `tdk_segmentation` correction, exactly the same restraint the Confidence Review Tool's Apply applies to `label`/`gloss`/`confidence`.
+
+### Opening it
+
+- **From the main table**: select a normal token row and choose **Open in TDK Checker** from the grid's right-click menu (or `Tools → TDK Checker` afterward). The action is disabled/shows a warning for a `MatrixLang`/`EmbedLang`/separator row, and shows a message if nothing (or nothing valid) is selected; with several rows selected, it uses the first valid token row. Opening it this way populates the token, sentence context, sentence ID, and token index automatically, runs the morphological parser automatically, and — because clicking it is an explicit request — immediately starts the TDK lookup.
+- **Standalone**: `Tools → TDK Checker` with nothing selected opens an empty checker where you can type or paste any term yourself; it never looks anything up until you click **Check TDK**.
+- Switching datasets always closes the TDK Checker (it is not dataset-aware, exactly like the Confidence Review Tool and every other row-index-based tool) — it can never end up silently editing a token in a dataset that is no longer active.
+
+### Morphological parser
+
+The parser performs hierarchical Turkish morphological analysis rather than flat, character-by-character suffix stripping: it normalizes the token, searches for the longest genuinely valid root (never an arbitrary leftover character), applies noun suffixes in the correct order (`root → derivational → plural → possessive → case`, e.g. `film + ler + imiz + den`) or verb suffixes in the correct order (`root → derivational → tense/aspect/mood → person/agreement`, e.g. `sür + dü`, never `sürd + ü`), and rejects any candidate whose remaining suffix sequence isn't a recognized Turkish morpheme. A frequency-attested inflected surface form (e.g. "geldi" itself appears in the corpus) is never confused with a genuine base root ("kitaplar" never wins over "kitap" + "lar" just because it happens to also be independently attested) — see `tdk_parser.py`'s module docstring for the full scoring policy. Every automatic candidate is classified as a **full Turkish lexical item**, an **English root + Turkish suffix** candidate, an **ambiguous candidate** (competing readings too close to call from corpus evidence alone — e.g. "kalem" could be the base noun "pen" or "kale" [fortress] + 1sg possessive), or an **invalid parser proposal**. The parser never assigns a language label from this analysis alone.
+
+### Interface
+
+- **Token** / **Sentence ID** / **Token Index** / **Sentence** (context): identify exactly which row is loaded.
+- **Root/Lemma** and **Segments** (freely editable): the parser's proposal (e.g. `cloud` + `umuz + a` for `cloudumuza`), which you can correct by hand — segments accept `+`, `-`, or spaces as separators. **Re-parse** re-derives them from the token from scratch; typing into these fields on its own never triggers a re-parse or a lookup, and never overwrites a manual correction unless you click Re-parse yourself.
+- **Explanation**: a read-only breakdown of how the current root/segments were derived — `Token` / `Root` / one `Suffix` + `Analysis` line per segment / overall `Status` (the category above) — so you can see exactly why the parser chose that split.
+- **Check TDK**: looks up the full token, the **current** root/lemma, and **every current** segment — always whatever is in the fields right now, never a stale parser value. Each is sent to TDK **individually**, never the surrounding sentence.
+- **Results table**: one row per term checked (full token / root / each segment), each with its own **TDK Status** (`FOUND`, `NOT_FOUND`, `UNAVAILABLE`, `NETWORK_ERROR`, or `STALE_RESULT`) and a short detail. Editing Root/Lemma or Segments after a check immediately marks every row `STALE_RESULT` (the previous query's answer, kept visible but clearly labeled) until you press **Check TDK** again — an in-flight lookup whose fields changed before it returned is marked stale the same way, and a superseded lookup can never overwrite a newer one.
+- **Dictionary Detail**: selecting a row in the results table shows the **full** TDK entry for that term, not just found/not-found — headword, part of speech, every sense's definition/usage labels/examples, origin/etymology, pronunciation, compounds, idioms, proverbs, source, and the exact query sent. Any field TDK didn't provide reads **"Not provided"**, never a guessed value.
+- **Status**: the overall/most recent lookup status and source.
+- **Apply Correction**, **Undo**, **Find All Occurrences**, **Close**.
+
+### Network behavior and privacy
+
+- The TDK lookup is the **only** network-dependent part of TREN, and it is **fully opt-in per action**: it is never called at startup, never during normal annotation, and never automatically for every token. It runs **only** when you click **Check TDK** or **Open in TDK Checker** on a selected token.
+- Only the specific token/root/segment being checked is ever sent — **never the sentence**, never surrounding context.
+- The request runs off the Tk main thread with a short timeout, so the rest of the application never freezes while waiting on it; if you change the token and start a new lookup before an older one finishes, the older (stale) response is discarded rather than overwriting the newer one.
+- Results are cached in memory for the session, keyed by the normalized query and dictionary source, so re-checking the same term doesn't repeat the request.
+- A connection failure, timeout, malformed response, HTTP error, or an unrecognized/changed response shape is reported as `UNAVAILABLE` or `NETWORK_ERROR` — TREN never fabricates a `FOUND` result it can't actually confirm, and never crashes because of it. A `NOT_FOUND` result always shows TREN's own fixed English message, never the raw Turkish text TDK's own endpoint returns.
+- The rest of TREN — annotation, the Confidence Review Tool, export, project save/load — remains fully usable completely offline; the TDK Checker is the one feature that needs the internet, and only when you explicitly ask it to check something.
+- TDK does not publish an official, documented public API; this feature uses the widely-used but undocumented `sozluk.gov.tr` lookup endpoint on a best-effort basis (see `dictionary_provider.py`'s module docstring) and treats any unexpected response shape as a provider failure (`UNAVAILABLE`), never as evidence one way or the other.
 
 ## Concordance (KWIC)
 

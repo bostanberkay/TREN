@@ -10,11 +10,15 @@ import csv
 import json
 import sys
 import copy
+import queue
+import threading
 
 from cs_pipeline import Annotator, DEFAULTS
 import annotation_model
 import reranker_integration
 import confidence
+import dictionary_provider
+import tdk_parser
 
 try:
     import tksheet
@@ -1161,6 +1165,868 @@ VOC vocative
         except Exception:
             pass
 
+    # =====================================================================
+    # TDK Checker
+    #
+    # A SEPARATE tool from the Confidence Review Tool (Tools -> TDK
+    # Checker; never replaces or renames it). Looks up a single token, its
+    # parser-proposed root/lemma, and each proposed suffix segment against
+    # a pluggable dictionary_provider.DictionaryProvider -- by default the
+    # real (best-effort, undocumented-endpoint) TDKProvider, constructed
+    # lazily on first use (see _ensure_tdk_provider) so importing/starting
+    # the app, running annotation, or opening this window never itself
+    # touches the network. The ONLY network-triggering actions are the
+    # "Check TDK" button and "Open in TDK Checker" from a grid selection
+    # (which explicitly requested a lookup by the act of clicking it) --
+    # never automatic, never per-token, never at startup.
+    #
+    # TDK membership is evidence of Turkish lexicalization, not a label
+    # decision: this tool never reads or writes a row's `label`. Apply
+    # Correction only ever updates `gloss` and a `tdk_segmentation`
+    # metadata dict on the row -- exactly like the Confidence Review
+    # Tool's Apply only ever touches `label`/`gloss`/`confidence`, this
+    # tool's Apply only ever touches `gloss`/`tdk_segmentation`.
+    # =====================================================================
+
+    def _ensure_tdk_parser_annotator(self):
+        """A lightweight stand-in Annotator for the morphological parser
+        only -- deliberately NOT self.annotator (the real pipeline
+        annotator, which requires loading the full fastText model and
+        Stanza). tdk_parser.parse_token's ranking is lexicon-aware (it
+        needs to tell a genuine root apart from a merely-attested inflected
+        surface form -- see tdk_parser.py's module docstring), so it needs
+        the real turkish_freq_top/_all/english_freq_words word lists, not
+        an empty stand-in. tdk_parser.load_lexicon_annotator() reads only
+        those two plain-text files (no fastText, no Stanza, no model
+        loading) -- local and well under a second, called by
+        _set_runtime_workdir()'s already-chdir'd-into-resources/ working
+        directory, exactly like Annotator.__init__'s own defaults."""
+        if getattr(self, '_tdk_parser_annotator', None) is None:
+            self._tdk_parser_annotator = tdk_parser.load_lexicon_annotator()
+        return self._tdk_parser_annotator
+
+    def _ensure_tdk_provider(self):
+        """Lazily construct the real TDK provider on first actual use.
+        Tests set self._tdk_provider directly to a MockDictionaryProvider
+        BEFORE triggering any lookup, so this never runs in a test and
+        never touches the network there."""
+        if self._tdk_provider is None:
+            self._tdk_provider = dictionary_provider.TDKProvider()
+        return self._tdk_provider
+
+    # --- row resolution (main grid) -----------------------------------
+
+    def _resolve_tdk_grid_selection(self):
+        """Resolve the current main-grid selection to a single token row
+        for the TDK Checker. Never assumes the visual row number equals
+        the token index -- always goes through self._row_index_map /
+        annotation_model.resolve_row, exactly like Merge Cells does.
+
+        Returns (bidx, ridx, vis_r, error) where `error` is None on
+        success, or (messagebox_kind, message) on failure -- kind is
+        'info' (no selection at all) or 'warning' (a selection exists but
+        isn't a usable token row)."""
+        if self.sheet is None:
+            return None, None, None, ('info', "Select a token row first.")
+        try:
+            cells = self.sheet.get_selected_cells()
+        except Exception:
+            cells = None
+        if not cells:
+            return None, None, None, ('info', "Select a token row first.")
+
+        vis_rows = sorted(set(r for r, _c in cells))
+
+        def classify(r):
+            if r in self._sep_rows:
+                return 'separator', None
+            bidx, ridx = annotation_model.resolve_row(self._row_index_map, self._sep_rows, r)
+            if bidx is None:
+                return 'unresolved', None
+            row = self.blocks[bidx][ridx]
+            tok = str(row.get('token', '') or '').strip()
+            if tok == 'MatrixLang':
+                return 'matrixlang', (bidx, ridx)
+            if tok == 'EmbedLang':
+                return 'embedlang', (bidx, ridx)
+            if annotation_model.is_meta_row_token(row.get('token', '')):
+                return 'meta', (bidx, ridx)
+            if not tok:
+                return 'empty', (bidx, ridx)
+            return 'token', (bidx, ridx)
+
+        classified = [(r,) + classify(r) for r in vis_rows]
+        token_rows = [(r, info) for (r, kind, info) in classified if kind == 'token']
+
+        if len(vis_rows) == 1:
+            r, kind, info = classified[0]
+            if kind == 'token':
+                bidx, ridx = info
+                return bidx, ridx, r, None
+            messages = {
+                'separator': ('warning', "Cannot open TDK Checker for a separator row."),
+                'matrixlang': ('warning', "MatrixLang rows cannot be opened in TDK Checker."),
+                'embedlang': ('warning', "EmbedLang rows cannot be opened in TDK Checker."),
+                'empty': ('warning', "Selected row has no token."),
+                'meta': ('warning', "Select a normal token row, not a sentence/structure row."),
+                'unresolved': ('warning', "The selected row could not be resolved."),
+            }
+            return None, None, None, messages.get(kind, ('warning', "Select a normal token row."))
+
+        # Multiple rows selected: use the first valid token row; if none
+        # of the selection is a usable token row, ask for a single
+        # selection instead of guessing.
+        if token_rows:
+            r, (bidx, ridx) = token_rows[0]
+            return bidx, ridx, r, None
+        return None, None, None, ('info', "Select a single token row to open in TDK Checker.")
+
+    def open_tdk_checker_from_grid(self):
+        bidx, ridx, vis_r, err = self._resolve_tdk_grid_selection()
+        if err is not None:
+            kind, msg = err
+            if kind == 'info':
+                messagebox.showinfo("TDK Checker", msg)
+            else:
+                messagebox.showwarning("TDK Checker", msg)
+            return
+        self._open_tdk_checker_window(bidx=bidx, ridx=ridx, vis_r=vis_r, auto_run=True)
+
+    def open_tdk_checker_tool(self):
+        """Tools -> TDK Checker: opens (or reuses) the window with no row
+        preloaded -- the user types/pastes a term and clicks Check TDK
+        themselves. Never auto-runs a lookup (nothing was "explicitly
+        clicked" on a specific token yet)."""
+        self._open_tdk_checker_window(bidx=None, ridx=None, vis_r=None, auto_run=False)
+
+    # --- window lifecycle ------------------------------------------------
+
+    def _open_tdk_checker_window(self, bidx=None, ridx=None, vis_r=None, auto_run=False):
+        if getattr(self, '_tdk_win', None) is None or not self._tdk_win.winfo_exists():
+            self._tdk_build_window()
+        else:
+            try:
+                self._tdk_win.deiconify()
+                self._tdk_win.lift()
+                self._tdk_win.focus_force()
+            except Exception:
+                pass
+
+        if bidx is not None:
+            self._tdk_load_row(bidx, ridx, vis_r, auto_run=auto_run)
+
+    def _tdk_sentence_id_for_block(self, bidx):
+        try:
+            blk = self.blocks[bidx]
+        except Exception:
+            return ""
+        for r in blk:
+            if str(r.get('token', '') or '').strip() == 'SentenceID':
+                return str(r.get('label', '') or r.get('gloss', '') or '').strip()
+        return ""
+
+    def _tdk_sentence_text(self, bidx):
+        try:
+            blk = self.blocks[bidx]
+        except Exception:
+            return ""
+        toks = [str(r.get('token', '') or '') for r in blk if not self._is_meta_row_token(r.get('token', ''))]
+        return " ".join(toks)
+
+    def _tdk_build_window(self):
+        win = tk.Toplevel(self)
+        win.title('TDK Checker')
+        win.geometry('900x840')
+        win.minsize(760, 700)
+        win.configure(bg=DARK_BG)
+        win.transient(self)
+
+        outer = ttk.Frame(win, style='Dark.TFrame')
+        outer.pack(fill='both', expand=True, padx=10, pady=10)
+
+        # --- token + context row ---
+        top = ttk.Frame(outer, style='Dark.TFrame')
+        top.pack(fill='x')
+        ttk.Label(top, text="Token:", style='Dark.TLabel').pack(side='left')
+        self._tdk_token_var = tk.StringVar(value='')
+        token_entry = ttk.Entry(top, textvariable=self._tdk_token_var, style='Dark.TEntry', width=24)
+        token_entry.pack(side='left', padx=(4, 12))
+        self._tdk_token_entry = token_entry
+        ttk.Label(top, text="Sentence ID:", style='Dark.TLabel').pack(side='left')
+        self._tdk_sentid_var = tk.StringVar(value='')
+        ttk.Label(top, textvariable=self._tdk_sentid_var, style='Dark.TLabel').pack(side='left', padx=(4, 12))
+        ttk.Label(top, text="Token Index:", style='Dark.TLabel').pack(side='left')
+        self._tdk_tokidx_var = tk.StringVar(value='')
+        ttk.Label(top, textvariable=self._tdk_tokidx_var, style='Dark.TLabel').pack(side='left', padx=(4, 0))
+
+        ctx_frame = ttk.Frame(outer, style='Dark.TFrame')
+        ctx_frame.pack(fill='x', pady=(6, 0))
+        ttk.Label(ctx_frame, text="Sentence:", style='Dark.TLabel').pack(side='left', anchor='n')
+        self._tdk_context_var = tk.StringVar(value='')
+        ttk.Label(ctx_frame, textvariable=self._tdk_context_var, style='Dark.TLabel',
+                  wraplength=820, justify='left').pack(side='left', padx=(6, 0), anchor='n')
+
+        # --- parser row: root/segments are freely editable; edits after a
+        # Check TDK run mark the displayed results/explanation stale (see
+        # _tdk_on_root_or_segments_edited) but NEVER trigger a lookup or a
+        # re-parse by themselves -- only Re-parse or Check TDK do that. ---
+        parse_frame = ttk.Frame(outer, style='Dark.TFrame')
+        parse_frame.pack(fill='x', pady=(10, 0))
+        ttk.Label(parse_frame, text="Root/Lemma:", style='Dark.TLabel').pack(side='left')
+        self._tdk_root_var = tk.StringVar(value='')
+        ttk.Entry(parse_frame, textvariable=self._tdk_root_var, style='Dark.TEntry', width=16).pack(
+            side='left', padx=(4, 12))
+        ttk.Label(parse_frame, text="Segments:", style='Dark.TLabel').pack(side='left')
+        self._tdk_segments_var = tk.StringVar(value='')
+        ttk.Entry(parse_frame, textvariable=self._tdk_segments_var, style='Dark.TEntry', width=24).pack(
+            side='left', padx=(4, 12))
+        ttk.Button(parse_frame, text="Re-parse", style='Dark.TButton', command=self._tdk_reparse).pack(side='left')
+        self._tdk_root_var.trace_add('write', self._tdk_on_root_or_segments_edited)
+        self._tdk_segments_var.trace_add('write', self._tdk_on_root_or_segments_edited)
+
+        parse_status_frame = ttk.Frame(outer, style='Dark.TFrame')
+        parse_status_frame.pack(fill='x', pady=(4, 0))
+        ttk.Label(parse_status_frame, text="Parser:", style='Dark.TLabel').pack(side='left')
+        self._tdk_parser_status_var = tk.StringVar(value='')
+        ttk.Label(parse_status_frame, textvariable=self._tdk_parser_status_var, style='Dark.TLabel',
+                  wraplength=820, justify='left').pack(side='left', padx=(6, 0))
+
+        # --- explanation panel: exactly what the parser found and why,
+        # segment by segment (task requirement: "explain how suffixes were
+        # found"). Read-only, refreshed by _tdk_render_explanation(). ---
+        expl_frame = ttk.Frame(outer, style='Dark.TFrame')
+        expl_frame.pack(fill='x', pady=(8, 0))
+        ttk.Label(expl_frame, text="Explanation:", style='Dark.TLabel').pack(anchor='w')
+        expl_text = tk.Text(expl_frame, height=6, width=100, bg=DARK_BG, fg=DARK_FG,
+                             insertbackground=DARK_FG, relief='flat', wrap='word')
+        expl_text.configure(state='disabled')
+        expl_text.pack(fill='x', pady=(2, 0))
+        self._tdk_explanation_text = expl_text
+
+        # --- TDK lookup row ---
+        lookup_frame = ttk.Frame(outer, style='Dark.TFrame')
+        lookup_frame.pack(fill='x', pady=(10, 0))
+        ttk.Button(lookup_frame, text="Check TDK", style='Dark.TButton', command=self._tdk_check_all).pack(
+            side='left')
+        ttk.Label(lookup_frame, text="Status:", style='Dark.TLabel').pack(side='left', padx=(12, 0))
+        self._tdk_status_var = tk.StringVar(value='')
+        ttk.Label(lookup_frame, textvariable=self._tdk_status_var, style='Dark.TLabel').pack(
+            side='left', padx=(4, 0))
+        self._make_tooltip(
+            lookup_frame,
+            "TDK Checker sends only the selected token/root/segment to sozluk.gov.tr, never the "
+            "surrounding sentence, and only when you click Check TDK or Open in TDK Checker. TDK "
+            "membership is evidence of Turkish lexicalization -- it never changes a token's label "
+            "automatically. Editing Root/Lemma or Segments after a check marks the results below as "
+            "stale (a previous-query answer) until you click Check TDK again.")
+
+        # --- results tree: full token / root / each segment ---
+        results_frame = ttk.Frame(outer, style='Dark.TFrame')
+        results_frame.pack(fill='both', expand=True, pady=(8, 0))
+        cols = ("term", "kind", "status", "detail")
+        headers = {"term": "Term", "kind": "Type", "status": "TDK Status", "detail": "Detail"}
+        widths = {"term": 140, "kind": 80, "status": 110, "detail": 380}
+        tree = ttk.Treeview(results_frame, columns=cols, show='headings', style='Conc.Treeview',
+                             selectmode='browse', height=5)
+        for c in cols:
+            tree.heading(c, text=headers[c])
+            tree.column(c, width=widths[c], anchor='w', stretch=(c == 'detail'))
+        ysb = ttk.Scrollbar(results_frame, orient='vertical', command=tree.yview)
+        tree.configure(yscrollcommand=ysb.set)
+        tree.pack(side='left', fill='both', expand=True)
+        ysb.pack(side='left', fill='y')
+        self._tdk_results_tree = tree
+        tree.bind('<<TreeviewSelect>>', self._tdk_on_result_select)
+
+        # --- dictionary detail panel: the FULL TDK entry (not just
+        # FOUND/NOT_FOUND) for whichever result row is selected above --
+        # headword, POS, every sense's definition/usage labels/examples,
+        # origin, pronunciation, compounds, idioms, proverbs, source,
+        # query. Missing fields always show "Not provided", never a
+        # guessed value. Read-only. ---
+        detail_frame = ttk.Frame(outer, style='Dark.TFrame')
+        detail_frame.pack(fill='both', expand=True, pady=(6, 0))
+        ttk.Label(detail_frame, text="Dictionary Detail:", style='Dark.TLabel').pack(anchor='w')
+        detail_text = tk.Text(detail_frame, height=10, width=100, bg=DARK_BG, fg=DARK_FG,
+                               insertbackground=DARK_FG, relief='flat', wrap='word')
+        detail_text.configure(state='disabled')
+        detail_text.pack(fill='both', expand=True, pady=(2, 0))
+        self._tdk_detail_text = detail_text
+
+        # --- navigation + actions ---
+        nav = ttk.Frame(outer, style='Dark.TFrame')
+        nav.pack(fill='x', pady=(10, 0))
+        ttk.Button(nav, text="Apply Correction", style='Dark.TButton', command=self._tdk_apply_correction).pack(
+            side='left')
+        ttk.Button(nav, text="Undo", style='Dark.TButton', command=self._tdk_undo_last).pack(side='left', padx=4)
+        ttk.Button(nav, text="Find All Occurrences", style='Dark.TButton',
+                   command=self.open_tdk_find_occurrences).pack(side='left', padx=4)
+        ttk.Button(nav, text="Close", style='Dark.TButton', command=lambda: _on_close()).pack(side='right')
+
+        def _apply_shortcut(event=None):
+            self._tdk_apply_correction()
+            return 'break'
+
+        def _undo_shortcut(event=None):
+            self._tdk_undo_last()
+            return 'break'
+
+        win.bind('<Control-Return>', _apply_shortcut)
+        win.bind('<Command-Return>', _apply_shortcut)
+        win.bind('<Control-z>', _undo_shortcut)
+        win.bind('<Command-z>', _undo_shortcut)
+
+        def _on_close():
+            self._tdk_win = None
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        win.protocol('WM_DELETE_WINDOW', _on_close)
+        self._tdk_win = win
+        self._tdk_clear_results()
+        self._tdk_render_explanation()
+
+    # --- loading a row / parsing ------------------------------------------
+
+    def _tdk_load_row(self, bidx, ridx, vis_r, auto_run=False):
+        """Populate the checker from a specific main-table row. Preserves
+        active dataset / sentence ID / token index / row identity via
+        self._tdk_current, checked before Apply Correction ever writes
+        anything back."""
+        try:
+            row = self.blocks[bidx][ridx]
+        except Exception:
+            messagebox.showerror("TDK Checker", "The selected row could not be read.")
+            return
+
+        dataset_id = None
+        try:
+            dataset_id = self.datasets[self._active_dataset_index].get('id')
+        except Exception:
+            pass
+
+        self._tdk_current = {'bidx': bidx, 'ridx': ridx, 'vis_r': vis_r, 'dataset_id': dataset_id}
+        token = str(row.get('token', '') or '')
+        self._tdk_token_var.set(token)
+        sid = self._tdk_sentence_id_for_block(bidx)
+        self._tdk_sentid_var.set(sid)
+        self._tdk_tokidx_var.set(str(row.get('idx', '') or ''))
+        self._tdk_context_var.set(self._tdk_sentence_text(bidx))
+
+        self._tdk_last_query_snapshot = None
+        self._tdk_last_results = []
+        self._tdk_results_stale = False
+        self._tdk_clear_results()
+
+        existing_seg = row.get('tdk_segmentation')
+        self._tdk_reparse(prefer_existing=existing_seg)
+
+        if auto_run:
+            self._tdk_check_all()
+
+    def _tdk_reparse(self, prefer_existing=None):
+        """Run the morphological parser on the current token field. If
+        `prefer_existing` (a previously-applied tdk_segmentation dict) is
+        given, that manual correction is shown instead of re-deriving a
+        fresh automatic split -- re-opening a token someone already
+        corrected must not silently discard their correction. Only ever
+        called from _tdk_load_row (an initial load, honoring
+        prefer_existing) or the explicit Re-parse button -- typing into
+        the Root/Lemma or Segments fields never calls this on its own."""
+        token = self._tdk_token_var.get().strip()
+        if not token:
+            self._tdk_root_var.set('')
+            self._tdk_segments_var.set('')
+            self._tdk_parser_status_var.set('(no token)')
+            self._tdk_parse_result = None
+            self._tdk_render_explanation()
+            return
+
+        if prefer_existing:
+            root = prefer_existing.get('root', '') or ''
+            segs = prefer_existing.get('segments', []) or []
+            self._tdk_root_var.set(root)
+            self._tdk_segments_var.set(' + '.join(segs))
+            self._tdk_parser_status_var.set("previously corrected segmentation (manual)")
+            self._tdk_parse_result = tdk_parser.ParseResult(
+                token=token, root=root, segments=tuple(segs), success=True, source='manual',
+                category=tdk_parser.CATEGORY_MANUAL, part_of_speech='unknown',
+                reason='previously applied correction')
+            self._tdk_render_explanation()
+            return
+
+        annotator = self._ensure_tdk_parser_annotator()
+        if annotator is None:
+            self._tdk_parser_status_var.set("parser unavailable")
+            self._tdk_root_var.set(token)
+            self._tdk_segments_var.set('')
+            self._tdk_parse_result = tdk_parser._whole_token_fallback(token, "annotator not available")
+            self._tdk_render_explanation()
+            return
+
+        result = tdk_parser.parse_token(token, annotator)
+        self._tdk_parse_result = result
+        self._tdk_root_var.set(result.root)
+        self._tdk_segments_var.set(' + '.join(result.segments))
+        self._tdk_parser_status_var.set(result.reason)
+        self._tdk_render_explanation()
+
+    _TDK_CATEGORY_DISPLAY = {
+        'full_turkish_lexical_item': 'full Turkish lexical item',
+        'english_root_turkish_suffix': 'English root + Turkish suffix',
+        'ambiguous_candidate': 'ambiguous candidate',
+        'invalid_parser_proposal': 'invalid parser proposal',
+        'manual_correction': 'manual correction',
+    }
+
+    def _tdk_render_explanation(self):
+        """Renders the 'how were these suffixes found' panel from the
+        current self._tdk_parse_result -- Token / Root / Suffix / Analysis
+        (per segment) / Status, mirroring the task's own example format.
+        Never shows a single character as a suffix's "analysis" unless
+        tdk_parser itself classified it as a genuinely valid suffix."""
+        widget = getattr(self, '_tdk_explanation_text', None)
+        if widget is None:
+            return
+        result = self._tdk_parse_result
+        lines = []
+        if result is None:
+            lines = ["(no token parsed yet)"]
+        else:
+            current_root = self._tdk_root_var.get().strip()
+            current_segtext = self._tdk_segments_var.get().strip()
+            parsed_segtext = ' + '.join(result.segments)
+            if current_root != (result.root or '') or current_segtext != parsed_segtext:
+                lines.append("(Root/Segments edited since this parse -- click Re-parse to refresh "
+                              "this explanation; Check TDK will use your edited values regardless.)")
+            lines.append(f"Token: {result.token}")
+            lines.append(f"Root: {result.root or dictionary_provider.NOT_PROVIDED}")
+            if result.segments:
+                explanations = result.segment_explanations or ()
+                for i, seg in enumerate(result.segments):
+                    expl = explanations[i] if i < len(explanations) else None
+                    lines.append(f"Suffix: -{seg}")
+                    if expl is not None:
+                        lines.append(f"Analysis: {expl.rule}" + ("" if expl.valid else " (NOT a recognized suffix)"))
+                    else:
+                        lines.append("Analysis: manually specified segment (not auto-classified)")
+            else:
+                lines.append("Suffix: (none -- no suffix split proposed)")
+            lines.append(f"Status: {self._TDK_CATEGORY_DISPLAY.get(result.category, result.category)}")
+        widget.configure(state='normal')
+        widget.delete('1.0', 'end')
+        widget.insert('1.0', "\n".join(lines))
+        widget.configure(state='disabled')
+
+    def _tdk_on_root_or_segments_edited(self, *_args):
+        """Bound to the Root/Lemma and Segments StringVar traces. Never
+        triggers a lookup or a re-parse -- only marks whatever is currently
+        displayed (TDK results, explanation) as referring to a previous
+        query, so the user can never mistake a stale answer for one that
+        reflects their latest edit."""
+        self._tdk_recompute_staleness()
+        self._tdk_render_explanation()
+
+    def _tdk_recompute_staleness(self):
+        """Compares the CURRENT token/root/segments against the query
+        snapshot Check TDK was last run against (see _tdk_check_all).
+        If they differ, every currently-displayed TDK result is stale --
+        it answers a query that no longer matches what's in the fields."""
+        if self._tdk_last_query_snapshot is None:
+            return
+        self._tdk_results_stale = (self._tdk_terms_to_check() != self._tdk_last_query_snapshot)
+        if self._tdk_last_results:
+            self._tdk_render_results_tree()
+
+    # --- TDK lookup (async, off the Tk main thread) -----------------------
+
+    def _tdk_terms_to_check(self):
+        token = self._tdk_token_var.get().strip()
+        root = self._tdk_root_var.get().strip()
+        seg_text = self._tdk_segments_var.get().strip()
+        segments = [s.strip() for s in re.split(r"[+\-]", seg_text) if s.strip()] if seg_text else []
+        return {'full': token, 'root': root, 'segments': segments}
+
+    def _tdk_check_all(self):
+        """Triggered explicitly by the 'Check TDK' button, or automatically
+        exactly once right after 'Open in TDK Checker' from the grid
+        (never anywhere else, never at startup, never per-token during
+        normal annotation). Looks up the full token, the CURRENT root/
+        lemma, and each CURRENT proposed segment -- always whatever is in
+        the fields right now, never a stale parser value. Always off the
+        Tk main thread, so the GUI never freezes even if the network is
+        slow or unreachable."""
+        terms = self._tdk_terms_to_check()
+        if not terms['full']:
+            messagebox.showwarning("TDK Checker", "Enter a token first.")
+            return
+
+        self._tdk_lookup_generation += 1
+        generation = self._tdk_lookup_generation
+        # New query snapshot: everything after this point is compared
+        # against exactly these values, never the parser's original
+        # proposal, to decide whether a displayed result is stale.
+        self._tdk_last_query_snapshot = dict(terms)
+        self._tdk_results_stale = False
+        self._tdk_status_var.set("checking...")
+        provider = self._ensure_tdk_provider()
+
+        def worker():
+            # Runs on a background thread: touches ONLY `provider` (a
+            # plain, thread-safe-by-design synchronous object with no Tk
+            # dependency) and the thread-safe result queue below -- never
+            # any Tk widget, never self.after() directly. Calling Tk APIs
+            # from a non-main thread is not reliably safe (in particular,
+            # after() requires the interpreter to be inside a running
+            # mainloop); routing every result through queue.Queue and
+            # draining it exclusively from a main-thread-scheduled
+            # after()-poller (_tdk_poll_results) avoids that entirely.
+            results = []
+            try:
+                r_full = provider.lookup(terms['full'])
+                results.append(('full', terms['full'], r_full))
+                if terms['root'] and terms['root'].lower() != terms['full'].lower():
+                    r_root = provider.lookup(terms['root'])
+                    results.append(('root', terms['root'], r_root))
+                for seg in terms['segments']:
+                    r_seg = provider.lookup(seg)
+                    results.append(('segment', seg, r_seg))
+            except Exception as e:
+                results.append(('full', terms['full'],
+                                 dictionary_provider.LookupResult(
+                                     query=terms['full'], normalized_query='',
+                                     status=dictionary_provider.STATUS_UNAVAILABLE,
+                                     source='tdk', message=f"unexpected error: {e}")))
+            self._tdk_result_queue.put((generation, results))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self._tdk_ensure_poller_running()
+
+    def _tdk_ensure_poller_running(self):
+        """Starts the main-thread result-queue poller if it isn't already
+        scheduled. Always called from the main thread (never from a
+        worker) -- the poller re-schedules itself via after() as long as
+        the TDK window stays open, and stops on its own once it's closed,
+        so there is never more than one poll loop running."""
+        if self._tdk_poll_scheduled:
+            return
+        self._tdk_poll_scheduled = True
+        self.after(50, self._tdk_poll_results)
+
+    def _tdk_poll_results(self):
+        """Runs exclusively as an after() callback on the Tk main thread.
+        Drains every result a background worker has queued so far, then
+        re-schedules itself -- unless the TDK window has been closed, in
+        which case polling simply stops (a fresh poller is started the
+        next time a lookup is triggered)."""
+        try:
+            while True:
+                generation, results = self._tdk_result_queue.get_nowait()
+                self._tdk_on_lookup_results(generation, results)
+        except queue.Empty:
+            pass
+
+        if getattr(self, '_tdk_win', None) is not None and self._tdk_win.winfo_exists():
+            self.after(50, self._tdk_poll_results)
+        else:
+            self._tdk_poll_scheduled = False
+
+    def _tdk_on_lookup_results(self, generation, results):
+        """Runs on the Tk main thread (scheduled via after()). Drops the
+        result entirely if a newer lookup has since been started -- the
+        user changed the token/re-clicked before this one finished (the
+        request-ID / generation protection required for async safety).
+        Even for the latest generation, if root/segments were edited AFTER
+        this exact lookup was kicked off but before it returned, the
+        result is marked STALE_RESULT rather than shown as current --
+        _tdk_recompute_staleness re-checks that against the CURRENT
+        fields, not just against the generation counter."""
+        if generation != self._tdk_lookup_generation:
+            return  # stale response -- ignore
+        if getattr(self, '_tdk_win', None) is None or not self._tdk_win.winfo_exists():
+            return
+        self._tdk_populate_results(results)
+        self._tdk_recompute_staleness()
+        if self._tdk_results_stale:
+            self._tdk_status_var.set(f"{dictionary_provider.STATUS_STALE_RESULT} -- "
+                                      "query changed since this check; press Check TDK again")
+        else:
+            overall = results[0][2].status if results else dictionary_provider.STATUS_UNAVAILABLE
+            self._tdk_status_var.set(f"{overall} (source: {results[0][2].source})" if results else "UNAVAILABLE")
+
+    def _tdk_clear_results(self):
+        self._tdk_last_results = []
+        if getattr(self, '_tdk_results_tree', None) is not None:
+            try:
+                self._tdk_results_tree.delete(*self._tdk_results_tree.get_children())
+            except Exception:
+                pass
+        if getattr(self, '_tdk_status_var', None) is not None:
+            self._tdk_status_var.set('')
+        self._tdk_render_detail(None, None)
+
+    def _tdk_populate_results(self, results):
+        self._tdk_last_results = list(results)
+        self._tdk_render_results_tree()
+
+    def _tdk_render_results_tree(self):
+        """Single source of truth for the results Treeview -- rebuilds it
+        from self._tdk_last_results every time, using self._tdk_results_stale
+        to decide whether every row should currently read STALE_RESULT.
+        Row iid is the index into self._tdk_last_results, so selecting a
+        row can recover its full LookupResult for the detail panel."""
+        tree = getattr(self, '_tdk_results_tree', None)
+        if tree is None:
+            return
+        tree.delete(*tree.get_children())
+        for i, (kind, term, result) in enumerate(self._tdk_last_results):
+            status = dictionary_provider.STATUS_STALE_RESULT if self._tdk_results_stale else result.status
+            detail = self._tdk_short_detail(result)
+            if self._tdk_results_stale:
+                detail = f"(stale -- answers a previous query) {detail}"
+            tree.insert("", "end", iid=str(i), values=(term, kind, status, detail))
+
+    @staticmethod
+    def _tdk_short_detail(result):
+        detail = result.message
+        if result.status == dictionary_provider.STATUS_FOUND and result.entries:
+            heads = ", ".join(
+                dictionary_provider.format_field_for_display(getattr(e, 'headword', None))
+                for e in result.entries)
+            detail = heads or detail
+        if result.from_cache:
+            detail = f"{detail} (cached)".strip()
+        return detail or dictionary_provider.NOT_PROVIDED
+
+    def _tdk_on_result_select(self, event=None):
+        tree = getattr(self, '_tdk_results_tree', None)
+        if tree is None:
+            return
+        sel = tree.selection()
+        if not sel:
+            self._tdk_render_detail(None, None)
+            return
+        try:
+            idx = int(sel[0])
+            kind, term, result = self._tdk_last_results[idx]
+        except (ValueError, IndexError):
+            self._tdk_render_detail(None, None)
+            return
+        self._tdk_render_detail(result, term)
+
+    def _tdk_render_detail(self, result, term):
+        """Full dictionary detail for one queried term -- headword, part
+        of speech, every sense's definition/usage labels/examples, origin,
+        pronunciation, compounds, idioms, proverbs, source, and the query
+        itself. Every missing field shows dictionary_provider.NOT_PROVIDED,
+        never a guessed value. Never dumps raw HTML/JSON -- only the
+        structured fields dictionary_provider.py already extracted."""
+        widget = getattr(self, '_tdk_detail_text', None)
+        if widget is None:
+            return
+        NP = dictionary_provider.NOT_PROVIDED
+        lines = []
+        if result is None:
+            lines = ["(select a row above to see its full dictionary detail)"]
+        else:
+            lines.append(f"Query: {result.query}")
+            lines.append(f"Source: {result.source}")
+            lines.append(f"Status: {result.status}")
+            if result.entries:
+                for i, e in enumerate(result.entries, 1):
+                    lines.append("")
+                    lines.append(f"Entry {i}")
+                    lines.append(f"  Headword: {dictionary_provider.format_field_for_display(getattr(e, 'headword', None))}")
+                    lines.append(f"  Part of speech: {dictionary_provider.format_field_for_display(getattr(e, 'part_of_speech', None))}")
+                    lines.append(f"  Origin: {dictionary_provider.format_field_for_display(getattr(e, 'origin', None))}")
+                    lines.append(f"  Pronunciation: {dictionary_provider.format_field_for_display(getattr(e, 'pronunciation', None))}")
+                    senses = getattr(e, 'senses', ())
+                    if senses:
+                        for j, s in enumerate(senses, 1):
+                            lines.append(f"  Sense {j}: {s.definition}")
+                            if s.part_of_speech:
+                                lines.append(f"    Part of speech: {s.part_of_speech}")
+                            if s.usage_labels:
+                                lines.append(f"    Usage: {', '.join(s.usage_labels)}")
+                            if s.examples:
+                                lines.append(f"    Examples: {'; '.join(s.examples)}")
+                    else:
+                        lines.append(f"  Definitions: {NP}")
+                    compounds = getattr(e, 'compounds', ())
+                    idioms = getattr(e, 'idioms', ())
+                    proverbs = getattr(e, 'proverbs', ())
+                    lines.append(f"  Compounds: {', '.join(compounds) if compounds else NP}")
+                    lines.append(f"  Idioms: {', '.join(idioms) if idioms else NP}")
+                    lines.append(f"  Proverbs: {', '.join(proverbs) if proverbs else NP}")
+            else:
+                lines.append(f"Detail: {result.message or NP}")
+        widget.configure(state='normal')
+        widget.delete('1.0', 'end')
+        widget.insert('1.0', "\n".join(lines))
+        widget.configure(state='disabled')
+
+    # --- Apply Correction / Undo -------------------------------------------
+
+    def _tdk_push_undo(self, record):
+        self._tdk_undo_stack.append(record)
+        if len(self._tdk_undo_stack) > 200:
+            self._tdk_undo_stack.pop(0)
+
+    def _tdk_apply_correction(self):
+        """Updates ONLY the active dataset's row's tdk_segmentation
+        metadata -- never `gloss` (Gloss is handled entirely by the main
+        table / Auto-Glossing Tool, not this tool), never the label, never
+        MatrixLang/EmbedLang (neither depends on segmentation, so no
+        recomputation is needed), never a row in another dataset."""
+        if self._tdk_current is None:
+            messagebox.showinfo(
+                "TDK Checker",
+                "Apply Correction requires a token opened from the main table "
+                "(use \"Open in TDK Checker\" on a selected row).")
+            return
+        bidx, ridx = self._tdk_current['bidx'], self._tdk_current['ridx']
+        try:
+            current_dataset_id = self.datasets[self._active_dataset_index].get('id')
+        except Exception:
+            current_dataset_id = None
+        if current_dataset_id != self._tdk_current.get('dataset_id'):
+            messagebox.showerror("TDK Checker", "The active dataset has changed; cannot apply this correction.")
+            return
+        if bidx >= len(self.blocks) or ridx >= len(self.blocks[bidx]):
+            messagebox.showerror("TDK Checker", "The original row no longer exists.")
+            return
+
+        row = self.blocks[bidx][ridx]
+        token = self._tdk_token_var.get().strip()
+        if str(row.get('token', '') or '') != token:
+            messagebox.showerror(
+                "TDK Checker", "The token in this row no longer matches what TDK Checker is showing; "
+                                "re-open it from the main table before applying.")
+            return
+
+        root = self._tdk_root_var.get().strip()
+        seg_text = self._tdk_segments_var.get().strip()
+        parsed = tdk_parser.segments_from_text(token, root, seg_text)
+
+        old = {'tdk_segmentation': copy.deepcopy(row.get('tdk_segmentation'))}
+        new_segmentation = {'root': parsed.root, 'segments': list(parsed.segments),
+                             'source': 'manual', 'success': parsed.success}
+
+        if old['tdk_segmentation'] == new_segmentation:
+            return  # nothing changed -- no-op, no dirty flag, no undo entry
+
+        self._tdk_push_undo({'bidx': bidx, 'ridx': ridx, 'old': old,
+                              'new': {'tdk_segmentation': new_segmentation}})
+        row['tdk_segmentation'] = new_segmentation
+        self._mark_dirty()
+        self._rebuild_grid_from_model(select_row=self._tdk_current.get('vis_r'), select_col=3)
+
+        if not parsed.success:
+            messagebox.showwarning(
+                "TDK Checker",
+                "Applied, but the root + segments you entered do not reconstruct the token exactly "
+                "-- double-check the segmentation.")
+
+    def _tdk_undo_last(self):
+        if not self._tdk_undo_stack:
+            self.bell()
+            return
+        record = self._tdk_undo_stack.pop()
+        bidx, ridx = record['bidx'], record['ridx']
+        try:
+            row = self.blocks[bidx][ridx]
+            if record['old']['tdk_segmentation'] is not None:
+                row['tdk_segmentation'] = record['old']['tdk_segmentation']
+            elif 'tdk_segmentation' in row:
+                del row['tdk_segmentation']
+        except Exception:
+            pass
+        self._mark_dirty()
+        self._rebuild_grid_from_model()
+        if self._tdk_current is not None and (bidx, ridx) == (self._tdk_current['bidx'], self._tdk_current['ridx']):
+            seg = record['old']['tdk_segmentation']
+            if seg:
+                self._tdk_root_var.set(seg.get('root', ''))
+                self._tdk_segments_var.set(' + '.join(seg.get('segments', []) or []))
+
+    # --- Find All Occurrences ----------------------------------------------
+
+    def open_tdk_find_occurrences(self):
+        """Finds every occurrence of the current token WITHIN THE ACTIVE
+        DATASET ONLY (annotation_model.find_occurrences already never
+        looks outside self.blocks) and lets the user apply the current
+        root/segments/gloss correction to whichever occurrences they
+        select -- never silently to all of them, never to another
+        dataset."""
+        query = self._tdk_token_var.get().strip()
+        if not query:
+            messagebox.showinfo("Find All Occurrences", "Enter or select a token first.")
+            return
+        items = annotation_model.find_occurrences(self.blocks, self._row_index_map, self._sep_rows, query)
+        if not items:
+            messagebox.showinfo("Find All Occurrences", f"No occurrences of '{query}' found in this dataset.")
+            return
+
+        win = tk.Toplevel(self)
+        win.title('TDK Checker — Find All Occurrences')
+        win.configure(bg=DARK_BG)
+        win.transient(self)
+        win.geometry('520x360')
+
+        frm = ttk.Frame(win, style='Dark.TFrame')
+        frm.pack(fill='both', expand=True, padx=10, pady=10)
+
+        cols = ("sentence_id", "token_index", "token")
+        headers = {"sentence_id": "Sentence ID", "token_index": "Token Index", "token": "Token"}
+        tree = ttk.Treeview(frm, columns=cols, show='headings', style='Conc.Treeview', selectmode='extended')
+        for c in cols:
+            tree.heading(c, text=headers[c])
+            tree.column(c, width=140, anchor='w')
+        tree.pack(fill='both', expand=True)
+
+        for i, it in enumerate(items):
+            row = self.blocks[it['bidx']][it['ridx']]
+            sid = self._tdk_sentence_id_for_block(it['bidx'])
+            tree.insert("", "end", iid=str(i), values=(sid, row.get('idx', ''), row.get('token', '')))
+
+        def _apply_to_selected():
+            sel = tree.selection()
+            if not sel:
+                messagebox.showinfo("Find All Occurrences", "Select at least one occurrence first.")
+                return
+            root = self._tdk_root_var.get().strip()
+            seg_text = self._tdk_segments_var.get().strip()
+            applied = 0
+            for iid in sel:
+                idx = int(iid)
+                it = items[idx]
+                bidx, ridx = it['bidx'], it['ridx']
+                try:
+                    row = self.blocks[bidx][ridx]
+                except Exception:
+                    continue
+                tok = str(row.get('token', '') or '')
+                parsed = tdk_parser.segments_from_text(tok, root, seg_text)
+                old = {'tdk_segmentation': copy.deepcopy(row.get('tdk_segmentation'))}
+                new_segmentation = {'root': parsed.root, 'segments': list(parsed.segments),
+                                     'source': 'manual', 'success': parsed.success}
+                self._tdk_push_undo({'bidx': bidx, 'ridx': ridx, 'old': old,
+                                      'new': {'tdk_segmentation': new_segmentation}})
+                row['tdk_segmentation'] = new_segmentation
+                applied += 1
+            if applied:
+                self._mark_dirty()
+                self._rebuild_grid_from_model()
+            messagebox.showinfo("Find All Occurrences", f"Applied to {applied} occurrence(s) in this dataset.")
+
+        btns = ttk.Frame(frm, style='Dark.TFrame')
+        btns.pack(fill='x', pady=(8, 0))
+        ttk.Button(btns, text="Apply to Selected", style='Dark.TButton', command=_apply_to_selected).pack(
+            side='left')
+        ttk.Button(btns, text="Close", style='Dark.TButton', command=win.destroy).pack(side='right')
+
     def __init__(self):
         super().__init__()
 
@@ -1279,6 +2145,40 @@ VOC vocative
         # Scoped undo (single most-recent transaction) for the main table's
         # Merge Cells command.
         self._merge_cells_undo_stack = []
+
+        # TDK Checker state -- a separate tool from the Confidence Review
+        # Tool (never replaces/renames it). _tdk_provider is created lazily
+        # (see _ensure_tdk_provider) and ONLY on the first explicit
+        # "Check TDK"/"Open in TDK Checker" action -- never at startup,
+        # never during normal annotation. Tests may set self._tdk_provider
+        # directly to a MockDictionaryProvider before triggering a lookup.
+        self._tdk_win = None
+        self._tdk_provider = None
+        self._tdk_parser_annotator = None
+        # Background lookup threads never call any Tk API directly (not
+        # even `after()` -- that is only safe from the main thread/an
+        # existing after() callback). They only ever put results on this
+        # thread-safe queue; a poller scheduled exclusively via after()
+        # from the main thread drains it. See _tdk_check_all/_tdk_poll_results.
+        self._tdk_result_queue = queue.Queue()
+        self._tdk_poll_scheduled = False
+        self._tdk_current = None  # {'bidx','ridx','vis_r'} of the row currently loaded, or None if opened standalone
+        self._tdk_parse_result = None
+        self._tdk_lookup_generation = 0  # bumped per lookup request; stale async responses are dropped
+        # The exact {'full','root','segments'} query snapshot Check TDK was
+        # last run against, and the results it returned -- compared against
+        # the CURRENT field values any time root/segments change, so a
+        # displayed result can be marked STALE_RESULT the moment it no
+        # longer corresponds to what the user is now editing (see
+        # _tdk_mark_stale_if_needed / _tdk_check_all).
+        self._tdk_last_query_snapshot = None
+        self._tdk_last_results = []
+        self._tdk_results_stale = False
+        self._tdk_undo_stack = []
+        self._tdk_mode = 'single'  # 'single' | 'occurrences'
+        self._tdk_items = []
+        self._tdk_i = 0
+        self._tdk_query = ''
 
         # concordance (KWIC) state
         self._conc_query_var = tk.StringVar(value="")
@@ -1535,6 +2435,9 @@ VOC vocative
         toolsm = tk.Menu(menubar, tearoff=False, bg=DARK_BG, fg=DARK_FG)
         toolsm.add_command(label="Auto-Glossing Tool...", command=self.open_auto_glossing_tool)
         toolsm.add_command(label="Confidence Review Tool...", command=self.open_uid_review_tool)
+        # A separate tool from the Confidence Review Tool -- never replaces
+        # or renames it. See open_tdk_checker_tool/open_tdk_checker_from_grid.
+        toolsm.add_command(label="TDK Checker...", command=self.open_tdk_checker_tool)
         toolsm.add_separator()
         toolsm.add_command(label="Concordance (KWIC)...", command=self.open_concordance)
         toolsm.add_command(label="Show Sentence (Context)", command=self.show_sentence_context)
@@ -1693,11 +2596,14 @@ VOC vocative
 
     def _close_dataset_scoped_windows(self):
         """Close every auxiliary window that reads/writes self.blocks by row
-        index (Confidence Review Tool, Auto-Glossing Tool, Concordance, Word
-        Frequency, Full Edit Window, Show Sentence). None of them are
-        dataset-aware, so leaving one open across a dataset switch would let
-        it silently read or edit the wrong dataset via a stale row index."""
-        for attr in ('_uid_win', '_ag_win', '_conc_win', '_freq_win', '_full_win'):
+        index (Confidence Review Tool, TDK Checker, Auto-Glossing Tool,
+        Concordance, Word Frequency, Full Edit Window, Show Sentence). None
+        of them are dataset-aware, so leaving one open across a dataset
+        switch would let it silently read or edit the wrong dataset via a
+        stale row index -- the TDK action "must never operate on a
+        previous dataset", so this is exactly as strict for it as for
+        every other row-index-based tool."""
+        for attr in ('_uid_win', '_ag_win', '_conc_win', '_freq_win', '_full_win', '_tdk_win'):
             win = getattr(self, attr, None)
             if win is not None:
                 try:
@@ -1706,6 +2612,17 @@ VOC vocative
                 except Exception:
                     pass
                 setattr(self, attr, None)
+
+        self._tdk_current = None
+        self._tdk_parse_result = None
+        self._tdk_last_query_snapshot = None
+        self._tdk_last_results = []
+        self._tdk_results_stale = False
+        self._tdk_undo_stack = []
+        self._tdk_items = []
+        self._tdk_i = 0
+        self._tdk_mode = 'single'
+        self._tdk_query = ''
 
         sent = getattr(self, '_sentence_win', None)
         if sent is not None:
@@ -2340,10 +3257,23 @@ VOC vocative
             self._grid_menu.add_separator()
             self._grid_menu.add_command(label="Merge Cells", command=self.merge_selected_cells)
             self._grid_menu.add_command(label="Undo Merge Cells", command=self.undo_merge_cells)
+            self._grid_menu.add_separator()
+            self._grid_menu.add_command(label="Open in TDK Checker", command=self.open_tdk_checker_from_grid)
 
             def _popup_grid_menu(e):
                 try:
                     self._active_area = "sheet"
+                    # Reflect whatever is CURRENTLY selected (right-click
+                    # itself never changes selection, matching Merge
+                    # Cells' own convention) -- greys the action out for an
+                    # invalid selection rather than only failing after the
+                    # click.
+                    try:
+                        _bidx, _ridx, _vis_r, _err = self._resolve_tdk_grid_selection()
+                        self._grid_menu.entryconfig(
+                            "Open in TDK Checker", state=('disabled' if _err is not None else 'normal'))
+                    except Exception:
+                        pass
                     self._grid_menu.tk_popup(e.x_root, e.y_root)
                 finally:
                     try:
