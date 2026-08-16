@@ -1,5 +1,6 @@
 # tests/test_reranker_integration.py
-"""Phase 6.1/6.2: tests for reranker_integration.py -- loading infrastructure
+"""Phase 6.1/6.2: tests for reranking.py's production-integration section
+(formerly reranker_integration.py) -- loading infrastructure
 (Phase 6.1) and apply_reranker() (Phase 6.2). No GUI, no production pipeline
 involved. Uses the real resources/models/ artifacts (small, tracked files)
 directly rather than mocking joblib/the model, since they're cheap to load
@@ -22,8 +23,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cs_pipeline import Annotator, DEFAULTS
-import reranker_integration as ri
-import uid_resolver as ur
+import reranking as ri
+import reranking as ur
 
 REAL_MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "models")
 
@@ -274,7 +275,7 @@ def test_load_reranker_bundle_never_raises_on_arbitrary_bad_input(tmp_path):
 
 
 def test_module_does_not_import_joblib_at_top_level():
-    # Structural guarantee: the only "import joblib" in reranker_integration.py
+    # Structural guarantee: the only "import joblib" in reranking.py
     # must be inside a function body, not at module scope, so importing this
     # module never requires joblib/scikit-learn to be installed.
     import ast
@@ -364,7 +365,7 @@ def test_apply_reranker_no_candidate_tokens_unchanged():
 def test_apply_reranker_does_not_call_classify_candidate_for_ineligible_labels():
     text = _sentence_block(1, [("amazing", "EN"), ("42", "OTHER")], matrix="EN", embed="-")
     obj = _make_annotator()
-    with mock.patch("reranker_integration.mr.classify_candidate") as mock_classify:
+    with mock.patch("reranking.classify_candidate") as mock_classify:
         ri.apply_reranker(text, obj, DEFAULTS, mock.Mock())
     mock_classify.assert_not_called()
 
@@ -525,12 +526,12 @@ def test_run_pipeline_calls_reranker_in_the_expected_order():
     import cs_annotator_app
 
     ready_src = inspect.getsource(cs_annotator_app.App._ensure_annotator_ready)
-    assert "reranker_integration.load_reranker_bundle" in ready_src
+    assert "reranking.load_reranker_bundle" in ready_src
 
     pipeline_src = inspect.getsource(cs_annotator_app.App._run_annotation_pipeline)
     ready_pos = pipeline_src.index("self._ensure_annotator_ready(")
     annotate_pos = pipeline_src.index(".annotate(")
-    apply_pos = pipeline_src.index("reranker_integration.apply_reranker")
+    apply_pos = pipeline_src.index("reranking.apply_reranker")
     consistency_pos = pipeline_src.index("_ensure_matrix_embed_consistency")
     assert ready_pos < annotate_pos < apply_pos < consistency_pos
 
@@ -561,8 +562,9 @@ def test_app_init_declares_reranker_cache_slots():
 
 # ---------------------------------------------------------------------------
 # Residual verbal MIXED detector -- production wiring inside apply_reranker().
-# Strict evidence only (mixed_reranker.evaluate_residual_verbal_promotion's
-# default); this file only tests PLACEMENT, fail-safety, and Matrix/Embed
+# Strict evidence only (reranking.evaluate_residual_verbal_promotion's,
+# formerly mixed_reranker.evaluate_residual_verbal_promotion's, default);
+# this file only tests PLACEMENT, fail-safety, and Matrix/Embed
 # interaction with the frozen-reranker stage -- the detection RULE itself
 # (parsing/evidence/gating) is tested exhaustively in test_mixed_reranker.py.
 # ---------------------------------------------------------------------------
@@ -586,7 +588,7 @@ def test_residual_stage_never_reconsiders_a_token_already_promoted_by_frozen_rer
     obj = _make_annotator(english_words={"boost"})
     original = _sentence_block(1, [("boostlamak", "UID")], matrix="-", embed="-")
     with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.95)), \
-         mock.patch("reranker_integration.mr.evaluate_residual_verbal_promotion") as mock_residual:
+         mock.patch("reranking.evaluate_residual_verbal_promotion") as mock_residual:
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert "boostlamak\tMIXED" in result
     mock_residual.assert_not_called()
@@ -599,7 +601,7 @@ def test_residual_promotion_after_frozen_reranker_declines(real_bundle):
     # evaluate_residual_verbal_promotion end to end, not a mock.
     obj = _make_annotator(english_words={"design"})
     original = _sentence_block(1, [("designladık", "TR")], matrix="-", embed="-")
-    with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)):
+    with mock.patch("reranking.classify_candidate", return_value=(False, None, None)):
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert "designladık\tMIXED" in result
 
@@ -610,7 +612,7 @@ def test_matrix_embed_recomputed_when_only_residual_stage_promotes(real_bundle):
     # the frozen reranker.
     obj = _make_annotator(english_words={"design"}, turkish_all={"kitap"})
     original = _sentence_block(1, [("kitap", "TR"), ("designladık", "TR")], matrix="TR", embed="-")
-    with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)):
+    with mock.patch("reranking.classify_candidate", return_value=(False, None, None)):
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert "designladık\tMIXED" in result
     assert "MatrixLang\tTR" in result
@@ -630,7 +632,7 @@ def test_residual_stage_never_touches_non_uid_tr_labels(real_bundle):
         ("Ankara", "NE"),
         ("bonjour", "LANG3"),
     ], matrix="-", embed="-")
-    with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)):
+    with mock.patch("reranking.classify_candidate", return_value=(False, None, None)):
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert result == original  # byte-for-byte identical -- nothing eligible for either stage
 
@@ -641,8 +643,8 @@ def test_residual_promotion_never_raises_preserves_label_and_continues(real_bund
     # block, and must leave that token's own label untouched.
     obj = _make_annotator(english_words={"design"})
     original = _sentence_block(1, [("designladık", "TR"), ("kitap", "TR")], matrix="TR", embed="-")
-    with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)), \
-         mock.patch("reranker_integration.mr.evaluate_residual_verbal_promotion",
+    with mock.patch("reranking.classify_candidate", return_value=(False, None, None)), \
+         mock.patch("reranking.evaluate_residual_verbal_promotion",
                      side_effect=RuntimeError("boom")):
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert "designladık\tTR" in result
@@ -657,7 +659,7 @@ def test_frozen_reranker_output_unchanged_by_presence_of_residual_stage(real_bun
     obj = _make_annotator(english_words={"boost"})
     original = _sentence_block(1, [("boostlamak", "UID")], matrix="-", embed="-")
     with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.95)), \
-         mock.patch("reranker_integration.mr.evaluate_residual_verbal_promotion",
+         mock.patch("reranking.evaluate_residual_verbal_promotion",
                      return_value=(False, None, "no_verbal_candidate")):
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert "boostlamak\tMIXED" in result
@@ -691,7 +693,7 @@ _RESIDUAL_PROD_STEMS = {"upload", "design", "invite", "filter", "forward",
 def test_residual_production_targets_promote_via_apply_reranker(token, real_bundle):
     obj = _make_annotator(english_words=_RESIDUAL_PROD_STEMS)
     original = _sentence_block(1, [(token, "TR")], matrix="-", embed="-")
-    with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)):
+    with mock.patch("reranking.classify_candidate", return_value=(False, None, None)):
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert f"{token}\tMIXED" in result, f"{token} was not promoted: {result}"
 
@@ -700,14 +702,14 @@ def test_residual_production_targets_promote_via_apply_reranker(token, real_bund
 def test_residual_production_native_controls_never_promote_via_apply_reranker(token, real_bundle):
     obj = _make_annotator(english_words=_RESIDUAL_PROD_STEMS)
     original = _sentence_block(1, [(token, "TR")], matrix="-", embed="-")
-    with mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)):
+    with mock.patch("reranking.classify_candidate", return_value=(False, None, None)):
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert f"{token}\tMIXED" not in result, f"{token} was incorrectly promoted: {result}"
 
 
 # ---------------------------------------------------------------------------
 # UID->TR resolver -- production integration inside apply_reranker() (see
-# reranker_integration.py's module docstring for the authorized brief this
+# reranking.py's module docstring for the authorized brief this
 # implements: real corpus + both synthetic benchmarks re-evaluated with zero
 # harmful changes and zero regression on any other label). This file tests
 # PLACEMENT, the UID_TR_RESOLVER_ENABLED flag, byte-identical non-UID
@@ -723,8 +725,8 @@ def _disable_frozen_and_residual_stages():
     the UID->TR resolver stage (mirrors the existing convention above for
     isolating the residual stage from the frozen reranker)."""
     return (
-        mock.patch("reranker_integration.mr.classify_candidate", return_value=(False, None, None)),
-        mock.patch("reranker_integration.mr.evaluate_residual_verbal_promotion",
+        mock.patch("reranking.classify_candidate", return_value=(False, None, None)),
+        mock.patch("reranking.evaluate_residual_verbal_promotion",
                     return_value=(False, None, "disabled_for_test")),
     )
 
@@ -757,14 +759,14 @@ def test_uid_to_tr_resolver_stage_never_reconsiders_a_token_already_promoted_to_
     obj = _make_annotator(english_words={"boost"})
     original = _sentence_block(1, [("boostlamak", "UID")], matrix="-", embed="-")
     with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.95)), \
-         mock.patch("reranker_integration.ur.decide") as mock_decide:
+         mock.patch("reranking.decide") as mock_decide:
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert "boostlamak\tMIXED" in result
     mock_decide.assert_not_called()
 
 
 def test_uid_to_tr_resolver_stage_never_overrides_english_root_turkish_suffix_candidate(real_bundle):
-    # End-to-end, real (unmocked) uid_resolver.decide(): "uploadın" = stem
+    # End-to-end, real (unmocked) reranking.decide() (formerly uid_resolver.decide()): "uploadın" = stem
     # "upload" (English lexicon) + Turkish genitive suffix "ın" -- exactly
     # the shape the frozen reranker/residual stage treat as a MIXED
     # candidate, so the resolver's own hard gate must block it, leaving it
@@ -786,7 +788,7 @@ def test_uid_to_tr_resolver_stage_leaves_other_labels_byte_identical(label, real
     with p1, p2, \
          mock.patch.object(obj, "_ft_predict", return_value=("TR", 0.95)), \
          mock.patch.object(obj, "_has_valid_turkish_nominal_analysis", return_value=True), \
-         mock.patch("reranker_integration.ur.decide") as mock_decide:
+         mock.patch("reranking.decide") as mock_decide:
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert result == original
     mock_decide.assert_not_called()
@@ -824,7 +826,7 @@ def test_uid_to_tr_resolver_stage_exception_is_fail_safe(real_bundle):
     obj = _make_annotator(turkish_all={"meyler"})
     original = _sentence_block(1, [("meyler", "UID")], matrix="-", embed="-")
     p1, p2 = _disable_frozen_and_residual_stages()
-    with p1, p2, mock.patch("reranker_integration.ur.decide", side_effect=RuntimeError("boom")):
+    with p1, p2, mock.patch("reranking.decide", side_effect=RuntimeError("boom")):
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert result == original  # unchanged, no crash
 
@@ -846,7 +848,7 @@ def test_uid_to_tr_resolver_stage_never_raises_preserves_label_and_continues(rea
     with p1, p2, \
          mock.patch.object(obj, "_ft_predict", return_value=("TR", 0.95)), \
          mock.patch.object(obj, "_has_valid_turkish_nominal_analysis", return_value=True), \
-         mock.patch("reranker_integration.ur.decide", side_effect=flaky_decide):
+         mock.patch("reranking.decide", side_effect=flaky_decide):
         result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
     assert "zzqxwv\tUID" in result  # the token whose evaluation raised: untouched
     assert "meyler\tTR" in result  # the other token in the same block: still promoted
@@ -875,7 +877,7 @@ def test_uid_to_tr_resolver_disabled_flag_restores_previous_output(real_bundle):
          mock.patch.object(obj, "_ft_predict", return_value=("TR", 0.95)), \
          mock.patch.object(obj, "_has_valid_turkish_nominal_analysis", return_value=True):
         enabled_result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
-        with mock.patch("reranker_integration.UID_TR_RESOLVER_ENABLED", False):
+        with mock.patch("reranking.UID_TR_RESOLVER_ENABLED", False):
             disabled_result = ri.apply_reranker(original, obj, DEFAULTS, real_bundle)
 
     assert "meyler\tTR" in enabled_result

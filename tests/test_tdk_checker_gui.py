@@ -3,10 +3,10 @@
 tool from the Confidence Review Tool (Tools -> TDK Checker; never replaces
 or renames it).
 
-Every test in this file uses dictionary_provider.MockDictionaryProvider or
-UnavailableProvider, injected directly via `app._tdk_provider`, set BEFORE
-any lookup is triggered. No test here (or anywhere in the suite) ever
-constructs a real dictionary_provider.TDKProvider or makes a real network
+Every test in this file uses tdk.py's (formerly dictionary_provider.py's)
+MockDictionaryProvider or UnavailableProvider, injected directly via
+`app._tdk_provider`, set BEFORE any lookup is triggered. No test here (or
+anywhere in the suite) ever constructs a real tdk.TDKProvider or makes a real network
 call -- see tests/test_dictionary_provider.py for the provider's own
 network-shaped tests, all of which use an injected fake opener instead of
 the real network too.
@@ -27,7 +27,7 @@ import tkinter as tk  # noqa: E402
 
 import cs_annotator_app as caa  # noqa: E402
 import annotation_model  # noqa: E402
-import dictionary_provider as dp  # noqa: E402
+import tdk as dp  # noqa: E402
 
 
 def _tk_available():
@@ -1029,7 +1029,7 @@ def test_detail_panel_shows_placeholder_before_any_selection():
 
 class _FixedMessageProvider(dp.DictionaryProvider):
     """Stands in for the real TDKProvider's own NOT_FOUND behavior (see
-    dictionary_provider.py's TDKProvider._parse_response), which always
+    tdk.py's TDKProvider._parse_response, formerly dictionary_provider.py's), which always
     uses this exact fixed English message -- never the raw Turkish
     "Sonuç bulunamadı" the upstream endpoint itself returns."""
     name = "fixed"

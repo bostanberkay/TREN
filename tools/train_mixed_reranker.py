@@ -39,7 +39,7 @@ from sklearn.metrics import (accuracy_score, average_precision_score, confusion_
                               roc_auc_score)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import mixed_reranker as mr
+import reranking as mr
 
 SCHEMA_LABELS = list(mr.SCHEMA_LABELS)
 RANDOM_STATE = 42

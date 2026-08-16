@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
 
-import mixed_reranker as mr
+import reranking as mr
 from cs_pipeline import Annotator, DEFAULTS
 import build_reranker_dataset as bld
 import train_mixed_reranker as trn
@@ -38,7 +38,8 @@ def _block(sentence_id, tokens, matrix='TR', embed='EN'):
 
 
 # ---------------------------------------------------------------------------
-# Candidate generation / selection (mixed_reranker.py)
+# Candidate generation / selection (formerly mixed_reranker.py, now
+# reranking.py's candidate-generation section)
 # ---------------------------------------------------------------------------
 
 def test_enumerate_candidate_analyses_fully_consumed_only():
@@ -2463,7 +2464,8 @@ def test_residual_broad_mode_available_but_not_default():
     # The broad (fastText-inclusive) evidence path remains selectable for
     # offline experimentation only -- exercising it here proves it still
     # exists and works, without implying it is wired into any production
-    # call site (reranker_integration.py never passes strict_lexicon_only).
+    # call site (reranking.py's production integration section, formerly
+    # reranker_integration.py, never passes strict_lexicon_only).
     obj = _make_annotator()
     with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.99)):
         promote, cand, reason = mr.evaluate_residual_verbal_promotion(

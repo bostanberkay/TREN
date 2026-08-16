@@ -4,7 +4,7 @@
 Purpose
 --------------------------------------------------------------------------
 For every already-labeled token (i.e. AFTER the full, unmodified production
-pipeline -- Annotator.annotate() -> reranker_integration.apply_reranker()
+pipeline -- Annotator.annotate() -> reranking.apply_reranker()
 [frozen Phase 5F reranker + residual verbal detector + UID->TR resolver] ->
 Matrix/Embedded Language consistency -- has already run and decided a final
 label), this module computes a per-token confidence record: how much
@@ -47,24 +47,24 @@ production/experimental code -- nothing here duplicates their logic):
     supplied by the caller, see `attach_confidence_to_blocks`)
   - Turkish/English lexicon membership (`annotator.turkish_freq_top/_all`,
     `annotator.english_freq_words`)
-  - fastText language/probability (`mixed_reranker.fasttext_predict_raw`,
+  - fastText language/probability (`reranking.fasttext_predict_raw`,
     itself a thin read-only adapter over `Annotator._ft_predict`)
   - Turkish suffix-chain / morphology evidence
     (`Annotator._has_valid_turkish_nominal_analysis`, read-only)
   - Stanza NE evidence and entity type (best-effort only, gated behind
     `compute_entity_types`; see `_detect_entity_type`)
   - the frozen reranker's own probability/margin, recomputed read-only
-    exactly the way `reranker_integration._rerank_token_label` does
-    (`mixed_reranker.classify_candidate`/`build_structured_feature_dict` +
+    exactly the way `reranking._rerank_token_label` does
+    (`reranking.classify_candidate`/`build_structured_feature_dict` +
     `bundle.model.predict_proba`) -- never touches the frozen model itself
   - the residual verbal detector's verdict
-    (`mixed_reranker.evaluate_residual_verbal_promotion`, read-only)
+    (`reranking.evaluate_residual_verbal_promotion`, read-only)
   - the UID->TR resolver's own explainable evidence/score
-    (`uid_resolver.decide`, read-only)
+    (`reranking.decide`, read-only)
   - MatrixLang/EmbedLang sentence-level consistency
   - token-shape hard exclusions (URLs, mentions, hashtags, numbers, codes,
     emoji, apostrophes -- `cs_pipeline.is_other_token`, imported lazily
-    exactly like `uid_resolver.py` already does, so importing this module
+    exactly like reranking.py's UID->TR resolver section already does, so importing this module
     does not force `cs_pipeline`'s module-level `import stanza`)
 
 Persistence
@@ -87,8 +87,8 @@ from typing import Dict, List, Optional, Tuple
 import scipy.sparse as sp
 
 import annotation_model
-import mixed_reranker as mr
-import uid_resolver as ur
+import reranking as mr
+import reranking as ur
 
 CALIBRATION_NOTE = (
     "Deterministic, rule-based confidence estimate. NOT statistically "
@@ -109,12 +109,12 @@ BAND_LOW = "LOW"
 ALL_LABELS = ("TR", "EN", "MIXED", "UID", "NE", "OTHER", "LANG3")
 
 # Reranker-candidate-eligible predicted labels, re-derived from
-# mixed_reranker's own frozen constants (SCHEMA_LABELS minus
+# reranking's own frozen constants (SCHEMA_LABELS minus
 # NON_CANDIDATE_LABELS) rather than duplicating the set by hand -- stays in
 # sync automatically if either constant ever changes.
 _RERANKER_ELIGIBLE_LABELS = frozenset(mr.SCHEMA_LABELS) - mr.NON_CANDIDATE_LABELS
 
-# Mirrors reranker_integration._RESIDUAL_VERBAL_ELIGIBLE_LABELS /
+# Mirrors reranking._RESIDUAL_VERBAL_ELIGIBLE_LABELS /
 # _UID_TR_RESOLVER_ELIGIBLE_LABELS (not imported directly, to avoid any
 # import-time coupling to that module's private names -- these are the
 # same two frozensets, restated here as this module's own read-only
@@ -192,7 +192,7 @@ def _gather_common_evidence(token: str, annotator, cfg) -> _CommonEvidence:
 def _reranker_probability(token: str, rule_label: str, annotator, cfg, bundle) -> Optional[float]:
     """Re-derive the frozen Phase 5F reranker's own probability for `token`
     at its rule-based label, exactly the way
-    reranker_integration._rerank_token_label does internally -- read-only,
+    reranking._rerank_token_label does internally -- read-only,
     never touches the frozen model/threshold. Returns None if `bundle` is
     unavailable, `rule_label` was never candidate-eligible, or any step
     fails (mirrors _rerank_token_label's own fail-safe contract: a failure
@@ -217,10 +217,10 @@ def _reranker_probability(token: str, rule_label: str, annotator, cfg, bundle) -
 
 
 def _residual_verbal_evidence(token: str, rule_label: str, annotator, cfg) -> Optional[Tuple[bool, str]]:
-    """Re-derive mixed_reranker.evaluate_residual_verbal_promotion's verdict
+    """Re-derive reranking.evaluate_residual_verbal_promotion's verdict
     for `token`, read-only, only when `rule_label` was ever eligible for
     that stage in production (mirrors
-    reranker_integration._RESIDUAL_VERBAL_ELIGIBLE_LABELS). Returns
+    reranking._RESIDUAL_VERBAL_ELIGIBLE_LABELS). Returns
     (promote, reason) or None if not eligible / evaluation failed."""
     if rule_label not in _RESIDUAL_VERBAL_ELIGIBLE_LABELS:
         return None
@@ -232,10 +232,10 @@ def _residual_verbal_evidence(token: str, rule_label: str, annotator, cfg) -> Op
 
 
 def _uid_resolver_evidence(token: str, rule_label: str, annotator, cfg, matrix_lang):
-    """Re-derive uid_resolver.decide()'s full explainable decision for
+    """Re-derive reranking.decide()'s full explainable decision for
     `token`, read-only, only when `rule_label` was ever eligible in
     production (mirrors
-    reranker_integration._UID_TR_RESOLVER_ELIGIBLE_LABELS). Returns a
+    reranking._UID_TR_RESOLVER_ELIGIBLE_LABELS). Returns a
     ur.ResolverDecision or None if not eligible / evaluation failed."""
     if rule_label not in _UID_TR_RESOLVER_ELIGIBLE_LABELS:
         return None

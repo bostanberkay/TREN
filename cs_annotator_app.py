@@ -15,10 +15,9 @@ import threading
 
 from cs_pipeline import Annotator, DEFAULTS
 import annotation_model
-import reranker_integration
+import reranking
 import confidence
-import dictionary_provider
-import tdk_parser
+import tdk
 
 try:
     import tksheet
@@ -1171,7 +1170,7 @@ VOC vocative
     # A SEPARATE tool from the Confidence Review Tool (Tools -> TDK
     # Checker; never replaces or renames it). Looks up a single token, its
     # parser-proposed root/lemma, and each proposed suffix segment against
-    # a pluggable dictionary_provider.DictionaryProvider -- by default the
+    # a pluggable tdk.DictionaryProvider -- by default the
     # real (best-effort, undocumented-endpoint) TDKProvider, constructed
     # lazily on first use (see _ensure_tdk_provider) so importing/starting
     # the app, running annotation, or opening this window never itself
@@ -1192,17 +1191,17 @@ VOC vocative
         """A lightweight stand-in Annotator for the morphological parser
         only -- deliberately NOT self.annotator (the real pipeline
         annotator, which requires loading the full fastText model and
-        Stanza). tdk_parser.parse_token's ranking is lexicon-aware (it
+        Stanza). tdk.parse_token's ranking is lexicon-aware (it
         needs to tell a genuine root apart from a merely-attested inflected
-        surface form -- see tdk_parser.py's module docstring), so it needs
+        surface form -- see tdk.py's module docstring), so it needs
         the real turkish_freq_top/_all/english_freq_words word lists, not
-        an empty stand-in. tdk_parser.load_lexicon_annotator() reads only
+        an empty stand-in. tdk.load_lexicon_annotator() reads only
         those two plain-text files (no fastText, no Stanza, no model
         loading) -- local and well under a second, called by
         _set_runtime_workdir()'s already-chdir'd-into-resources/ working
         directory, exactly like Annotator.__init__'s own defaults."""
         if getattr(self, '_tdk_parser_annotator', None) is None:
-            self._tdk_parser_annotator = tdk_parser.load_lexicon_annotator()
+            self._tdk_parser_annotator = tdk.load_lexicon_annotator()
         return self._tdk_parser_annotator
 
     def _ensure_tdk_provider(self):
@@ -1211,7 +1210,7 @@ VOC vocative
         BEFORE triggering any lookup, so this never runs in a test and
         never touches the network there."""
         if self._tdk_provider is None:
-            self._tdk_provider = dictionary_provider.TDKProvider()
+            self._tdk_provider = tdk.TDKProvider()
         return self._tdk_provider
 
     # --- row resolution (main grid) -----------------------------------
@@ -1550,9 +1549,9 @@ VOC vocative
             self._tdk_root_var.set(root)
             self._tdk_segments_var.set(' + '.join(segs))
             self._tdk_parser_status_var.set("previously corrected segmentation (manual)")
-            self._tdk_parse_result = tdk_parser.ParseResult(
+            self._tdk_parse_result = tdk.ParseResult(
                 token=token, root=root, segments=tuple(segs), success=True, source='manual',
-                category=tdk_parser.CATEGORY_MANUAL, part_of_speech='unknown',
+                category=tdk.CATEGORY_MANUAL, part_of_speech='unknown',
                 reason='previously applied correction')
             self._tdk_render_explanation()
             return
@@ -1562,11 +1561,11 @@ VOC vocative
             self._tdk_parser_status_var.set("parser unavailable")
             self._tdk_root_var.set(token)
             self._tdk_segments_var.set('')
-            self._tdk_parse_result = tdk_parser._whole_token_fallback(token, "annotator not available")
+            self._tdk_parse_result = tdk._whole_token_fallback(token, "annotator not available")
             self._tdk_render_explanation()
             return
 
-        result = tdk_parser.parse_token(token, annotator)
+        result = tdk.parse_token(token, annotator)
         self._tdk_parse_result = result
         self._tdk_root_var.set(result.root)
         self._tdk_segments_var.set(' + '.join(result.segments))
@@ -1586,7 +1585,7 @@ VOC vocative
         current self._tdk_parse_result -- Token / Root / Suffix / Analysis
         (per segment) / Status, mirroring the task's own example format.
         Never shows a single character as a suffix's "analysis" unless
-        tdk_parser itself classified it as a genuinely valid suffix."""
+        tdk.py itself classified it as a genuinely valid suffix."""
         widget = getattr(self, '_tdk_explanation_text', None)
         if widget is None:
             return
@@ -1602,7 +1601,7 @@ VOC vocative
                 lines.append("(Root/Segments edited since this parse -- click Re-parse to refresh "
                               "this explanation; Check TDK will use your edited values regardless.)")
             lines.append(f"Token: {result.token}")
-            lines.append(f"Root: {result.root or dictionary_provider.NOT_PROVIDED}")
+            lines.append(f"Root: {result.root or tdk.NOT_PROVIDED}")
             if result.segments:
                 explanations = result.segment_explanations or ()
                 for i, seg in enumerate(result.segments):
@@ -1695,9 +1694,9 @@ VOC vocative
                     results.append(('segment', seg, r_seg))
             except Exception as e:
                 results.append(('full', terms['full'],
-                                 dictionary_provider.LookupResult(
+                                 tdk.LookupResult(
                                      query=terms['full'], normalized_query='',
-                                     status=dictionary_provider.STATUS_UNAVAILABLE,
+                                     status=tdk.STATUS_UNAVAILABLE,
                                      source='tdk', message=f"unexpected error: {e}")))
             self._tdk_result_queue.put((generation, results))
 
@@ -1750,10 +1749,10 @@ VOC vocative
         self._tdk_populate_results(results)
         self._tdk_recompute_staleness()
         if self._tdk_results_stale:
-            self._tdk_status_var.set(f"{dictionary_provider.STATUS_STALE_RESULT} -- "
+            self._tdk_status_var.set(f"{tdk.STATUS_STALE_RESULT} -- "
                                       "query changed since this check; press Check TDK again")
         else:
-            overall = results[0][2].status if results else dictionary_provider.STATUS_UNAVAILABLE
+            overall = results[0][2].status if results else tdk.STATUS_UNAVAILABLE
             self._tdk_status_var.set(f"{overall} (source: {results[0][2].source})" if results else "UNAVAILABLE")
 
     def _tdk_clear_results(self):
@@ -1782,7 +1781,7 @@ VOC vocative
             return
         tree.delete(*tree.get_children())
         for i, (kind, term, result) in enumerate(self._tdk_last_results):
-            status = dictionary_provider.STATUS_STALE_RESULT if self._tdk_results_stale else result.status
+            status = tdk.STATUS_STALE_RESULT if self._tdk_results_stale else result.status
             detail = self._tdk_short_detail(result)
             if self._tdk_results_stale:
                 detail = f"(stale -- answers a previous query) {detail}"
@@ -1791,14 +1790,14 @@ VOC vocative
     @staticmethod
     def _tdk_short_detail(result):
         detail = result.message
-        if result.status == dictionary_provider.STATUS_FOUND and result.entries:
+        if result.status == tdk.STATUS_FOUND and result.entries:
             heads = ", ".join(
-                dictionary_provider.format_field_for_display(getattr(e, 'headword', None))
+                tdk.format_field_for_display(getattr(e, 'headword', None))
                 for e in result.entries)
             detail = heads or detail
         if result.from_cache:
             detail = f"{detail} (cached)".strip()
-        return detail or dictionary_provider.NOT_PROVIDED
+        return detail or tdk.NOT_PROVIDED
 
     def _tdk_on_result_select(self, event=None):
         tree = getattr(self, '_tdk_results_tree', None)
@@ -1820,13 +1819,13 @@ VOC vocative
         """Full dictionary detail for one queried term -- headword, part
         of speech, every sense's definition/usage labels/examples, origin,
         pronunciation, compounds, idioms, proverbs, source, and the query
-        itself. Every missing field shows dictionary_provider.NOT_PROVIDED,
+        itself. Every missing field shows tdk.NOT_PROVIDED,
         never a guessed value. Never dumps raw HTML/JSON -- only the
-        structured fields dictionary_provider.py already extracted."""
+        structured fields tdk.py already extracted."""
         widget = getattr(self, '_tdk_detail_text', None)
         if widget is None:
             return
-        NP = dictionary_provider.NOT_PROVIDED
+        NP = tdk.NOT_PROVIDED
         lines = []
         if result is None:
             lines = ["(select a row above to see its full dictionary detail)"]
@@ -1838,10 +1837,10 @@ VOC vocative
                 for i, e in enumerate(result.entries, 1):
                     lines.append("")
                     lines.append(f"Entry {i}")
-                    lines.append(f"  Headword: {dictionary_provider.format_field_for_display(getattr(e, 'headword', None))}")
-                    lines.append(f"  Part of speech: {dictionary_provider.format_field_for_display(getattr(e, 'part_of_speech', None))}")
-                    lines.append(f"  Origin: {dictionary_provider.format_field_for_display(getattr(e, 'origin', None))}")
-                    lines.append(f"  Pronunciation: {dictionary_provider.format_field_for_display(getattr(e, 'pronunciation', None))}")
+                    lines.append(f"  Headword: {tdk.format_field_for_display(getattr(e, 'headword', None))}")
+                    lines.append(f"  Part of speech: {tdk.format_field_for_display(getattr(e, 'part_of_speech', None))}")
+                    lines.append(f"  Origin: {tdk.format_field_for_display(getattr(e, 'origin', None))}")
+                    lines.append(f"  Pronunciation: {tdk.format_field_for_display(getattr(e, 'pronunciation', None))}")
                     senses = getattr(e, 'senses', ())
                     if senses:
                         for j, s in enumerate(senses, 1):
@@ -1908,7 +1907,7 @@ VOC vocative
 
         root = self._tdk_root_var.get().strip()
         seg_text = self._tdk_segments_var.get().strip()
-        parsed = tdk_parser.segments_from_text(token, root, seg_text)
+        parsed = tdk.segments_from_text(token, root, seg_text)
 
         old = {'tdk_segmentation': copy.deepcopy(row.get('tdk_segmentation'))}
         new_segmentation = {'root': parsed.root, 'segments': list(parsed.segments),
@@ -2008,7 +2007,7 @@ VOC vocative
                 except Exception:
                     continue
                 tok = str(row.get('token', '') or '')
-                parsed = tdk_parser.segments_from_text(tok, root, seg_text)
+                parsed = tdk.segments_from_text(tok, root, seg_text)
                 old = {'tdk_segmentation': copy.deepcopy(row.get('tdk_segmentation'))}
                 new_segmentation = {'root': parsed.root, 'segments': list(parsed.segments),
                                      'source': 'manual', 'success': parsed.success}
@@ -2715,7 +2714,7 @@ VOC vocative
         if self.annotator is None:
             self.annotator = Annotator()
         if not self._reranker_load_attempted:
-            self._reranker_bundle = reranker_integration.load_reranker_bundle()
+            self._reranker_bundle = reranking.load_reranker_bundle()
             self._reranker_load_attempted = True
 
     def _run_annotation_pipeline(self, text):
@@ -2732,7 +2731,7 @@ VOC vocative
         # and reading/writing it has no effect on the annotation output
         # returned below.
         self._last_rule_based_output = out
-        out = reranker_integration.apply_reranker(out, self.annotator, self.cfg, self._reranker_bundle)
+        out = reranking.apply_reranker(out, self.annotator, self.cfg, self._reranker_bundle)
         out = self._ensure_matrix_embed_consistency(out)
         return out
 

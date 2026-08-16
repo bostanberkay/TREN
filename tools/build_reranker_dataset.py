@@ -49,7 +49,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cs_pipeline import Annotator, DEFAULTS
-import mixed_reranker as mr
+import reranking as mr
 
 HEADER = ['Token', 'Item', 'Label', 'Gloss']
 META_ITEMS = {'SentenceID', 'MatrixLang', 'EmbedLang'}

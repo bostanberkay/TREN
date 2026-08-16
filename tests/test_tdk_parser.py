@@ -1,7 +1,7 @@
 # tests/test_tdk_parser.py
-"""Pure-function tests for tdk_parser.py (the TDK Checker's morphological
-parser). Uses tdk_parser.load_lexicon_annotator() to get a REAL (but
-fastText/Stanza-free) lexicon-aware annotator -- required now that
+"""Pure-function tests for tdk.py's morphological parser section (formerly
+tdk_parser.py -- see CLAUDE.md section 3). Uses tdk.load_lexicon_annotator()
+to get a REAL (but fastText/Stanza-free) lexicon-aware annotator -- required now that
 parse_token's selection policy is lexicon-rank-aware (a bare
 Annotator.__new__(Annotator), with no lexicon at all, can no longer
 reproduce the required root/suffix splits, e.g. "filmin" -> "film" + "in"
@@ -14,7 +14,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cs_pipeline import Annotator
-import tdk_parser as tp
+import tdk as tp
 
 _RESOURCES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources")
 
@@ -176,11 +176,12 @@ def test_ambiguous_candidate_category_for_close_competing_readings():
 
 
 def test_never_produces_a_spurious_short_stem_split_for_a_base_noun():
-    """Regression for a real bug found during development: mixed_reranker's
-    permissive "verbal" fallback table proposed "ka" + "le" + "m" for
-    "kalem" -- a 2-character coincidental stem. tdk_parser must never
-    surface that: whichever candidate wins, it must not be a 2-character
-    "verbal"-sourced stem."""
+    """Regression for a real bug found during development: reranking.py's
+    (formerly mixed_reranker.py's) permissive "verbal" fallback table
+    proposed "ka" + "le" + "m" for "kalem" -- a 2-character coincidental
+    stem. tdk.py's parser (formerly tdk_parser.py) must never surface that:
+    whichever candidate wins, it must not be a 2-character "verbal"-sourced
+    stem."""
     r = tp.parse_token("kalem", ANN)
     assert not (len(r.root) < 3 and r.source == "verbal")
 

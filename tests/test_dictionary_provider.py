@@ -1,6 +1,7 @@
 # tests/test_dictionary_provider.py
-"""Pure-function tests for dictionary_provider.py (the TDK Checker's
-provider abstraction). NO test in this file (or anywhere in the suite)
+"""Pure-function tests for tdk.py's dictionary lookup provider abstraction
+(formerly dictionary_provider.py -- see CLAUDE.md section 3). NO test in
+this file (or anywhere in the suite)
 ever calls the real TDK website -- TDKProvider is only ever exercised here
 via its injectable `opener` callable, which never performs a real network
 request."""
@@ -13,7 +14,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import dictionary_provider as dp
+import tdk as dp
 
 
 # ---------------------------------------------------------------------------
@@ -463,8 +464,9 @@ def test_mark_stale_is_a_valid_mock_provider_status():
 
 
 def test_stale_response_ordering_is_caller_responsibility_last_write_wins_in_queue():
-    """dictionary_provider.py itself has no notion of "generation"/staleness
-    -- that is the GUI layer's responsibility (see
+    """tdk.py's provider abstraction (formerly dictionary_provider.py) itself
+    has no notion of "generation"/staleness -- that is the GUI layer's
+    responsibility (see
     tests/test_tdk_checker_gui.py's stale-response tests). This test only
     confirms the provider's cache is safe under concurrent/out-of-order
     access from multiple threads (no corruption, no crash, deterministic

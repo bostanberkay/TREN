@@ -1,4 +1,35 @@
-# mixed_reranker.py
+# reranking.py
+"""Consolidated reranking module: MIXED-candidate generation/feature
+engineering, production integration of the frozen reranker, and the
+UID->TR resolver.
+
+This file merges the previously separate mixed_reranker.py,
+reranker_integration.py, and uid_resolver.py (see CLAUDE.md section 3 and
+the merge commit) into one module -- a file-organization change only. No
+behavior, threshold, model-loading, or fallback logic was altered by the
+merge; every function/class/constant keeps its original name. Cross-module
+references between the three former files (mr./ur./ri. qualifiers) are now
+intra-module and unqualified; each former module's own docstring is kept
+verbatim under its own section header below for full context.
+"""
+
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass, field, replace as _dataclass_replace
+from typing import Dict, FrozenSet, List, NamedTuple, Optional, Tuple
+
+import scipy.sparse as sp
+
+import annotation_model
+
+
+# ===========================================================================
+# formerly mixed_reranker.py -- MIXED-candidate generation & feature
+# engineering (Phase 2+), plus the residual verbal MIXED detector.
+# ===========================================================================
+
 """Experimental MIXED-vs-KEEP_ORIGINAL reranker support code (Phase 2+).
 
 Isolated from the production annotation flow: nothing in this module is
@@ -63,8 +94,6 @@ Batch G; Batch B and Batch D were evaluated and experimentally rejected
 batch inventory, current benchmark numbers, and rejection rationale.
 """
 
-from dataclasses import dataclass, replace as _dataclass_replace
-from typing import FrozenSet, List, Optional, Tuple
 
 MIN_STEM_LEN = 2
 
@@ -1266,3 +1295,993 @@ def evaluate_residual_verbal_promotion(token: str, annotator, cfg, strict_lexico
         return False, None, "ambiguous_analysis"
 
     return True, best, "promoted"
+
+
+# ===========================================================================
+# formerly reranker_integration.py -- production integration of the frozen
+# Phase 5F MIXED-token reranker.
+# ===========================================================================
+
+"""Production integration for the frozen Phase 5F MIXED-token reranker
+(Baseline + Batch A + Batch C + pruned Batch G, threshold 0.85).
+
+As of Phase 6.3, this module is wired into cs_annotator_app.py's
+run_pipeline(): the reranker now runs automatically, on every annotation
+request, as a post-processing stage. The production sequence is
+
+    Annotator.annotate() -> apply_reranker() -> _ensure_matrix_embed_consistency() -> _populate_table()
+
+Annotator.annotate() (cs_pipeline.py) remains the primary rule-based
+annotation engine and is unmodified -- apply_reranker() only ever promotes
+an already-produced UID/NE/TR label to MIXED when the frozen model's
+probability clears the validated threshold; it never invents a label
+Annotator.annotate() didn't already consider, and it cannot demote or
+otherwise alter TR/EN/MIXED/OTHER/LANG3 labels. A final label a user sees
+may therefore come from either the rule-based annotator alone, or from this
+reranking stage.
+
+As of the residual-verbal-detector integration (offline-validated, then
+authorized for production -- see CHANGELOG), apply_reranker() runs a
+SECOND, independent post-processing stage internally, strictly after the
+frozen-reranker pass above and before Matrix/Embedded Language is
+recomputed: mixed_reranker.evaluate_residual_verbal_promotion (strict
+English-lexicon evidence only -- the broad fastText-fallback variant is
+NOT used in production) may promote a token still labeled UID or TR after
+the frozen-reranker pass to MIXED, recovering verbal code-switching forms
+(e.g. "designladık") the frozen model's own feature set does not target.
+This stage never touches NE, and never touches a token the reranker pass
+already promoted to MIXED. It does not use, load, or alter the frozen
+Phase 5F model, resources/models/*, or its 0.85 threshold in any way --
+it is a separate, purely rule/lexicon-based layer. cs_annotator_app.py is
+unchanged: this stage is folded into apply_reranker() itself, not a new
+production entry point.
+
+As of the UID->TR resolver integration (offline-validated across the real
+corpus and two synthetic benchmarks with zero harmful changes and zero
+regression on any other label -- see CHANGELOG/README "UID->TR Resolver"
+section), apply_reranker() runs a THIRD, independent post-processing stage
+internally, strictly after the residual verbal detector above and before
+Matrix/Embedded Language is recomputed: uid_resolver.decide() (see
+uid_resolver.py -- a separate, independently-testable, purely
+rule/lexicon/fastText-based module, not duplicated here) may promote a
+token STILL labeled UID after both prior stages to TR, when its
+conservative, explainable, multi-signal evidence threshold is met. This
+stage is gated behind UID_TR_RESOLVER_ENABLED (a named, explicit production
+constant -- flip to False to restore the exact pre-integration output
+byte-for-byte; see test_uid_to_tr_resolver_disabled_flag_restores_previous_output).
+It never touches NE/EN/MIXED/OTHER/LANG3, never touches a token already
+promoted to MIXED by either prior stage, never performs UID->EN, and never
+retrains/rethresholds/modifies the frozen Phase 5F model, resources/models/*,
+or any lexicon -- see uid_resolver.py's own module docstring for the full
+hard-exclusion-gate and evidence-model design. cs_annotator_app.py is
+unchanged: this stage, like the residual verbal detector before it, is
+folded into apply_reranker() itself, not a new production entry point.
+
+Model artifacts live in resources/models/ (model.joblib, vectorizer.joblib,
+metadata.json), copied byte-for-byte from the frozen Phase 5F experiment
+(artifacts/mixed_reranker/phase5f_batch_acg_pruned/) -- never regenerated or
+edited here. See CHANGELOG.md / README.md "MIXED-Token Reranker" section
+for the experiment history and rejected-batch rationale.
+
+Loading is always lazy: load_reranker_bundle() only touches the filesystem
+or imports joblib/scikit-learn when a caller explicitly calls it -- nothing
+happens at import time or at application startup. cs_annotator_app.py calls
+it once, on the first annotation request, and caches the result (bundle or
+None) for the rest of the application session. Every failure mode (missing
+dependency, missing file, invalid metadata, corrupted model) is caught and
+results in load_reranker_bundle() returning None -- it never raises and
+never shows a GUI dialog (it has no GUI dependency at all). When the bundle
+is None, apply_reranker() returns its input completely unchanged, so
+annotation output falls back to exactly the original rule-based behavior
+with no crash and no interruption.
+
+apply_reranker() reuses existing, already-validated production/experimental
+code read-only rather than duplicating it: annotation_model.is_meta_row_token
+for line classification (the same helper cs_annotator_app.py already uses),
+mixed_reranker.classify_candidate/build_structured_feature_dict for feature
+generation (byte-identical to how the frozen model was trained), and
+Annotator._decide_matrix_embed for Matrix/Embedded Language recomputation
+(the same private method Annotator.annotate() itself calls) -- exactly the
+"reuse Annotator's own methods read-only" pattern mixed_reranker.py already
+established for _parse_tr_suffixes_full/_ft_predict/_split_mixed_apostrophe.
+Neither the parser, Annotator.annotate() internals, nor the saved-project
+(.trenproj) and TXT/CSV export formats are touched by any of this -- the
+text format in and out of apply_reranker() is identical to
+Annotator.annotate()'s own output.
+"""
+
+
+# Named production feature flag for the UID->TR resolver stage (see module
+# docstring). True = integrated (current production default, authorized by
+# the offline evaluation in CHANGELOG/README). Set to False to disable the
+# stage entirely and restore apply_reranker()'s exact pre-integration
+# output -- covered by
+# test_uid_to_tr_resolver_disabled_flag_restores_previous_output in
+# tests/test_reranker_integration.py. Does not affect the frozen reranker
+# or residual verbal detector stages, which run unconditionally either way.
+UID_TR_RESOLVER_ENABLED = True
+
+DEFAULT_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "models")
+MODEL_FILENAME = "model.joblib"
+VECTORIZER_FILENAME = "vectorizer.joblib"
+METADATA_FILENAME = "metadata.json"
+
+# Frozen Phase 5F contract -- see CLAUDE.md-adjacent Phase 6 brief. Any
+# metadata.json that doesn't match this fingerprint is rejected, not
+# silently accepted.
+EXPECTED_THRESHOLD = 0.85
+EXPECTED_THRESHOLD_POLICY = "precision_0.75"
+EXPECTED_MODEL_TYPE = "LogisticRegression"
+
+# Batch feature-key fingerprints. There is no explicit "phase" string field
+# anywhere in the metadata.json produced by tools/train_mixed_reranker.py --
+# "is this Phase 5F" is defined here structurally, by which batch feature
+# groups are actually present in feature_configuration.structured_features,
+# not by a self-reported label that could drift from what the model was
+# actually trained on.
+_BATCH_A_KEYS = frozenset({"analysis_source", "candidate_reason", "is_candidate", "split_position_ratio"})
+_BATCH_C_KEYS = frozenset({"stem_evidence_strength", "ft_prob_delta", "ft_lang_agreement"})
+_BATCH_G_PRUNED_KEYS = frozenset({"analysis_candidate_count", "selection_is_unique", "has_nominal_verbal_competition"})
+_BATCH_G_REMOVED_KEY = "distinct_stem_count"  # must be ABSENT (pruned in Phase 5F)
+_BATCH_B_KEYS = frozenset({"morph_tag_count", "has_case", "has_plural", "has_possessive",
+                           "has_derivational_suffix", "has_verbal_morphology", "morph_complexity"})
+_BATCH_D_KEYS = frozenset({"stem_english_confidence", "stem_turkish_confidence", "stem_lexicon_contrast"})
+
+
+class ReRankerBundle(NamedTuple):
+    """Everything needed to run the frozen Phase 5F reranker at inference
+    time. Purely a data container -- this module does not perform inference."""
+    model: object
+    tfidf: object
+    dictvec: object
+    threshold: float
+    metadata: dict
+
+
+def _warn(message: str) -> None:
+    """Best-effort stderr note for debugging a rejected/failed load. Never
+    allowed to raise -- printing itself is wrapped defensively."""
+    try:
+        print(f"[reranker_integration] {message}", file=sys.stderr)
+    except Exception:
+        pass
+
+
+def validate_metadata(metadata: dict) -> Tuple[bool, List[str]]:
+    """Validate that `metadata` describes the frozen Phase 5F configuration:
+    Batch A enabled, Batch C enabled, Batch G enabled (pruned form, i.e.
+    distinct_stem_count absent), Batch B disabled, Batch D disabled, and the
+    precision>=0.75-selected threshold equal to 0.85.
+
+    Returns (is_valid, reasons) -- `reasons` is empty iff is_valid is True,
+    otherwise it lists every failed check (not just the first) so a caller
+    or log can see the full picture.
+    """
+    reasons: List[str] = []
+
+    if not isinstance(metadata, dict):
+        return False, ["metadata is not a JSON object"]
+
+    feature_config = metadata.get("feature_configuration")
+    if not isinstance(feature_config, dict):
+        return False, ["metadata missing 'feature_configuration'"]
+
+    structured = set(feature_config.get("structured_features") or [])
+    if not structured:
+        reasons.append("feature_configuration.structured_features is empty or missing")
+
+    if not _BATCH_A_KEYS.issubset(structured):
+        reasons.append(f"Batch A features missing: {sorted(_BATCH_A_KEYS - structured)}")
+    if not _BATCH_C_KEYS.issubset(structured):
+        reasons.append(f"Batch C features missing: {sorted(_BATCH_C_KEYS - structured)}")
+    if not _BATCH_G_PRUNED_KEYS.issubset(structured):
+        reasons.append(f"Batch G (pruned) features missing: {sorted(_BATCH_G_PRUNED_KEYS - structured)}")
+    if _BATCH_G_REMOVED_KEY in structured:
+        reasons.append(f"'{_BATCH_G_REMOVED_KEY}' present -- Batch G is not in its pruned Phase 5F form")
+
+    batch_b_present = _BATCH_B_KEYS & structured
+    if batch_b_present:
+        reasons.append(f"Batch B features present (must be disabled): {sorted(batch_b_present)}")
+
+    batch_d_present = _BATCH_D_KEYS & structured
+    if batch_d_present:
+        reasons.append(f"Batch D features present (must be disabled): {sorted(batch_d_present)}")
+
+    model_type = feature_config.get("model", {}).get("type") if isinstance(feature_config.get("model"), dict) else None
+    if model_type != EXPECTED_MODEL_TYPE:
+        reasons.append(f"unexpected model type: {model_type!r} (expected {EXPECTED_MODEL_TYPE!r})")
+
+    thresholds = metadata.get("selected_thresholds")
+    if not isinstance(thresholds, dict):
+        reasons.append("metadata missing 'selected_thresholds'")
+    else:
+        if thresholds.get("policy") != EXPECTED_THRESHOLD_POLICY:
+            reasons.append(f"threshold policy mismatch: expected {EXPECTED_THRESHOLD_POLICY!r}, "
+                            f"got {thresholds.get('policy')!r}")
+        active = thresholds.get("active")
+        if active != EXPECTED_THRESHOLD:
+            reasons.append(f"active threshold mismatch: expected {EXPECTED_THRESHOLD!r}, got {active!r}")
+        by_policy_key = thresholds.get("best_precision_ge_0.75")
+        if by_policy_key != EXPECTED_THRESHOLD:
+            reasons.append(f"'best_precision_ge_0.75' threshold mismatch: expected {EXPECTED_THRESHOLD!r}, "
+                            f"got {by_policy_key!r}")
+
+    return (len(reasons) == 0), reasons
+
+
+def get_threshold(metadata: dict) -> Optional[float]:
+    """Read the frozen precision>=0.75-selected threshold from `metadata`.
+    Returns None if the expected key is absent or not a number -- callers
+    must not fall back to a hardcoded default; a missing threshold means
+    the bundle cannot be used.
+    """
+    if not isinstance(metadata, dict):
+        return None
+    thresholds = metadata.get("selected_thresholds")
+    if not isinstance(thresholds, dict):
+        return None
+    value = thresholds.get("best_precision_ge_0.75")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _load_json_safely(path: str) -> Optional[dict]:
+    """Read and parse a JSON file, returning None on any failure (missing
+    file, unreadable, malformed JSON) rather than raising."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        _warn(f"could not read/parse {path!r}: {e}")
+        return None
+
+
+def _load_joblib_file(joblib_module, path: str):
+    """Load one joblib file, returning None (and warning) on any failure
+    instead of letting the exception propagate."""
+    try:
+        return joblib_module.load(path)
+    except Exception as e:
+        _warn(f"could not load {path!r}: {e}")
+        return None
+
+
+def load_reranker_bundle(model_dir: str = DEFAULT_MODEL_DIR) -> Optional[ReRankerBundle]:
+    """Lazily load and validate the frozen Phase 5F reranker bundle from
+    `model_dir` (default: resources/models/ next to this file).
+
+    Never raises. Returns None if:
+      - joblib/scikit-learn are not importable,
+      - model.joblib, vectorizer.joblib, or metadata.json are missing or
+        unreadable,
+      - metadata.json fails validate_metadata() (wrong batches enabled,
+        wrong threshold, wrong model type, etc.),
+      - the loaded vectorizer bundle doesn't contain the expected
+        'tfidf'/'dictvec' keys,
+      - joblib.load() itself raises for either file (e.g. a corrupted or
+        incompatible pickle).
+
+    Called once per application session, from cs_annotator_app.py's
+    run_pipeline(), on the first annotation request; the result is cached
+    there for the rest of the session (see App._reranker_bundle /
+    App._reranker_load_attempted).
+    """
+    try:
+        import joblib  # local import: no reranker dependency at module load time
+    except ImportError as e:
+        _warn(f"joblib/scikit-learn not available: {e}")
+        return None
+
+    metadata_path = os.path.join(model_dir, METADATA_FILENAME)
+    metadata = _load_json_safely(metadata_path)
+    if metadata is None:
+        return None
+
+    is_valid, reasons = validate_metadata(metadata)
+    if not is_valid:
+        _warn("metadata validation failed, rejecting model: " + "; ".join(reasons))
+        return None
+
+    threshold = get_threshold(metadata)
+    if threshold is None:
+        _warn("could not extract a valid threshold from metadata; rejecting model")
+        return None
+
+    model = _load_joblib_file(joblib, os.path.join(model_dir, MODEL_FILENAME))
+    if model is None:
+        return None
+
+    vectorizer_bundle = _load_joblib_file(joblib, os.path.join(model_dir, VECTORIZER_FILENAME))
+    if vectorizer_bundle is None:
+        return None
+
+    if not isinstance(vectorizer_bundle, dict):
+        _warn(f"vectorizer bundle has unexpected type: {type(vectorizer_bundle)!r}")
+        return None
+
+    tfidf = vectorizer_bundle.get("tfidf")
+    dictvec = vectorizer_bundle.get("dictvec")
+    if tfidf is None or dictvec is None:
+        _warn("vectorizer bundle missing 'tfidf' or 'dictvec'")
+        return None
+
+    return ReRankerBundle(model=model, tfidf=tfidf, dictvec=dictvec, threshold=threshold, metadata=metadata)
+
+
+# ---------------------------------------------------------------------------
+# Reranking logic. Operates on Annotator.annotate()'s raw text output
+# (blank-line-separated blocks; SentenceID/MatrixLang/EmbedLang meta rows;
+# "Item\tLabel" token rows) and returns the exact same text format. Called
+# from cs_annotator_app.py's run_pipeline() on every annotation request.
+# ---------------------------------------------------------------------------
+
+# Only these predicted labels are ever candidate-eligible (mirrors
+# mixed_reranker.NON_CANDIDATE_LABELS/classify_candidate exactly) -- checked
+# here too so non-candidate token rows never even reach classify_candidate.
+_CANDIDATE_ELIGIBLE_LABELS = frozenset({"UID", "NE", "TR"})
+
+# The labels Annotator.annotate() itself feeds into labels_in_sent for
+# _decide_matrix_embed (see its per-token loop: OTHER and UID are never
+# appended, TR/EN/MIXED/NE are). Reproduced here only to recompute the same
+# vote after a label override -- not a redefinition of the rule itself.
+_LABELS_COUNTED_FOR_MATRIX_EMBED = frozenset({"TR", "EN", "MIXED", "NE"})
+
+
+def _parse_block_lines(block_text: str) -> List[Dict]:
+    """Parse one '\\n\\n'-delimited block of annotate()'s raw text output
+    into an ordered list of line records, using
+    annotation_model.is_meta_row_token (the same helper cs_annotator_app.py
+    already uses) to distinguish meta rows from token rows -- not a new
+    parsing convention.
+    """
+    records: List[Dict] = []
+    for ln in block_text.split("\n"):
+        if ln == "":
+            records.append({"kind": "blank"})
+            continue
+        parts = ln.split("\t")
+        if len(parts) != 2:
+            # Not the 2-field "Item\tLabel"/"Name\tValue" shape
+            # annotate() always emits -- pass through verbatim rather than
+            # guess at its meaning.
+            records.append({"kind": "raw", "raw": ln})
+            continue
+        first, second = parts
+        if annotation_model.is_meta_row_token(first):
+            records.append({"kind": "meta", "name": first, "value": second})
+        else:
+            records.append({"kind": "token", "item": first, "label": second})
+    return records
+
+
+def _rerank_token_label(item: str, label: str, annotator, cfg, bundle: ReRankerBundle) -> str:
+    """Return the (possibly overridden) label for one token, using the
+    frozen Phase 5F feature generation and threshold. Never raises -- any
+    unexpected failure leaves the original label untouched, exactly like a
+    rejected candidate.
+    """
+    if label not in _CANDIDATE_ELIGIBLE_LABELS:
+        return label
+    try:
+        is_candidate, reason, analysis, candidates = classify_candidate(
+            label, item, annotator, cfg, return_candidates=True)
+        if not is_candidate:
+            return label
+
+        feats = build_structured_feature_dict(
+            item, label, analysis, annotator, cfg,
+            is_candidate=is_candidate, candidate_reason=reason,
+            include_batch_a=True, include_batch_c=True, include_batch_g=True,
+            candidate_analyses=candidates, candidate_strategy=DEFAULT_CANDIDATE_STRATEGY)
+
+        X = sp.hstack([bundle.tfidf.transform([item]), bundle.dictvec.transform([feats])]).tocsr()
+        prob = bundle.model.predict_proba(X)[0, 1]
+        if prob >= bundle.threshold:
+            return "MIXED"
+        return label
+    except Exception as e:
+        _warn(f"reranking failed for {item!r} (label={label!r}), keeping original: {e}")
+        return label
+
+
+# Residual verbal detector: eligible ONLY for UID/TR (never NE) -- see the
+# production rule's condition list (CHANGELOG). Checked against a token's
+# CURRENT label, i.e. after _rerank_token_label has already run for that
+# token in apply_reranker()'s first pass, so this stage only ever sees the
+# frozen reranker's own output, never the original rule-based label it may
+# have overridden.
+_RESIDUAL_VERBAL_ELIGIBLE_LABELS = frozenset({"UID", "TR"})
+
+
+def _apply_residual_verbal_promotion(item: str, label: str, annotator, cfg: dict) -> str:
+    """Return the (possibly overridden) label for one token via the strict,
+    production-policy residual verbal detector (mixed_reranker.
+    evaluate_residual_verbal_promotion, strict_lexicon_only left at its
+    default True -- the broad fastText-fallback variant is never requested
+    here). Never raises -- any unexpected failure leaves the label
+    untouched, mirroring _rerank_token_label's own fail-safe contract, so a
+    single token's residual-parsing error cannot interrupt annotation of
+    the rest of the block.
+    """
+    if label not in _RESIDUAL_VERBAL_ELIGIBLE_LABELS:
+        return label
+    try:
+        promote, _candidate, _reason = evaluate_residual_verbal_promotion(item, annotator, cfg)
+        return "MIXED" if promote else label
+    except Exception as e:
+        _warn(f"residual verbal detection failed for {item!r} (label={label!r}), keeping original: {e}")
+        return label
+
+
+# UID->TR resolver: eligible ONLY for UID (never TR/NE/EN/MIXED/OTHER/LANG3)
+# -- see uid_resolver.check_eligibility for the full hard-exclusion-gate
+# list. Checked against a token's CURRENT label, i.e. after BOTH the frozen
+# reranker pass and the residual verbal detector pass have already run for
+# that token, so this stage only ever sees a token neither prior stage
+# promoted -- it can never pre-empt a MIXED promotion, only ever act on
+# whatever is left labeled UID once both have finished.
+_UID_TR_RESOLVER_ELIGIBLE_LABELS = frozenset({"UID"})
+
+
+def _apply_uid_to_tr_resolver_stage(item: str, label: str, annotator, cfg: dict,
+                                     matrix_lang: Optional[str]) -> str:
+    """Return the (possibly overridden) label for one token via the
+    experimental-but-now-integrated UID->TR resolver (uid_resolver.decide(),
+    UID->TR only -- see uid_resolver.py's module docstring for the complete
+    hard-exclusion-gate and evidence-model design). Returns `label`
+    unchanged, with no effect at all, whenever UID_TR_RESOLVER_ENABLED is
+    False. Never raises -- any unexpected failure leaves the label
+    untouched, mirroring _rerank_token_label's and
+    _apply_residual_verbal_promotion's own fail-safe contract, so a single
+    token's resolver failure cannot interrupt annotation of the rest of the
+    block.
+    """
+    if not UID_TR_RESOLVER_ENABLED:
+        return label
+    if label not in _UID_TR_RESOLVER_ELIGIBLE_LABELS:
+        return label
+    try:
+        decision = decide(item, label, annotator, cfg, matrix_lang=matrix_lang)
+        return decision.proposed_label if decision.promote else label
+    except Exception as e:
+        _warn(f"UID->TR resolver failed for {item!r} (label={label!r}), keeping original: {e}")
+        return label
+
+
+def apply_reranker(annotated_text: str, annotator, cfg: dict, bundle: Optional[ReRankerBundle]) -> str:
+    """Post-process Annotator.annotate()'s raw text output with the frozen
+    Phase 5F reranker.
+
+    Input and output are the EXACT same tab-separated text format
+    annotate() itself produces -- no schema change, no new fields, no new
+    meta rows. The rewrites are: (1) a token row's Label, when the frozen
+    reranker promotes a UID/NE/TR candidate to MIXED; (1b) a token row's
+    Label, when the residual verbal detector (strict evidence only, see
+    _apply_residual_verbal_promotion) subsequently promotes a still-UID/TR
+    candidate to MIXED -- always AFTER (1), never touching NE, and never
+    reconsidering a token (1) already promoted; (1c) a token row's Label,
+    when the UID->TR resolver (see _apply_uid_to_tr_resolver_stage,
+    gated behind UID_TR_RESOLVER_ENABLED) subsequently promotes a
+    still-UID candidate to TR -- always AFTER (1) and (1b), never touching
+    TR/EN/MIXED/NE/OTHER/LANG3, and never reconsidering a token either
+    prior stage already promoted; (2) an existing MatrixLang/EmbedLang
+    row's value, recomputed via the unmodified Annotator._decide_matrix_embed,
+    and only for blocks where a label actually changed by any of the three
+    stages. Blocks with no label change are returned byte-for-byte
+    identical to the input.
+
+    If `bundle` is None (model unavailable), returns `annotated_text`
+    completely unchanged -- this is the fallback path when
+    load_reranker_bundle() failed for any reason, so annotation output is
+    identical to the original rule-based-only behavior, INCLUDING the
+    residual verbal stage and the UID->TR resolver stage (neither runs in
+    this fallback path either, since both are defined as stages that
+    follow the frozen reranker, not a replacement for it). Never raises.
+    Performs no parser or candidate-generation changes -- called from
+    cs_annotator_app.py's run_pipeline() on every annotation request,
+    right after Annotator.annotate() and before
+    _ensure_matrix_embed_consistency().
+    """
+    if bundle is None:
+        return annotated_text
+
+    blocks = annotated_text.split("\n\n")
+    new_blocks = []
+    for block in blocks:
+        records = _parse_block_lines(block)
+        matrix_lang = next(
+            (rec["value"] for rec in records if rec["kind"] == "meta" and rec["name"] == "MatrixLang"),
+            None)
+
+        changed = False
+        for rec in records:
+            if rec["kind"] != "token":
+                continue
+            new_label = _rerank_token_label(rec["item"], rec["label"], annotator, cfg, bundle)
+            if new_label != rec["label"]:
+                rec["label"] = new_label
+                changed = True
+
+        for rec in records:
+            if rec["kind"] != "token":
+                continue
+            new_label = _apply_residual_verbal_promotion(rec["item"], rec["label"], annotator, cfg)
+            if new_label != rec["label"]:
+                rec["label"] = new_label
+                changed = True
+
+        for rec in records:
+            if rec["kind"] != "token":
+                continue
+            new_label = _apply_uid_to_tr_resolver_stage(rec["item"], rec["label"], annotator, cfg, matrix_lang)
+            if new_label != rec["label"]:
+                rec["label"] = new_label
+                changed = True
+
+        if not changed:
+            new_blocks.append(block)
+            continue
+
+        labels_in_sent = [rec["label"] for rec in records
+                           if rec["kind"] == "token" and rec["label"] in _LABELS_COUNTED_FOR_MATRIX_EMBED]
+        matrix, embed = annotator._decide_matrix_embed(labels_in_sent, cfg)
+        for rec in records:
+            if rec["kind"] == "meta" and rec["name"] == "MatrixLang":
+                rec["value"] = matrix
+            elif rec["kind"] == "meta" and rec["name"] == "EmbedLang":
+                rec["value"] = embed
+
+        lines = []
+        for rec in records:
+            if rec["kind"] == "blank":
+                lines.append("")
+            elif rec["kind"] == "raw":
+                lines.append(rec["raw"])
+            elif rec["kind"] == "meta":
+                lines.append(f"{rec['name']}\t{rec['value']}")
+            else:  # token
+                lines.append(f"{rec['item']}\t{rec['label']}")
+        new_blocks.append("\n".join(lines))
+
+    return "\n\n".join(new_blocks)
+
+
+# ===========================================================================
+# formerly uid_resolver.py -- UID->TR resolver (production-integrated via
+# apply_reranker() above; apply_uid_to_tr_resolver() below remains a
+# standalone/offline-evaluation entry point).
+# ===========================================================================
+
+"""EXPERIMENTAL, offline-only UID->TR resolver.
+
+*** NOT wired into production. Not imported by cs_annotator_app.py or
+*** reranker_integration.py. Do not import this module from either of
+*** those files without explicit maintainer authorization -- see
+*** CLAUDE.md section 2/3 and the offline evaluation report this module
+*** was built for.
+
+Motivation / required conceptual placement
+--------------------------------------------------------------------------
+An earlier Turkish-stem fallback (folded directly into
+Annotator._choose_label) was implemented and evaluated, then reverted: it
+ran too early, ahead of MIXED detection, and pre-empted genuine MIXED/UID
+tokens by converting them to TR before the reranker or residual-verbal
+stage ever saw them (see CHANGELOG.md). This module is a from-scratch
+replacement designed specifically to avoid that failure mode: it is meant
+to be invoked, in an offline evaluation harness ONLY, strictly after every
+existing production label-assignment stage has already run --
+
+    Annotator.annotate()                              (cs_pipeline.py)
+    -> NE Policies C/D                                 (cs_pipeline.py, inside annotate())
+    -> frozen Phase 5F MIXED reranker                   (reranker_integration.apply_reranker)
+    -> residual verbal MIXED detector                   (reranker_integration.apply_reranker,
+                                                           mixed_reranker.evaluate_residual_verbal_promotion)
+    -> [THIS MODULE] UID -> TR resolver, offline only
+    -> Matrix/Embedded Language recomputation            (only if this stage promoted anything)
+
+apply_uid_to_tr_resolver() below inspects ONLY token rows whose CURRENT
+label (i.e. after every stage above has already run) is exactly "UID". It
+never looks at, and never overwrites, TR/EN/MIXED/NE/OTHER/LANG3, and never
+touches SentenceID. It only ever promotes UID -> TR -- there is no UID->EN
+path in this module (English is already largely covered by the existing
+lexicon/reranker machinery, and the EN direction carries more misclassification
+risk per the brief this module was built from).
+
+Scope and safety design
+--------------------------------------------------------------------------
+A UID token is only eligible to be considered at all if it survives a set
+of hard exclusion gates (check_eligibility) -- URLs/mentions/hashtags/
+numbers/punctuation/emoji/alphanumeric codes (reusing cs_pipeline.
+is_other_token unmodified), email-shaped tokens, apostrophe-bearing tokens,
+all-caps acronyms, alphanumeric identifiers, tokens that look like a
+proper name (capitalized -- the same heuristic mixed_reranker's residual
+verbal stage already uses for its own proper-name guard), a direct English
+lexicon hit on the whole token, and -- most importantly -- any token for
+which mixed_reranker.enumerate_candidate_analyses finds an
+English-root-plus-Turkish-suffix analysis (i.e. anything the frozen
+reranker/residual stage would treat as a MIXED candidate). That last gate
+is what keeps this module from ever contesting a genuine MIXED token.
+
+An eligible token is then scored using extract_evidence()/score_evidence():
+an additive, explainable point system over independent signals (trusted
+Turkish lexicon evidence for the whole token or a recovered nominal stem,
+a valid Turkish suffix-chain analysis via the existing, unmodified
+Annotator._has_valid_turkish_nominal_analysis, strong Turkish fastText
+support, and Turkish-specific orthographic evidence), plus a capped,
+non-decisive auxiliary bonus for sentence-level MatrixLang=TR agreement.
+No single signal, and no pair of the weaker signals alone, can reach the
+promotion threshold -- see PROMOTION_THRESHOLD/MIN_PRIMARY_SIGNALS and the
+comments beside them for the exact arithmetic and its rationale. Anything
+that does not clear the threshold is left exactly as UID.
+
+Architecture
+--------------------------------------------------------------------------
+Every function here is pure (no I/O, no global state) except
+apply_uid_to_tr_resolver(), which operates on the same blank-line-delimited
+"Item\\tLabel" text format Annotator.annotate()/apply_reranker() already
+use, and returns that same format back -- no schema change. This module
+reuses, read-only, existing tested logic rather than duplicating it:
+cs_pipeline.is_other_token, mixed_reranker.enumerate_candidate_analyses /
+is_non_turkish_stem_evidence / fasttext_predict_raw, and
+reranker_integration._parse_block_lines (the same block-parsing convention
+apply_reranker() already uses, so this module's block handling cannot
+silently drift from it). Annotator._has_valid_turkish_nominal_analysis and
+Annotator._decide_matrix_embed are called read-only, exactly like
+reranker_integration.py already does. Nothing here retrains, rethresholds,
+or modifies the frozen Phase 5F reranker or its resources/models/ files.
+
+Callable standalone (e.g. from a throwaway offline evaluation script)
+without opening the GUI. cs_pipeline is only ever imported lazily, inside
+the one function that needs is_other_token (mirroring mixed_reranker.py's
+own local-import convention for the same helper), so importing this module
+does not force cs_pipeline's module-level `import stanza` unless/until a
+caller actually needs it.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Hard exclusion gates
+# ---------------------------------------------------------------------------
+
+MIN_TOKEN_LEN = 2
+
+# A conservative, ASCII-safe email shape: local@domain.tld, no embedded
+# whitespace or '@'. Distinct from cs_pipeline.MENTION_RE ("@\w+"), which
+# matches a bare "@handle" but not a full address.
+EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+def _has_apostrophe(token: str) -> bool:
+    return "'" in token or "’" in token
+
+
+def _looks_like_email(token: str) -> bool:
+    return bool(EMAIL_RE.match(token))
+
+
+def _looks_like_all_caps_acronym(token: str) -> bool:
+    return token.isupper() and len(token) > 1
+
+
+def _looks_like_alphanumeric_identifier(token: str) -> bool:
+    return any(ch.isdigit() for ch in token)
+
+
+def _looks_like_probable_proper_name(token: str) -> bool:
+    """Heuristic guard for "known/protected named entity": this stage never
+    sees NER output directly (it only sees an already-final UID label), so
+    it mirrors the same capitalization heuristic mixed_reranker's residual
+    verbal stage already uses for its own proper-name guard
+    (_residual_verbal_looks_like_proper_name_or_noise) rather than
+    inventing a different rule."""
+    return token[:1].isupper()
+
+
+def _has_strong_direct_english_match(token_l: str, annotator) -> bool:
+    return token_l in annotator.english_freq_words
+
+
+def _has_english_root_turkish_suffix_analysis(token: str, annotator, cfg) -> bool:
+    """True if ANY enumerated stem/suffix split of `token` (nominal or
+    verbal, at the broadest available verbal level so this safety gate is
+    maximally cautious) has a stem carrying non-Turkish/English evidence --
+    i.e. exactly the shape mixed_reranker's own candidate generation would
+    treat as a MIXED candidate. A token that matches this must never be
+    touched by this resolver; it is left for the existing MIXED-detection
+    stages, never for this stage to pre-empt them.
+    """
+    candidates = enumerate_candidate_analyses(
+        token, annotator, verbal_level=VERBAL_MORPHOLOGY_PHASE_4E)
+    return any(is_non_turkish_stem_evidence(annotator, c.stem, cfg) for c in candidates)
+
+
+def check_eligibility(token: str, label: str, annotator, cfg) -> Tuple[bool, str]:
+    """Whether `token` (currently labeled `label`) may even be considered
+    by this resolver. Returns (is_eligible, reason) -- reason is always
+    populated, including on success ("eligible"), so callers/logging never
+    have to special-case the True branch.
+    """
+    if label != "UID":
+        return False, "label_not_uid"
+    if not token or len(token) < MIN_TOKEN_LEN:
+        return False, "too_short"
+
+    from cs_pipeline import is_other_token  # local import, see module docstring
+    if is_other_token(token):
+        return False, "other_token (url/mention/hashtag/number/punctuation/code/emoji)"
+    if _looks_like_email(token):
+        return False, "email"
+    if _has_apostrophe(token):
+        return False, "apostrophe"
+    if _looks_like_all_caps_acronym(token):
+        return False, "all_caps_acronym"
+    if _looks_like_alphanumeric_identifier(token):
+        return False, "alphanumeric_identifier"
+    if _looks_like_probable_proper_name(token):
+        return False, "probable_proper_name_or_protected_ne"
+
+    token_l = token.lower()
+    if _has_strong_direct_english_match(token_l, annotator):
+        return False, "strong_direct_english_lexicon_match"
+    if _has_english_root_turkish_suffix_analysis(token, annotator, cfg):
+        return False, "english_root_turkish_suffix_analysis"
+
+    return True, "eligible"
+
+
+# ---------------------------------------------------------------------------
+# Evidence model
+# ---------------------------------------------------------------------------
+
+# Primary signals: independent, each individually insufficient. Weights are
+# deliberately set so that no single signal, and no bare pair of the
+# weakest signals, crosses PROMOTION_THRESHOLD on its own -- see the
+# arithmetic note beside PROMOTION_THRESHOLD below.
+PRIMARY_SIGNAL_WEIGHTS: Dict[str, int] = {
+    "trusted_lexicon": 3,
+    "suffix_chain": 3,
+    "fasttext_strong": 3,
+    "orthographic": 2,
+}
+PRIMARY_SIGNALS = frozenset(PRIMARY_SIGNAL_WEIGHTS)
+
+# Auxiliary signal: sentence-level MatrixLang agreement. Explicitly weak --
+# never counted toward MIN_PRIMARY_SIGNALS, and its weight alone can never
+# bridge more than one missing point of PROMOTION_THRESHOLD.
+AUXILIARY_SIGNAL_WEIGHTS: Dict[str, int] = {
+    "matrix_language": 1,
+}
+
+MIN_PRIMARY_SIGNALS = 2
+
+# Two primary signals alone = 3+3 = 6 (or 3+2 = 5), always short of this
+# threshold -- promotion requires EITHER three primary signals (>= 8) OR
+# two primary signals plus the auxiliary MatrixLang bonus (== 7, only when
+# the two chosen signals are each worth >= 3). This is what "at least two
+# independent positive signals" (the evaluation-protocol floor) plus "a
+# deliberately conservative threshold" (more than that floor in practice)
+# means concretely in this module.
+PROMOTION_THRESHOLD = 7
+
+TURKISH_ORTHOGRAPHIC_CHARS = set("çÇğĞıİöÖşŞüÜ")
+
+
+@dataclass(frozen=True)
+class EvidenceItem:
+    signal: str
+    weight: int
+    description: str
+
+
+def _recovered_turkish_stem(token: str, annotator) -> Optional[str]:
+    """The stem of the first NOMINAL candidate analysis (mixed_reranker.
+    enumerate_candidate_analyses, source == "nominal" only -- this signal
+    is about a closed-class Turkish suffix chain, not the experimental
+    verbal tables) whose stem is itself confirmed in the trusted Turkish
+    lexicon. Returns None if no such split exists. Does not modify the
+    token; returns the original-case stem substring for explanation
+    purposes only.
+    """
+    for candidate in enumerate_candidate_analyses(token, annotator):
+        if candidate.source != "nominal":
+            continue
+        stem_l = candidate.stem.lower()
+        if stem_l in annotator.turkish_freq_all or stem_l in annotator.turkish_freq_top:
+            return candidate.stem
+    return None
+
+
+def extract_evidence(token: str, annotator, cfg, matrix_lang: Optional[str] = None) -> List[EvidenceItem]:
+    """Build the full, explainable evidence list for `token`. Does not
+    check eligibility -- callers must call check_eligibility() first (see
+    decide(), which does exactly that).
+    """
+    evidence: List[EvidenceItem] = []
+    token_l = token.lower()
+
+    if token_l in annotator.turkish_freq_all or token_l in annotator.turkish_freq_top:
+        evidence.append(EvidenceItem(
+            "trusted_lexicon", PRIMARY_SIGNAL_WEIGHTS["trusted_lexicon"],
+            "complete token found in trusted Turkish lexicon"))
+    else:
+        stem = _recovered_turkish_stem(token, annotator)
+        if stem is not None:
+            evidence.append(EvidenceItem(
+                "trusted_lexicon", PRIMARY_SIGNAL_WEIGHTS["trusted_lexicon"],
+                f"recovered Turkish stem '{stem}' found in trusted lexicon"))
+
+    if annotator._has_valid_turkish_nominal_analysis(token_l):
+        evidence.append(EvidenceItem(
+            "suffix_chain", PRIMARY_SIGNAL_WEIGHTS["suffix_chain"],
+            "valid Turkish suffix-chain analysis"))
+
+    ft_min = cfg.get("FT_TR_MIN", 0.80)
+    lang, prob = fasttext_predict_raw(annotator, token_l)
+    if lang == "TR" and prob >= ft_min:
+        evidence.append(EvidenceItem(
+            "fasttext_strong", PRIMARY_SIGNAL_WEIGHTS["fasttext_strong"],
+            f"strong Turkish fastText support (p={prob:.2f} >= {ft_min:.2f})"))
+
+    if any(ch in TURKISH_ORTHOGRAPHIC_CHARS for ch in token):
+        evidence.append(EvidenceItem(
+            "orthographic", PRIMARY_SIGNAL_WEIGHTS["orthographic"],
+            "Turkish-specific orthographic character present"))
+
+    if matrix_lang == "TR":
+        evidence.append(EvidenceItem(
+            "matrix_language", AUXILIARY_SIGNAL_WEIGHTS["matrix_language"],
+            "sentence-level MatrixLang is TR (weak auxiliary signal only)"))
+
+    return evidence
+
+
+def score_evidence(evidence: List[EvidenceItem]) -> int:
+    return sum(e.weight for e in evidence)
+
+
+def _primary_signal_count(evidence: List[EvidenceItem]) -> int:
+    return sum(1 for e in evidence if e.signal in PRIMARY_SIGNALS)
+
+
+# ---------------------------------------------------------------------------
+# Decision + explanation
+# ---------------------------------------------------------------------------
+
+class ResolverDecision(NamedTuple):
+    token: str
+    current_label: str
+    proposed_label: str
+    promote: bool
+    score: int
+    evidence: Tuple[EvidenceItem, ...]
+    reason: str
+
+
+def decide(token: str, label: str, annotator, cfg, matrix_lang: Optional[str] = None) -> ResolverDecision:
+    """The single entry point combining eligibility, evidence, scoring, and
+    the promotion decision for one token. Deterministic: same inputs always
+    produce the same ResolverDecision.
+    """
+    eligible, reason = check_eligibility(token, label, annotator, cfg)
+    if not eligible:
+        return ResolverDecision(token, label, label, False, 0, (), reason)
+
+    evidence = extract_evidence(token, annotator, cfg, matrix_lang)
+    score = score_evidence(evidence)
+    promote = _primary_signal_count(evidence) >= MIN_PRIMARY_SIGNALS and score >= PROMOTION_THRESHOLD
+
+    if promote:
+        return ResolverDecision(token, label, "TR", True, score, tuple(evidence), "promoted")
+    return ResolverDecision(token, label, label, False, score, tuple(evidence),
+                             "ambiguous_or_insufficient_evidence")
+
+
+def explain(decision: ResolverDecision) -> str:
+    """Structured, human-readable explanation in the fixed shape:
+    Token / Current / Proposed / Score / Evidence / Decision.
+    """
+    lines = [
+        f"Token: {decision.token}",
+        f"Current: {decision.current_label}",
+        f"Proposed: {decision.proposed_label}",
+        f"Score: {decision.score}",
+        "Evidence:",
+    ]
+    if decision.evidence:
+        for e in decision.evidence:
+            lines.append(f"- {e.description}")
+    else:
+        lines.append("- (none)")
+    verdict = "promote" if decision.promote else "retain"
+    lines.append(f"Decision: {verdict} ({decision.reason})")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Applying the resolver to already-annotated blocks (offline use only)
+# ---------------------------------------------------------------------------
+
+# This stage only ever inspects token rows CURRENTLY labeled UID -- never
+# NE/OTHER/LANG3/TR/EN/MIXED. Checked here, before decide() is even called,
+# so those rows never appear in the returned `decisions` list either.
+_RESOLVER_ELIGIBLE_LABELS = frozenset({"UID"})
+
+
+def apply_uid_to_tr_resolver(annotated_text: str, annotator, cfg: dict) -> Tuple[str, List[ResolverDecision]]:
+    """Offline-only post-processing stage: promotes eligible UID token rows
+    to TR (see decide()) in text already produced by
+    Annotator.annotate() -> apply_reranker() (frozen reranker + residual
+    verbal stage). Input/output format is identical to that pipeline's own
+    text output -- no schema change. Blocks with no promotion are returned
+    byte-for-byte identical to the input; MatrixLang/EmbedLang are
+    recomputed (via the unmodified Annotator._decide_matrix_embed) only for
+    blocks where a promotion actually occurred.
+
+    Never raises: a single token's evaluation failure is caught and treated
+    as "no promotion" for that token, mirroring apply_reranker()'s own
+    fail-safe contract, so one bad token cannot interrupt the rest of the
+    block.
+
+    Returns (new_text, decisions) -- `decisions` lists every ResolverDecision
+    actually made (i.e. every UID token inspected), in encounter order, for
+    offline logging/evaluation. Production integration (reranker_integration.
+    apply_reranker()) calls decide() directly, per token, inline in its own
+    block loop -- it never calls this function; this function exists purely
+    as a standalone/offline-evaluation convenience, which is also why the
+    reranker_integration import below is local rather than module-level
+    (see the note beside this module's imports at the top of the file).
+    """
+    labels_counted_for_matrix_embed = _LABELS_COUNTED_FOR_MATRIX_EMBED
+
+    blocks = annotated_text.split("\n\n")
+    new_blocks = []
+    all_decisions: List[ResolverDecision] = []
+
+    for block in blocks:
+        records = _parse_block_lines(block)
+        matrix_lang = next(
+            (rec["value"] for rec in records if rec["kind"] == "meta" and rec["name"] == "MatrixLang"),
+            None)
+
+        changed = False
+        for rec in records:
+            if rec["kind"] != "token":
+                continue
+            if rec["label"] not in _RESOLVER_ELIGIBLE_LABELS:
+                continue
+            try:
+                decision = decide(rec["item"], rec["label"], annotator, cfg, matrix_lang=matrix_lang)
+            except Exception:
+                continue
+            all_decisions.append(decision)
+            if decision.promote:
+                rec["label"] = decision.proposed_label
+                changed = True
+
+        if not changed:
+            new_blocks.append(block)
+            continue
+
+        labels_in_sent = [rec["label"] for rec in records
+                           if rec["kind"] == "token" and rec["label"] in labels_counted_for_matrix_embed]
+        new_matrix, new_embed = annotator._decide_matrix_embed(labels_in_sent, cfg)
+        for rec in records:
+            if rec["kind"] == "meta" and rec["name"] == "MatrixLang":
+                rec["value"] = new_matrix
+            elif rec["kind"] == "meta" and rec["name"] == "EmbedLang":
+                rec["value"] = new_embed
+
+        lines = []
+        for rec in records:
+            if rec["kind"] == "blank":
+                lines.append("")
+            elif rec["kind"] == "raw":
+                lines.append(rec["raw"])
+            elif rec["kind"] == "meta":
+                lines.append(f"{rec['name']}\t{rec['value']}")
+            else:  # token
+                lines.append(f"{rec['item']}\t{rec['label']}")
+        new_blocks.append("\n".join(lines))
+
+    return "\n\n".join(new_blocks), all_decisions

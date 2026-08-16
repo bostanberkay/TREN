@@ -27,7 +27,7 @@ Four policies (Decision A-D):
                         non-Turkish: stem_in_english_freq OR (stem fastText
                         language == EN AND stem fastText prob >= FT_EN_MIN).
                         This is the exact same test already used by
-                        mixed_reranker.is_non_turkish_stem_evidence for the
+                        reranking.is_non_turkish_stem_evidence for the
                         TR candidate bucket -- reused here for consistency,
                         not reinvented.
 
@@ -68,7 +68,7 @@ ALL_POLICIES = (POLICY_UNRESTRICTED, POLICY_BLOCK_NE, POLICY_NE_THRESHOLD, POLIC
 
 
 def stem_evidence(structured_features: dict) -> bool:
-    """Same definition as mixed_reranker.is_non_turkish_stem_evidence,
+    """Same definition as reranking.is_non_turkish_stem_evidence,
     applied to the ALREADY-COMPUTED stem features stored on the row (no
     Annotator/fastText call needed here -- build_reranker_dataset.py
     already ran it once per row)."""

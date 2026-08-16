@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cs_pipeline import Annotator, DEFAULTS
 import annotation_model
 import confidence as cf
-import reranker_integration as ri
+import reranking as ri
 
 REAL_MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "models")
 
@@ -227,8 +227,9 @@ def test_promoted_by_none_when_rule_label_equals_final_label():
 
 def test_uid_to_tr_resolver_evidence_reconstructed_and_capped_medium():
     # "meyler" fully in the trusted Turkish lexicon plus a valid suffix
-    # analysis -- enough primary signals for uid_resolver.decide() to
-    # promote UID->TR (mirrors tests/test_uid_resolver.py's own fixtures).
+    # analysis -- enough primary signals for reranking.decide() (formerly
+    # uid_resolver.decide()) to promote UID->TR (mirrors
+    # tests/test_uid_resolver.py's own fixtures).
     obj = _make_annotator(turkish_all={"mey"})
     with mock.patch.object(obj, "_ft_predict", return_value=("TR", 0.95)):
         rec = cf.compute_token_confidence("meyler", "UID", "TR", obj, DEFAULTS, matrix_lang="TR")

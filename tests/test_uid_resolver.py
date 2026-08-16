@@ -1,11 +1,15 @@
 # tests/test_uid_resolver.py
-"""Tests for the EXPERIMENTAL, offline-only uid_resolver.py.
+"""Tests for the EXPERIMENTAL, offline-only UID->TR resolver (formerly
+uid_resolver.py, now the last section of reranking.py -- see CLAUDE.md
+section 3 and the merge commit).
 
-Not exercising any production code path -- uid_resolver.py is not imported
-by cs_annotator_app.py or reranker_integration.py (see the last test class
-below, which asserts exactly that). Uses the same bypass-__init__ Annotator
-convention already established in tests/test_cs_pipeline.py,
-tests/test_mixed_reranker.py, and tests/test_reranker_integration.py.
+apply_uid_to_tr_resolver() below is not exercised by any production code
+path -- production calls decide() directly, per token, from inside
+reranking.apply_reranker() (see the last test class below, which asserts
+that the single integration point remains apply_reranker()). Uses the same
+bypass-__init__ Annotator convention already established in
+tests/test_cs_pipeline.py, tests/test_mixed_reranker.py, and
+tests/test_reranker_integration.py.
 """
 
 import os
@@ -17,7 +21,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cs_pipeline import Annotator, DEFAULTS
-import uid_resolver as ur
+import reranking as ur
 
 
 def _make_annotator(turkish_top=(), turkish_all=(), english_words=()):
@@ -388,29 +392,42 @@ def test_apply_resolver_never_raises_on_evaluation_failure():
 
 # ---------------------------------------------------------------------------
 # Integration boundary: as of the UID->TR resolver's production integration
-# (see reranker_integration.py's module docstring / CHANGELOG), this module
-# IS imported by reranker_integration.py, and only there -- cs_pipeline.py
-# (the core rule-based engine) and cs_annotator_app.py (the GUI) must not
-# duplicate or directly reference this module's logic; the single
-# integration point is reranker_integration.apply_reranker(), exactly
-# mirroring where the residual verbal detector was already integrated.
+# (see reranking.py's module docstring / CHANGELOG), decide() is called
+# directly, per token, from inside reranking.apply_reranker() -- cs_pipeline.py
+# (the core rule-based engine) must not reference reranking.py at all, and
+# cs_annotator_app.py (the GUI) must not call reranking.decide() directly,
+# bypassing apply_reranker()'s own staging/ordering; the single integration
+# point is reranking.apply_reranker(), exactly mirroring where the residual
+# verbal detector was already integrated. (Before the tdk.py/reranking.py
+# consolidation, this was enforced as "uid_resolver.py is only imported by
+# reranker_integration.py" -- the underlying invariant is unchanged, only
+# its expression given that all three former modules now share one file.)
 # ---------------------------------------------------------------------------
 
 def test_uid_resolver_not_referenced_by_cs_pipeline_or_gui():
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for fname in ("cs_annotator_app.py", "cs_pipeline.py"):
-        path = os.path.join(repo_root, fname)
-        with open(path, "r", encoding="utf-8") as f:
-            source = f.read()
-        assert "uid_resolver" not in source, (
-            f"{fname} must not reference uid_resolver.py -- the single "
-            f"production integration point is reranker_integration.py")
 
-
-def test_uid_resolver_is_the_single_integration_point_in_reranker_integration():
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    path = os.path.join(repo_root, "reranker_integration.py")
+    path = os.path.join(repo_root, "cs_pipeline.py")
     with open(path, "r", encoding="utf-8") as f:
         source = f.read()
-    assert "import uid_resolver as ur" in source
-    assert "ur.decide(" in source
+    assert "reranking" not in source, (
+        "cs_pipeline.py must not reference reranking.py (which now contains "
+        "the UID->TR resolver) -- the single production integration point is "
+        "reranking.apply_reranker(), called from cs_annotator_app.py only")
+
+    path = os.path.join(repo_root, "cs_annotator_app.py")
+    with open(path, "r", encoding="utf-8") as f:
+        source = f.read()
+    assert "reranking.decide(" not in source, (
+        "cs_annotator_app.py must not call reranking.decide() directly -- "
+        "the single production integration point is reranking.apply_reranker(), "
+        "which already sequences the resolver stage internally")
+
+
+def test_uid_resolver_is_the_single_integration_point_in_reranking():
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(repo_root, "reranking.py")
+    with open(path, "r", encoding="utf-8") as f:
+        source = f.read()
+    assert "def decide(" in source
+    assert "decision = decide(item, label, annotator, cfg, matrix_lang=matrix_lang)" in source
