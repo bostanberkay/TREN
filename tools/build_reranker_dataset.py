@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# tools/build_reranker_dataset.py
 """Phase 2, isolated experiment: build a training dataset for the MIXED
 reranker from a gold (manually corrected) CSV and a machine-output CSV.
 
@@ -206,14 +205,9 @@ def check_and_collect(blocks, known_excluded_ids, orphan_block_indices):
             })
             continue
 
-        # Per-block "equal token-row count" check (Decision 1): by
-        # construction this always holds here, because build_blocks() only
-        # ever produces one token-row list per block index, populated from
-        # gold[i] and pred[i] at the SAME line i -- and Tier 1 already
-        # asserted gold/pred token-row line positions are identical. There
-        # is no way for gt to represent an unequal-count situation at this
-        # point; the count guarantee lives in global_structural_check, not
-        # here. Asserted anyway, defensively, rather than assumed silently.
+        # Equal token-row count holds by construction (build_blocks() fills both sides
+        # from the same line i, and Tier 1 already asserted identical positions);
+        # asserted anyway rather than assumed.
         assert len(gt) == len(b['token_rows']), "internal invariant violated: token_rows built inconsistently"
 
         local_ok = True
@@ -251,9 +245,8 @@ def check_and_collect(blocks, known_excluded_ids, orphan_block_indices):
             if gold_id in known_excluded_ids:
                 continue
             if tr['gold_label'] not in VALID_LABELS:
-                # should be unreachable: corrupted-label rows are always in
-                # exclusions.csv and therefore already skipped above, but
-                # assert defensively rather than silently mis-scoring.
+                # Unreachable in practice (corrupted-label rows are in exclusions.csv and
+                # skipped above); fail loudly rather than mis-score.
                 raise SystemExit(f"FATAL: token_id={gold_id} has gold Label {tr['gold_label']!r} not in the "
                                   f"7-label schema and is NOT listed in --exclusions. Refusing to guess; "
                                   f"add it to exclusions.csv or investigate.")
@@ -313,9 +306,8 @@ def grouped_stratified_split(blocks, scoreable_rows, seed, train_frac, dev_frac,
         rng.shuffle(ids)
         n = len(ids)
         if n < 3:
-            # not enough blocks in this stratum to populate all three
-            # splits; assign train-first so at least training data isn't
-            # starved, and note the shortfall explicitly.
+            # Too few blocks to populate all three splits: assign train-first and
+            # record the shortfall.
             for i, bidx in enumerate(ids):
                 (train_ids if i == 0 else dev_ids if i == 1 else test_ids).append(bidx)
             small_stratum_notes.append(
@@ -463,12 +455,9 @@ def main():
 
     candidate_counts_by_pred_label = defaultdict(int)
     for row in scoreable_rows:
-        # Phase 5F: return_candidates=True makes classify_candidate hand back
-        # the full enumerated candidate list it already computed internally
-        # (empty for pred labels in mr.NON_CANDIDATE_LABELS, where it never
-        # enumerates at all), so Batch G bookkeeping below does not need a
-        # second enumerate_candidate_analyses call. is_candidate/reason/
-        # analysis are unaffected -- see classify_candidate's docstring.
+        # return_candidates=True returns the enumeration classify_candidate already
+        # computed (empty for NON_CANDIDATE_LABELS), so Batch G needs no second
+        # enumerate_candidate_analyses call.
         result = mr.classify_candidate(row['pred_label'], row['pred_item'], annotator, cfg,
                                         strategy=args.candidate_strategy,
                                         verbal_level=args.verbal_morphology_level,
@@ -496,9 +485,8 @@ def main():
             candidate_strategy=args.candidate_strategy,
             include_batch_d=args.include_batch_d_features)
         row['text'] = row['pred_item']
-        # Phase 4D: carried at the row level (not as a model feature) purely
-        # for inspection/reporting -- the recovered lexicon string itself,
-        # when the duplicated-consonant fallback fired.
+        # Row-level only (not a model feature): the recovered lexicon string when the
+        # duplicated-consonant fallback fired.
         row['extracted_stem'] = analysis.stem if analysis is not None else None
         row['recovered_english_stem'] = analysis.recovered_english_stem if analysis is not None else None
     n_candidates = sum(1 for r in scoreable_rows if r['is_candidate'])
@@ -518,8 +506,7 @@ def main():
         raise SystemExit(f"FATAL: {len(unassigned)} scoreable rows belong to a block that was not assigned "
                           f"to any split -- this should be impossible given kept_blocks == union of split lists.")
 
-    # duplicate token-form diagnostics across splits (exact pred Item text,
-    # no normalization -- reported, not deduplicated, per Decision 7)
+    # Duplicate token-form diagnostics across splits (exact pred Item text; reported, not deduplicated)
     forms_by_split = defaultdict(lambda: defaultdict(int))
     for row in scoreable_rows:
         forms_by_split[row['text']][row['split']] += 1

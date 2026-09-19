@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# tools/ne_cascade_policy.py
 """Phase 3A, isolated experiment: investigate and benchmark conservative
 cascade policies for candidate tokens whose ORIGINAL predicted label is NE,
 to prevent unsupported NE->MIXED flips without materially reducing recovery

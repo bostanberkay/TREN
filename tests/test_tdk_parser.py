@@ -1,11 +1,7 @@
-# tests/test_tdk_parser.py
-"""Pure-function tests for tdk.py's morphological parser section (formerly
-tdk_parser.py -- see CLAUDE.md section 3). Uses tdk.load_lexicon_annotator()
-to get a REAL (but fastText/Stanza-free) lexicon-aware annotator -- required now that
-parse_token's selection policy is lexicon-rank-aware (a bare
-Annotator.__new__(Annotator), with no lexicon at all, can no longer
-reproduce the required root/suffix splits, e.g. "filmin" -> "film" + "in"
-needs to know "film" outranks "fil" in the real frequency lexicon)."""
+"""Pure-function tests for tdk.py's morphological parser. Uses
+tdk.load_lexicon_annotator() (real lexicons, no fastText/Stanza) because
+parse_token ranks by lexicon frequency: "filmin" -> "film" + "in" needs "film"
+to outrank "fil"."""
 import os
 import sys
 

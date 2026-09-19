@@ -1,15 +1,6 @@
-# tests/test_reranker_integration.py
-"""Phase 6.1/6.2: tests for reranking.py's production-integration section
-(formerly reranker_integration.py) -- loading infrastructure
-(Phase 6.1) and apply_reranker() (Phase 6.2). No GUI, no production pipeline
-involved. Uses the real resources/models/ artifacts (small, tracked files)
-directly rather than mocking joblib/the model, since they're cheap to load
-and give genuine end-to-end confidence.
-
-Phase 6.2 tests reuse the exact same bypass-__init__ Annotator convention
-already established in tests/test_cs_pipeline.py and
-tests/test_mixed_reranker.py (Annotator.__new__ + mocked _ft_predict) rather
-than inventing new test infrastructure."""
+"""Tests for reranking.py's production-integration section: bundle loading and
+apply_reranker(). Uses the real (small, tracked) resources/models/ artifacts and
+the bypass-__init__ Annotator convention from tests/test_cs_pipeline.py; no GUI."""
 
 import json
 import os

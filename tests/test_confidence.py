@@ -1,12 +1,6 @@
-# tests/test_confidence.py
-"""Tests for the production-safe confidence/uncertainty layer (confidence.py).
-
-Uses the same bypass-__init__ Annotator convention already established in
-tests/test_cs_pipeline.py, tests/test_mixed_reranker.py,
-tests/test_reranker_integration.py, and tests/test_uid_resolver.py, plus the
-real, small, tracked resources/models/ reranker bundle for the tests that
-need genuine frozen-reranker probabilities (mirrors
-tests/test_reranker_integration.py's `real_bundle` fixture)."""
+"""Tests for confidence.py. Uses the bypass-__init__ Annotator convention from
+tests/test_cs_pipeline.py, plus the real resources/models/ bundle where genuine
+frozen-reranker probabilities are needed."""
 
 import json
 import os

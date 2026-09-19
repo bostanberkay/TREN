@@ -626,7 +626,7 @@ The parser performs hierarchical Turkish morphological analysis rather than flat
 - Results are cached in memory for the session, keyed by the normalized query and dictionary source, so re-checking the same term doesn't repeat the request.
 - A connection failure, timeout, malformed response, HTTP error, or an unrecognized/changed response shape is reported as `UNAVAILABLE` or `NETWORK_ERROR` — TREN never fabricates a `FOUND` result it can't actually confirm, and never crashes because of it. A `NOT_FOUND` result always shows TREN's own fixed English message, never the raw Turkish text TDK's own endpoint returns.
 - The rest of TREN — annotation, the Confidence Review Tool, export, project save/load — remains fully usable completely offline; the TDK Checker is the one feature that needs the internet, and only when you explicitly ask it to check something.
-- TDK does not publish an official, documented public API; this feature uses the widely-used but undocumented `sozluk.gov.tr` lookup endpoint on a best-effort basis (see `tdk.py`'s dictionary-provider section, its module docstring) and treats any unexpected response shape as a provider failure (`UNAVAILABLE`), never as evidence one way or the other.
+- TDK does not publish an official, documented public API; this feature uses the widely-used but undocumented `sozluk.gov.tr` lookup endpoint on a best-effort basis (see `tdk.py`'s dictionary-provider section) and treats any unexpected response shape as a provider failure (`UNAVAILABLE`), never as evidence one way or the other.
 
 ## Concordance (KWIC)
 

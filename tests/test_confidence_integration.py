@@ -1,13 +1,7 @@
-# tests/test_confidence_integration.py
 """Integration tests for the confidence/review-tool layer: pipeline wiring,
-review-tool filtering (label + confidence band), main-table synchronization,
-dataset switching, and .trenproj save/load compatibility (including legacy
-projects predating this layer).
-
-Requires a real, working Tk display for the GUI-driving tests below (same
-convention as tests/test_confidence_review_tool_gui.py); those are skipped
-entirely if none is available. The save/load tests are pure (no Tk) and
-always run.
+review filtering, main-table sync, dataset switching, and .trenproj save/load
+(including legacy projects). GUI tests need a real Tk display and are skipped
+without one; the save/load tests are pure.
 """
 import copy
 import json

@@ -1,12 +1,8 @@
-# cs_pipeline.py
-
-
 import re
 import fasttext
 import stanza
 from functools import lru_cache
 
-# Config
 DEFAULTS = {
     "FEATURE_LANGUAGE_PER_ITEM": True,
     "FEATURE_MATRIX_LANGUAGE":   True,
@@ -23,7 +19,6 @@ DEFAULTS = {
     "EMBED_MIN_RATIO":           0.20,
 }
 
-# Regex
 URL_RE     = re.compile(r"(https?://\S+|www\.\S+)", re.IGNORECASE)
 MENTION_RE = re.compile(r"@\w+")
 HASHTAG_RE = re.compile(r"#\w+")
@@ -282,11 +277,10 @@ class Annotator:
         return None, None
 
     def _has_valid_turkish_nominal_analysis(self, tok_l: str) -> bool:
-        """Whether ANY closed-class Turkish nominal suffix fully consumes
-        the tail of tok_l, regardless of the resulting stem's language --
-        used by Policy D (see _build_ne_map) to decline overriding NE when
-        the token also has a plausible Turkish-morphology reading. Reuses
-        _parse_tr_suffixes_full read-only; no new suffix tables."""
+        """Whether any closed-class Turkish nominal suffix fully consumes the tail
+        of tok_l, regardless of the stem's language; Policy D uses it to decline
+        overriding NE when a plausible Turkish reading exists. Reuses
+        _parse_tr_suffixes_full read-only."""
         all_suffixes = (set(CASE_ENDINGS.keys()) | set(PLUR.keys()) |
                         set(POSS_LONG.keys()) | set(POSS_SHORT.keys()) |
                         set(DERIV_SUFFIXES.keys()) | set(BUFFER_N_ACC.keys()) | set(BUFFER_N_DAT.keys()))
@@ -301,12 +295,10 @@ class Annotator:
         return False
 
     def _qualifies_for_policy_d(self, tok: str) -> bool:
-        """Policy D: a token backed only by an NE match may be excluded
-        from ne_map (falling through to the existing _choose_label/MIXED
-        logic below, which -- given conditions 2/3 -- resolves it to EN
-        via the same English-lexicon check _choose_label already does; no
-        separate "set to EN" step is needed). All conditions below must
-        hold; see CHANGELOG for the offline evidence behind each."""
+        """Policy D: a token backed only by an NE match may be excluded from ne_map,
+        falling through to _choose_label/MIXED logic (which resolves it to EN via
+        the English lexicon). All conditions below must hold; see CHANGELOG for
+        the offline evidence."""
         if "'" in tok or "’" in tok:
             return False  # 1: bare token only
         tok_l = tok.lower()
@@ -373,29 +365,21 @@ class Annotator:
             self.ner = stanza.Pipeline("tr", processors="tokenize,ner", use_gpu=False)
 
     def _decide_matrix_embed(self, labels, cfg):
-        """
-        Basit ve deterministik kural:
-          - Matrix: TR/EN oyla (MIXED'i ağırlıklandır)
-          - Embed:
-              Matrix TR ise: cümlede EN veya MIXED varsa EN, yoksa "-"
-              Matrix EN ise: cümlede TR veya MIXED varsa TR, yoksa "-"
-        """
-        # Matrix
+        """Deterministic rule. Matrix: TR/EN vote, MIXED weighted by cfg. Embed: if
+        Matrix is TR, "EN" when the sentence has any EN or MIXED, else "-"; if
+        Matrix is EN, "TR" when it has any TR or MIXED, else "-"."""
         score_tr = sum(1 for lb in labels if lb == "TR")
         score_en = sum(1 for lb in labels if lb == "EN")
         mixed_cnt = sum(1 for lb in labels if lb == "MIXED")
         score_tr += cfg["MIXED_TR_WEIGHT"] * mixed_cnt
         score_en += cfg["MIXED_EN_WEIGHT"] * mixed_cnt
 
-        # Eşitlikte TR'yi tercih ediyoruz (önceki davranışla uyumlu)
+        # Ties prefer TR (matches earlier behavior)
         matrix = "TR" if score_tr >= score_en else "EN"
 
-        # Embed kararı
         if matrix == "TR":
-            # EN veya MIXED var mı?
             embed = "EN" if any(lb in ("EN", "MIXED") for lb in labels) else "-"
         else:
-            # TR veya MIXED var mı?
             embed = "TR" if any(lb in ("TR", "MIXED") for lb in labels) else "-"
 
         return matrix, embed
@@ -415,7 +399,6 @@ class Annotator:
                 out_lines.append("")
                 continue
 
-            # Cümle numarası
             sent_idx += 1
             if cfg.get("FEATURE_SENTENCE_ID", True):
                 out_lines.append(f"SentenceID\t{sent_idx}")
@@ -445,7 +428,7 @@ class Annotator:
                     continue
 
                 if not cfg["FEATURE_LANGUAGE_PER_ITEM"]:
-                    # sadece matrix/embed için işlem
+                    # Matrix/embed only; no per-item rows are emitted
                     tok_l = tok_clean.lower()
                     label = self._choose_label(tok_l, cfg)
                     base, suf = self._split_mixed_apostrophe(tok)
@@ -496,16 +479,14 @@ class Annotator:
 
             out_lines.extend(sent_rows)
 
-            # Matrix/Embed yazımı
             matrix, embed = self._decide_matrix_embed(labels_in_sent, cfg)
 
             if cfg["FEATURE_MATRIX_LANGUAGE"]:
                 out_lines.append(f"MatrixLang\t{matrix}")
                 if cfg["FEATURE_EMBEDDED_LANGUAGE"]:
-                    # Her zaman yaz
                     out_lines.append(f"EmbedLang\t{embed}")
             else:
-                # Matrix istenmiyorsa bile Embed seçildiyse yine hesapla ve yaz
+                # Embed is still written when only it is enabled
                 if cfg["FEATURE_EMBEDDED_LANGUAGE"]:
                     out_lines.append(f"EmbedLang\t{embed}")
 

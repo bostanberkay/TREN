@@ -1,14 +1,4 @@
-# tdk.py
-"""Consolidated TDK module: the dictionary lookup provider abstraction and
-the Turkish morphological parser used by the TDK Checker tool.
-
-This file merges the previously separate dictionary_provider.py and
-tdk_parser.py (see CLAUDE.md section 3 and the merge commit) into one
-module -- a file-organization change only. No behavior, threshold, or
-scoring-policy logic was altered by the merge; every function/class/
-constant keeps its original name. Each former module's own docstring is
-kept verbatim under its own section header below for full context.
-"""
+"""TDK dictionary lookup providers and the Turkish morphological parser used by the TDK Checker."""
 
 import json
 import re
@@ -23,96 +13,35 @@ import cs_pipeline as cp
 import reranking as mr
 
 
-# ===========================================================================
-# formerly dictionary_provider.py -- TDK dictionary lookup provider
-# abstraction (used by the TDK Checker tool).
-# ===========================================================================
-
-"""Dictionary lookup provider abstraction for the TDK Checker tool.
-
-Purpose
---------------------------------------------------------------------------
-The TDK Checker (cs_annotator_app.py) never talks to a network endpoint
-directly -- it only ever calls `DictionaryProvider.lookup(term)`. This
-keeps the GUI fully decoupled from *how* (or whether) a lookup happens, so
-it can run against a real online provider, a deterministic mock (all
-tests), or an always-offline provider with the exact same code path.
-
-Why not "the official TDK API"
---------------------------------------------------------------------------
-The Turkish Language Association (TDK) does not publish an official,
-documented public API. `sozluk.gov.tr`'s `gts` JSON endpoint is widely
-used by third-party tools, but it is undocumented, unversioned, and can
-change its response shape or disappear at any time without notice. This
-module never assumes that endpoint is stable or "official" -- every
-response is parsed defensively, and ANY unexpected shape, HTTP error, or
-network failure degrades to `UNAVAILABLE`/`NETWORK_ERROR` rather than
-raising or fabricating a result. See TDKProvider's docstring and the
-project report's "Limitations" section for the practical consequences of
-this (occasional false NOT_FOUND/UNAVAILABLE if TDK changes their
-response shape -- never a fabricated FOUND).
-
-Status contract
---------------------------------------------------------------------------
-Every `lookup()` call returns a `LookupResult` with exactly one of four
-statuses:
-  FOUND         -- the term (or a close variant) was found, `entries` is
-                   non-empty.
-  NOT_FOUND     -- the provider was reachable and understood, and
-                   confirmed the term has no entry.
-  UNAVAILABLE   -- the provider could not be used at all (offline
-                   provider, or a reachable-but-unparseable response --
-                   e.g. TDK changed its response shape). Not a claim
-                   about whether the word exists.
-  NETWORK_ERROR -- a genuine network-level failure (DNS, connection
-                   refused, timeout, malformed HTTP). Distinct from
-                   UNAVAILABLE so a user can tell "can't reach the
-                   internet" from "reached it, but the response made no
-                   sense" -- both are equally "no answer", but the
-                   distinction matters for diagnosing which one is worth
-                   retrying.
-
-Privacy
---------------------------------------------------------------------------
-`lookup()` takes a single `term` (a token, a root/lemma, or a single
-morphological segment) -- never a sentence, never surrounding context.
-Callers (cs_annotator_app.py) are responsible for only ever passing the
-one string the user explicitly asked to check; this module has no way to
-enforce that from here, but it is designed around exactly that contract
-(one term in, one term looked up, nothing else transmitted).
-
-Caching
---------------------------------------------------------------------------
-Every provider caches results in-memory, keyed by
-(normalized_query, provider.name) -- looking up the same term twice
-within one session never repeats the network round-trip. The cache is
-per-provider-instance and never persisted to disk or shared globally.
-"""
+# ---------------------------------------------------------------------------
+# Dictionary lookup providers
+#
+# lookup() returns a LookupResult with one of:
+#   FOUND          entries is non-empty
+#   NOT_FOUND      the provider understood the query and confirmed no entry
+#   UNAVAILABLE    provider unusable or response unparseable; says nothing
+#                  about whether the word exists
+#   NETWORK_ERROR  DNS / connection / timeout / HTTP failure
+# Callers pass a single term, never surrounding text. Results are cached
+# in memory per provider instance, keyed by (normalized query, provider name).
+# ---------------------------------------------------------------------------
 
 
 STATUS_FOUND = "FOUND"
 STATUS_NOT_FOUND = "NOT_FOUND"
 STATUS_UNAVAILABLE = "UNAVAILABLE"
 STATUS_NETWORK_ERROR = "NETWORK_ERROR"
-# Not returned by any provider's lookup() call -- a provider always answers
-# a fresh query with one of the four statuses above. STALE_RESULT is
-# applied by the CALLER (cs_annotator_app.py's TDK Checker window) to a
-# previously-fetched LookupResult that no longer corresponds to the
-# current root/segments the user is editing -- see mark_stale() below.
+# Applied by the TDK Checker GUI (see mark_stale); never returned by a provider.
 STATUS_STALE_RESULT = "STALE_RESULT"
 ALL_STATUSES = (STATUS_FOUND, STATUS_NOT_FOUND, STATUS_UNAVAILABLE, STATUS_NETWORK_ERROR, STATUS_STALE_RESULT)
 
 DEFAULT_TIMEOUT_SECONDS = 5.0
 
-# Used by the GUI layer wherever a field extracted from a dictionary entry
-# is absent -- never a guessed or blank value, always this exact string.
 NOT_PROVIDED = "Not provided"
 
 
 def format_field_for_display(value) -> str:
-    """`value` -> a display string, substituting NOT_PROVIDED for anything
-    falsy (None, "", 0, empty container). Never guesses a value -- this is
-    purely a presentation-layer fallback for genuinely absent data."""
+    """Display string for `value`, or NOT_PROVIDED when falsy."""
     if not value:
         return NOT_PROVIDED
     return str(value)
@@ -122,12 +51,8 @@ def format_field_for_display(value) -> str:
 # Query normalization
 # ---------------------------------------------------------------------------
 
-# Turkish-correct case folding: Python's default str.lower()/casefold() is
-# not Turkish-locale-aware -- 'I'.lower() == 'i' and 'İ'.lower() == 'i̇'
-# (i + combining dot above) in the default (non-Turkish) Unicode casing,
-# which is wrong for Turkish text ('I' should fold to dotless 'ı', 'İ' to
-# dotted 'i'). Applied as an explicit translation BEFORE the general
-# .lower() call so every other character still folds normally.
+# str.lower() maps 'I'->'i' and 'İ'->'i̇' (i + combining dot); Turkish needs
+# 'I'->'ı' and 'İ'->'i'. Applied before the general lower().
 _TURKISH_CASE_MAP = str.maketrans({"İ": "i", "I": "ı"})
 
 
@@ -145,20 +70,8 @@ _EDGE_PUNCT_RE = re.compile(r"^[\W_]+|[\W_]+$", re.UNICODE)
 
 
 def normalize_query(term: str) -> str:
-    """Deterministic normalization for TDK lookup/caching:
-    - Unicode NFC normalization (so visually-identical strings with
-      different combining-character decompositions compare equal).
-    - Apostrophes (straight, curly, backtick, acute -- anything a user's
-      keyboard/autocorrect might produce) removed anywhere in the string,
-      not just at the edges, since TREN tokens carry them internally
-      (e.g. "kitab'ın").
-    - Leading/trailing punctuation and whitespace (including hyphens)
-      stripped -- mirrors annotation_model.freq_normalize_token's
-      edge-punctuation convention, but internal hyphens (genuine compound
-      words) are preserved.
-    - Turkish-correct lowercasing (see turkish_lower).
-    Returns "" for a token with no normalizable content (never raises).
-    """
+    """NFC-normalize, strip apostrophes anywhere and edge punctuation (internal
+    hyphens kept), then Turkish-lowercase. Returns "" if nothing remains."""
     if not term:
         return ""
     s = unicodedata.normalize("NFC", str(term))
@@ -167,29 +80,13 @@ def normalize_query(term: str) -> str:
     return turkish_lower(s.strip())
 
 
-# ---------------------------------------------------------------------------
-# Rich dictionary entry model
-# ---------------------------------------------------------------------------
-# TDK's undocumented `gts` endpoint (see module docstring) returns, per
-# entry, roughly: "madde" (headword), "anlamlarListe" (senses, each with an
-# "anlam" definition text and its own "ozelliklerListe" of POS/usage-label
-# properties and "orneklerListe" of example sentences), "lisan" (origin/
-# etymology), "telaffuz" (pronunciation), "birlesikler" (compound/related
-# forms), "atasozu" (proverbs), "deyimler" (idioms). None of this is
-# guaranteed stable -- every extraction below is defensive (missing/
-# malformed fields degrade to empty, never raise), and anything not
-# recognized is preserved in `raw` rather than silently dropped, so a
-# future GUI panel can still surface it structurally without ever having
-# to dump raw HTML/JSON into the UI.
+# TDK `gts` fields used below: madde (headword), anlamlarListe (senses, each
+# with ozelliklerListe / orneklerListe), lisan, telaffuz, birlesikler, atasozu,
+# deyimler. The endpoint is undocumented, so extraction is defensive and
+# unrecognized data is kept in `raw`.
 
-# TDK's ozellik ("property") labels mix true part-of-speech tags with
-# register/usage labels (e.g. "argo" slang, "mecaz" figurative) in the same
-# undocumented list, with no reliable machine-readable distinction between
-# the two. This is the smallest defensible set of tokens actually used as
-# POS tags by TDK (surfaced verbatim, never translated -- see module/task
-# requirement to show POS "as given by TDK: isim, fiil, sıfat, zarf,
-# zamir"); anything else in a sense's ozelliklerListe is treated as a
-# usage label instead.
+# TDK mixes POS tags and usage labels ("argo", "mecaz") in one ozellik list;
+# this is the set treated as POS (shown verbatim), everything else is a usage label.
 _KNOWN_POS_TOKENS = {"isim", "fiil", "sıfat", "zarf", "zamir", "edat", "bağlaç", "ünlem", "sayı"}
 
 
@@ -200,9 +97,9 @@ def _as_text(value) -> str:
 
 
 def _list_of_text(value, dict_keys: Tuple[str, ...] = ("madde", "söz", "ad")) -> Tuple[str, ...]:
-    """Defensively coerces a TDK field that might be a "|"-joined string, a
-    list of strings, or a list of dicts (checked against `dict_keys` in
-    order) into a flat tuple of non-empty strings. Anything else -> ()."""
+    """Coerce a string (split on "|", ";" or newline), list of strings, or list
+    of dicts (first non-empty key in `dict_keys`) to a tuple of non-empty
+    strings; else ()."""
     if not value:
         return ()
     if isinstance(value, str):
@@ -270,10 +167,8 @@ class DictionaryEntry:
 
 
 def _parse_tdk_entry(item: dict) -> DictionaryEntry:
-    """Defensively builds one DictionaryEntry from one element of TDK's
-    `gts` response list. Never raises -- any malformed sub-field is simply
-    skipped, degrading that one field to empty rather than failing the
-    whole entry."""
+    """Build a DictionaryEntry from one `gts` list element; malformed
+    sub-fields degrade to empty."""
     headword = _as_text(item.get("madde"))
     origin = _as_text(item.get("lisan"))
     pronunciation = _as_text(item.get("telaffuz")) or _as_text(item.get("seslendirme"))
@@ -318,10 +213,6 @@ def _parse_tdk_entry(item: dict) -> DictionaryEntry:
     )
 
 
-# ---------------------------------------------------------------------------
-# Result type
-# ---------------------------------------------------------------------------
-
 @dataclass(frozen=True)
 class LookupResult:
     query: str
@@ -347,27 +238,17 @@ class LookupResult:
 
 
 def mark_stale(result: "LookupResult") -> "LookupResult":
-    """Returns a copy of `result` with status STATUS_STALE_RESULT, entries/
-    message preserved for display ("here is what we found, but it no
-    longer corresponds to your current edits"). Used exclusively by the
-    TDK Checker GUI when the user edits root/segments after a lookup has
-    already completed -- never produced by a provider's lookup() call
-    itself."""
+    """Copy of `result` with STATUS_STALE_RESULT, set by the TDK Checker GUI
+    when root/segments are edited after a lookup."""
     return LookupResult(query=result.query, normalized_query=result.normalized_query,
                          status=STATUS_STALE_RESULT, source=result.source,
                          entries=result.entries, message=result.message,
                          from_cache=result.from_cache)
 
 
-# ---------------------------------------------------------------------------
-# Provider abstraction
-# ---------------------------------------------------------------------------
-
 class DictionaryProvider:
-    """Base class / interface. `name` identifies the provider for caching
-    and for display in the UI's source/status field. Subclasses must
-    implement `_do_lookup`, not override `lookup` directly, so caching
-    stays consistent across every provider."""
+    """Base provider. Subclasses implement `_do_lookup`, not `lookup`, so
+    caching stays uniform. `name` keys the cache and labels results."""
 
     name = "base"
 
@@ -375,8 +256,7 @@ class DictionaryProvider:
         self._cache: Dict[Tuple[str, str], LookupResult] = {}
 
     def lookup(self, term: str) -> LookupResult:
-        """Never raises: any subclass failure is caught here and reported
-        as UNAVAILABLE, so a provider bug can never crash the GUI."""
+        """Never raises; subclass failures become UNAVAILABLE."""
         normalized = normalize_query(term)
         cache_key = (normalized, self.name)
         cached = self._cache.get(cache_key)
@@ -406,28 +286,15 @@ class DictionaryProvider:
         raise NotImplementedError
 
 
-# ---------------------------------------------------------------------------
-# Real TDK provider (best-effort, undocumented endpoint -- see module
-# docstring). Off-thread execution is the CALLER's responsibility
-# (cs_annotator_app.py) -- lookup() itself is a plain, synchronous,
-# blocking call, deliberately, so it stays simple to test in isolation.
-# ---------------------------------------------------------------------------
+# lookup() is synchronous and blocking; callers run it off the UI thread.
 
 DEFAULT_TDK_URL = "https://sozluk.gov.tr/gts"
 
 
 class TDKProvider(DictionaryProvider):
-    """Best-effort provider for the widely-used (but undocumented, not
-    officially published) sozluk.gov.tr `gts` JSON endpoint. Every
-    assumption about that endpoint's response shape is defensive: if TDK
-    changes it, or returns something this provider doesn't recognize, the
-    result is UNAVAILABLE -- never a crash, never a fabricated FOUND.
-
-    A genuine network-level failure (DNS, connection refused, timeout,
-    non-2xx HTTP status) is reported as NETWORK_ERROR instead, so a user
-    can distinguish "no internet" from "reached TDK, but couldn't parse
-    what came back."
-    """
+    """Best-effort client for the undocumented sozluk.gov.tr `gts` endpoint.
+    Unrecognized responses -> UNAVAILABLE (never a fabricated FOUND);
+    HTTP/network failures -> NETWORK_ERROR."""
 
     name = "tdk"
 
@@ -436,10 +303,7 @@ class TDKProvider(DictionaryProvider):
         super().__init__()
         self.base_url = base_url
         self.timeout = timeout
-        # `opener` is an injectable (url, timeout) -> bytes function, used
-        # by tests to simulate network conditions (timeout, malformed
-        # bytes, ...) without ever making a real request. Production uses
-        # the default urllib-based `_http_get`.
+        # Injectable (url, timeout) -> bytes; tests use it to simulate network failures.
         self._opener = opener or self._http_get
 
     @staticmethod
@@ -449,9 +313,7 @@ class TDKProvider(DictionaryProvider):
             return resp.read()
 
     def _do_lookup(self, term: str, normalized: str) -> LookupResult:
-        # URL-encode correctly, including Turkish characters -- quote()
-        # with the default UTF-8 encoding percent-encodes every non-ASCII
-        # byte, which is exactly right for Turkish (ç/ğ/ı/ö/ş/ü etc.).
+        # Percent-encodes non-ASCII (ç/ğ/ı/ö/ş/ü) as UTF-8.
         url = f"{self.base_url}?ara={urllib.parse.quote(normalized, safe='')}"
         try:
             raw = self._opener(url, self.timeout)
@@ -477,20 +339,9 @@ class TDKProvider(DictionaryProvider):
             return LookupResult(query=term, normalized_query=normalized, status=STATUS_UNAVAILABLE,
                                  source=TDKProvider.name, message=f"malformed (non-JSON) response: {e}")
 
-        # Known TDK gts shapes (as observed, NOT documented/guaranteed):
-        #   found:     a non-empty list of dicts, each with a "madde" key
-        #              (headword) and usually "anlamlarListe" (senses).
-        #   not found: {"error": "Sonuç bulunamadı"} (a dict, not a list)
-        #              or an empty list.
-        # Anything else (changed structure, a string, null, a list of
-        # non-dicts, ...) is explicitly NOT assumed to mean either FOUND
-        # or NOT_FOUND -- it's UNAVAILABLE, per the task requirement to
-        # treat API/HTML changes as a provider failure.
-        #
-        # NOT_FOUND's message is always this module's own fixed English
-        # text, NEVER the raw upstream string (TDK's own "error" value is
-        # Turkish system text like "Sonuç bulunamadı") -- the GUI must
-        # never surface untranslated backend text to the user.
+        # Observed (undocumented) shapes: found = non-empty list of dicts with
+        # "madde"; not found = {"error": ...} or []. Anything else is UNAVAILABLE.
+        # NOT_FOUND carries our own fixed message, never TDK's Turkish error text.
         if isinstance(data, dict) and "error" in data:
             return LookupResult(query=term, normalized_query=normalized, status=STATUS_NOT_FOUND,
                                  source=TDKProvider.name, message="no dictionary entry found")
@@ -508,12 +359,6 @@ class TDKProvider(DictionaryProvider):
                              message="unrecognized response structure (TDK endpoint may have changed)")
 
 
-# ---------------------------------------------------------------------------
-# Always-offline provider -- never touches the network at all. Used when
-# the application is deliberately run offline, and as the safe default
-# object before any lookup is explicitly requested.
-# ---------------------------------------------------------------------------
-
 class UnavailableProvider(DictionaryProvider):
     name = "offline"
 
@@ -522,18 +367,10 @@ class UnavailableProvider(DictionaryProvider):
                              source=self.name, message="dictionary lookup is offline")
 
 
-# ---------------------------------------------------------------------------
-# Deterministic mock provider -- the ONLY provider any test may use.
-# ---------------------------------------------------------------------------
-
 class MockDictionaryProvider(DictionaryProvider):
-    """Deterministic, in-memory provider for tests. `responses` maps a
-    NORMALIZED query string to either a status string (entries default
-    empty) or a (status, entries) tuple. Any query not in `responses`
-    returns `default_status` (default NOT_FOUND). `delay_seconds`, if
-    set, sleeps synchronously before returning -- lets tests exercise the
-    "stale response" / "no GUI freeze" scenarios deterministically without
-    any real network dependency."""
+    """In-memory provider for tests. `responses` maps a normalized query to a
+    status or (status, entries); unmatched queries get `default_status`.
+    `delay_seconds` sleeps before returning."""
 
     name = "mock"
 
@@ -565,122 +402,29 @@ class MockDictionaryProvider(DictionaryProvider):
                              source=self.name, entries=tuple(entries))
 
 
-# ===========================================================================
-# formerly tdk_parser.py -- hierarchical Turkish morphological parser for
-# the TDK Checker tool.
-# ===========================================================================
-
-"""Hierarchical Turkish morphological "parser" for the TDK Checker tool:
-given an arbitrary token, proposes a root/lemma, an ordered list of
-suffix segments, a part-of-speech-aware category, and a human-readable
-explanation of every proposed boundary -- for display and (by the user)
-manual correction in the TDK Checker window.
-
-Why not flat character-by-character suffix stripping
---------------------------------------------------------------------------
-The previous version of this module picked among candidate stem/suffix
-splits using `mixed_reranker.select_best_analysis`'s
-"most suffix segments" strategy -- correct for that module's own purpose
-(maximizing MIXED-candidate evidence), but wrong here: it would pick
-"fil" + "m" + "in" over "film" + "in" for "filmin" (more segments, but
-the wrong root), and independently, calling `mixed_reranker.
-enumerate_candidate_analyses` at its DEFAULT verbal level (Phase 4C-1)
-never even considers past/evidential/progressive/future tense at all
-(those are Phase 4B/4E additions), so "sürdü" was never recognized as
-"sür" + "dü" (an atomic past-tense suffix) and fell through to a nominal
-single-character accusative peel ("sürd" + "ü") instead.
-
-This module fixes both problems with its own, purpose-built ranking and,
-for verb tense/aspect/mood specifically, its own STRUCTURED suffix table
-(`VERB_TAM_ENTRIES`/`VERB_PERSON_ENTRIES` below) -- atomic, full
-vowel-harmony-variant surface forms (e.g. "dü" is one past-tense suffix,
-never decomposed into "d" + "ü"; "-Iyor" is represented with all four
-harmony variants, not just the bare consonant-final form
-`mixed_reranker`'s own experimental table happens to cover). Nominal
-morphology (plural/possessive/case) is NOT reimplemented -- it is already
-correct and already hierarchical in `cs_pipeline`'s existing tables
-(peeled case -> possessive -> plural -> derivational from the right,
-which read left-to-right IS "root -> derivational -> plural -> possessive
--> case"); this module reuses that read-only via
-`mixed_reranker.enumerate_candidate_analyses` and only replaces the
-SELECTION policy among the candidates it enumerates.
-
-Selection policy (see `_score_candidate`)
---------------------------------------------------------------------------
-There is deliberately NO hard "if the whole token is in the lexicon, never
-split it" rule. An earlier version of this module had exactly that as a
-first-priority short-circuit, and it was wrong: `resources/frequent_tr_
-words.txt` is a CORPUS FREQUENCY list, not a lemma list, so it contains
-huge numbers of independently-attested INFLECTED surface forms too (e.g.
-"geldi", "sürdü", "filmin" all appear in it in their own right). A
-membership-only check therefore blocked the split for exactly the
-inflected forms this parser most needs to split.
-
-Instead, "the whole token, unsplit" is generated as one more candidate
-and competes on equal footing, in the SAME additively-scored pool, against
-every split candidate (from `mixed_reranker.enumerate_candidate_analyses`,
-nominal + its own experimental verbal fallback, PLUS this module's own
-structured verb TAM/person table):
-     - stem attested in the top-1000-frequency Turkish lexicon: strong
-       bonus (a real, common root -- not merely an attested SURFACE FORM;
-       frequency word lists contain inflected forms too, e.g. "filmi",
-       so raw lexicon membership alone is not enough to prefer "film"
-       over "filmi" -- frequency RANK is what actually disambiguates it).
-     - stem attested anywhere in the full Turkish lexicon: smaller bonus.
-     - stem attested in the English lexicon (and not Turkish): a
-       comparable bonus, for genuine English-root-plus-Turkish-suffix
-       tokens (e.g. "cloudumuza").
-     - this module's own structured verb match: a structural bonus
-       (well-formed, atomic tense/aspect/mood +/- person suffix is
-       inherently stronger evidence than an arbitrary leftover
-       character), stacked with mixed_reranker's own "verbal"-source
-       candidates at a smaller bonus, and with a comparable (smaller)
-       bonus for a nominal split whose EVERY segment is a recognized
-       Turkish case/possessive/plural/derivational suffix -- this is
-       what lets a genuine split ("ev" + "ler") outscore an unsplit
-       reading of a merely-frequent inflected surface form ("evler").
-       The unsplit "whole token" candidate itself never receives this
-       bonus, since it makes no structural claim at all.
-     - longer stem: a modest bonus (the tie-break within an otherwise
-       equally-well-evidenced group).
-     - each single-character segment: a penalty (never an outright
-       rejection -- some single-character Turkish suffixes are entirely
-       legitimate, e.g. dative "-e" in "ev-e", and remain selectable when
-       no better-evidenced alternative exists).
-     - vowel-harmony agreement between the stem's last vowel and the
-       first proposed segment's first vowel: a small bonus/penalty (soft,
-       not a hard rejection, since documented loanword exceptions to
-       vowel harmony exist in Turkish, e.g. "saat-ler").
-   The highest-scoring candidate wins; ties break on earliest split
-   position for determinism. If the winning candidate is the unsplit
-   "whole token" one, the result category depends on whether it is itself
-   lexicon-confirmed (`full_turkish_lexical_item`) or not (an unconfirmed,
-   unanalyzable token falls back to `invalid_parser_proposal`).
-
-This module never decides a label. It never touches `cs_pipeline.py` or
-`mixed_reranker.py`. Nothing here is a statistically calibrated model --
-every score is a deterministic, explainable point total, exactly like
-every other evidence layer in this codebase.
-"""
+# ---------------------------------------------------------------------------
+# Turkish morphological parser
+#
+# Proposes a root, ordered suffix segments, a category and per-boundary
+# explanations for user review; never assigns a language label.
+#
+# Candidates: reranking's nominal/verbal enumeration, this module's atomic
+# VERB_TAM/VERB_PERSON tables, and the unsplit token. All compete in one
+# additive score (_score_candidate). There is deliberately no "whole token
+# in lexicon -> never split" rule: the frequency lexicons contain inflected
+# surface forms ("geldi", "filmin"), so membership alone cannot decide.
+# Score terms: stem lexicon tier/rank, structural bonus for an atomic
+# TAM(+person) match or all-valid nominal segments, longer stem, penalty per
+# single-character segment, soft vowel-harmony agreement. Ties break on
+# stem length. Not a calibrated model.
+# ---------------------------------------------------------------------------
 
 
 MIN_ROOT_LEN = 2
 
-# mixed_reranker's own "verbal" fallback table is a recall-oriented,
-# non-atomic candidate generator built for MIXED-evidence purposes (see
-# module docstring) -- it will happily propose 2-character coincidental
-# stems (e.g. "ka" + "le" + "m" for "kalem", a real base noun with no
-# suffix at all). This module's own structured VERB_TAM_ENTRIES table
-# already covers every required atomic tense/aspect/mood form (down to a
-# 2-character root, e.g. "gel" is already 3, but the table itself allows
-# MIN_ROOT_LEN); the looser, non-atomic "verbal" fallback is trusted only
-# for stems of 3+ characters, to keep it from out-scoring a genuine
-# unsplit base word on a spurious short coincidental match.
+# reranking's non-atomic verbal fallback proposes coincidental short stems
+# ("ka"+"le"+"m" for "kalem"); trust it only for stems of 3+ characters.
 MR_VERBAL_MIN_ROOT_LEN = 3
-
-# ---------------------------------------------------------------------------
-# Vowel harmony (soft scoring signal only -- see module docstring)
-# ---------------------------------------------------------------------------
 
 FRONT_VOWELS = set("eiöü")
 BACK_VOWELS = set("aıou")
@@ -698,20 +442,15 @@ def _first_vowel(s: str) -> Optional[str]:
 
 
 def vowel_harmony_consistent(stem: str, first_segment: str) -> Optional[bool]:
-    """Two-way (front/back) vowel harmony agreement between `stem`'s last
-    vowel and `first_segment`'s first vowel. Returns None (indeterminate,
-    never penalized) when either side has no vowel to compare."""
+    """Front/back agreement between the stem's last vowel and the segment's
+    first vowel; None when either side has no vowel."""
     sv, fv = _last_vowel(stem), _first_vowel(first_segment)
     if sv is None or fv is None:
         return None
     return (sv in FRONT_VOWELS) == (fv in FRONT_VOWELS)
 
 
-# ---------------------------------------------------------------------------
-# Structured suffix entries -- tdk_parser's OWN table, additional to (never
-# replacing) mixed_reranker.py's tables. Covers verb tense/aspect/mood with
-# full vowel-harmony surface-form variants, atomically (never split further).
-# ---------------------------------------------------------------------------
+# Atomic verb TAM/person suffix entries with harmony variants; additional to reranking's tables.
 
 @dataclass(frozen=True)
 class SuffixEntry:
@@ -753,19 +492,12 @@ VERB_PERSON_ENTRIES: Tuple[SuffixEntry, ...] = (
     SuffixEntry("-lAr", "third_plural", "verb", ("lar", "ler"), True, False,
                 ("past_definite", "evidential_past", "progressive", "future"), "3rd person plural agreement"),
 )
-# Third person singular is zero-marked in Turkish -- deliberately no entry:
-# a bare TAM suffix with nothing following it already IS the complete 3sg
-# form (e.g. "sür-dü" = "(s/he/it) surfed", no additional suffix exists to
-# invent). See module docstring.
+# 3sg is zero-marked: deliberately no entry (a bare TAM suffix is already the complete 3sg form).
 
 
 def _enumerate_structured_verb_candidates(token_l: str) -> List[Tuple[str, Tuple[str, ...], Tuple[SuffixEntry, ...]]]:
-    """Every (stem, segments, suffix_entries) triple obtainable by matching
-    an atomic VERB_TAM_ENTRIES form, optionally followed by an atomic
-    VERB_PERSON_ENTRIES form whose `valid_predecessor_categories` allows
-    it, with FULL consumption of the remainder. Never matches a bare
-    single character as if it were a tense suffix -- every TAM surface
-    form is 2+ characters by construction."""
+    """(stem, segments, entries) for an atomic TAM form, optionally followed by
+    an allowed person form, consuming the whole remainder."""
     out = []
     n = len(token_l)
     for split in range(MIN_ROOT_LEN, n):
@@ -784,11 +516,7 @@ def _enumerate_structured_verb_candidates(token_l: str) -> List[Tuple[str, Tuple
     return out
 
 
-# ---------------------------------------------------------------------------
-# Nominal segment classification (read-only reuse of cs_pipeline's existing
-# suffix tables, purely for explanatory labeling -- no new nominal suffix
-# invented, no change to which splits are considered valid).
-# ---------------------------------------------------------------------------
+# Read-only reuse of cs_pipeline's suffix tables to label nominal segments.
 
 def _classify_nominal_segment(segment: str) -> Tuple[str, str]:
     seg_l = segment.lower()
@@ -811,10 +539,6 @@ def _classify_nominal_segment(segment: str) -> Tuple[str, str]:
     return "unrecognized", "unrecognized segment"
 
 
-# ---------------------------------------------------------------------------
-# Unified candidate model + scoring
-# ---------------------------------------------------------------------------
-
 @dataclass(frozen=True)
 class SegmentExplanation:
     segment: str
@@ -826,14 +550,9 @@ class SegmentExplanation:
         return {"segment": self.segment, "category": self.category, "valid": self.valid, "rule": self.rule}
 
 
-# When the winning split's score beats the unsplit "whole token" reading
-# by less than this margin, AND the unsplit reading is itself genuinely
-# lexicon-attested, the two readings are too close to call with confidence
-# from corpus-frequency evidence alone (e.g. "kalem" [a base noun, "pen"]
-# vs "kale"+"m" [fortress + 1sg possessive] -- both plausible, TDK lookup
-# needed to resolve). See parse_token(). Chosen well below the smallest
-# margin observed for a genuinely correct required split (kitaplarda's
-# ~140) and comfortably above the "kalem" case's ~30.
+# If the winning split beats a lexicon-attested unsplit reading by less than
+# this margin, the readings are too close to call from frequency alone
+# ("kalem" vs "kale"+"m", margin ~30; correct splits seen at >=140, e.g. "kitaplarda").
 AMBIGUITY_MARGIN = 50.0
 
 CATEGORY_FULL_LEXICAL = "full_turkish_lexical_item"
@@ -873,12 +592,8 @@ def _score_candidate(c: _Candidate) -> Tuple[float, int]:
     elif c.source == "verbal":
         score += 200.0
     elif c.source == "nominal":
-        # Per-segment (not flat) credit: at an equally-attested lexicon
-        # tier, a stem like "kitaplar" (itself an attested surface form,
-        # but really "kitap" + plural, not a root) must not out-score the
-        # fuller, genuinely-minimal decomposition "kitap" + "lar" + "da"
-        # just because it happens to be a few characters longer -- see
-        # module docstring.
+        # Per-segment credit so an attested inflected form ("kitaplar") cannot
+        # outscore "kitap"+"lar"+"da" merely by being longer.
         score += sum(90.0 for e in c.explanations if e.valid)
     score += len(c.stem) * 10.0
     score -= sum(1 for s in c.segments if len(s) == 1) * 50.0
@@ -886,10 +601,7 @@ def _score_candidate(c: _Candidate) -> Tuple[float, int]:
         score += 10.0
     elif c.harmony is False:
         score -= 5.0
-    # tie-break: earliest split position (longer stem already rewarded
-    # above; this only matters for genuine ties) -- returned separately so
-    # callers can sort deterministically without relying on Python's
-    # stable-sort behavior across equal-score floats from unrelated inputs.
+    # Returned separately so ties can be broken deterministically.
     return score, len(c.stem)
 
 
@@ -943,9 +655,7 @@ def _build_candidates(token: str, annotator) -> List[_Candidate]:
         candidates.append(_Candidate(stem, segments, cand.source, top, allw, eng, harmony,
                                       explanations, all_segments_valid=all_valid))
 
-    # "Whole token, unsplit" always competes as one more candidate in the
-    # SAME scored pool -- see module docstring for why this replaced a
-    # hard priority-0 lexicon-membership short-circuit.
+    # The unsplit whole token competes as one more scored candidate.
     top, allw, eng = _lexicon_flags(token, annotator)
     candidates.append(_Candidate(token, (), "full_token", top, allw, eng, None, ()))
 
@@ -986,10 +696,6 @@ def _categorize(candidate: Optional[_Candidate]) -> Tuple[str, str]:
         return CATEGORY_AMBIGUOUS, pos
     return CATEGORY_INVALID, pos
 
-
-# ---------------------------------------------------------------------------
-# Public result type
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class ParseResult:
@@ -1034,12 +740,8 @@ def _whole_token_fallback(token: str, reason: str) -> ParseResult:
 
 
 def parse_token(token: str, annotator) -> ParseResult:
-    """Deterministic, hierarchical Turkish morphological analysis of
-    `token` -- see module docstring for the full selection policy. Never
-    raises: any failure in the underlying analysis machinery degrades to
-    a whole-token fallback. Never assigns a language label; that remains
-    entirely manual (see cs_annotator_app.py's TDK Checker integration).
-    """
+    """Hierarchical parse of `token`. Never raises (failures degrade to a
+    whole-token fallback) and never assigns a language label."""
     if not token or not str(token).strip():
         return _whole_token_fallback(token or "", "empty token")
 
@@ -1062,10 +764,7 @@ def parse_token(token: str, annotator) -> ParseResult:
     lexicon_confirmed = best.stem_in_top or best.stem_in_all or best.stem_in_english
 
     if not best.segments and not lexicon_confirmed:
-        # The winning candidate is the unsplit whole token AND it is not
-        # itself confirmed by any lexicon -- an unanalyzable token, not a
-        # confident result. Report it the same way a truly empty candidate
-        # pool always has (whole_token_fallback / success False).
+        # Unsplit winner not confirmed by any lexicon: unanalyzable, not a confident result.
         return _whole_token_fallback(token, "no valid Turkish suffix-chain split found")
 
     source = "full_lexical_item" if (best.source == "full_token" and not best.segments) else best.source
@@ -1102,13 +801,8 @@ def parse_token(token: str, annotator) -> ParseResult:
     )
 
 
-# ---------------------------------------------------------------------------
-# Manual correction (user-edited root/segments) -- always category
-# CATEGORY_MANUAL / source "manual"; never re-validated against the
-# automatic ranking policy above (the user's explicit correction always
-# takes precedence for DISPLAY purposes; `success` only reflects whether
-# it reconstructs the token, never whether the automatic parser "agrees").
-# ---------------------------------------------------------------------------
+# Manual correction: always category MANUAL; `success` only reflects whether
+# root+segments reconstruct the token, never agreement with the automatic parser.
 
 _SPLIT_RE = re.compile(r"[+\-\s]+")
 
@@ -1142,13 +836,7 @@ def segments_from_text(token: str, root: str, segments_text: str) -> ParseResult
     )
 
 
-# ---------------------------------------------------------------------------
-# Lightweight lexicon loading for the parser only -- NOT the full
-# cs_pipeline.Annotator() (which also loads fastText and requires Stanza
-# availability). Reading two plain word-list files is local, fast
-# (well under a second), and fully offline -- this is all parse_token
-# ever needs (turkish_freq_top/_all, english_freq_words).
-# ---------------------------------------------------------------------------
+# Reads only the word lists, avoiding a full Annotator (fastText/Stanza) load.
 
 def load_lexicon_annotator(freq_tr: str = "frequent_tr_words.txt",
                             freq_en: str = "frequent_en_words.txt"):

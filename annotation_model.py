@@ -1,7 +1,4 @@
-# annotation_model.py
-"""Pure annotation-state transformation functions, extracted from
-cs_annotator_app.py (Stage 2.1). No tkinter import — callable and testable
-independent of a running GUI."""
+"""GUI-independent annotation-state helpers (no tkinter import)."""
 
 import copy
 import json
@@ -26,17 +23,12 @@ def is_meta_row_token(tok: str) -> bool:
 
 
 def freq_normalize_token(tok: str):
-    """Normalize token for frequency counting.
-    - Casefold ON
-    - Keep hyphenated forms (umbrella-ya stays)
-    - Strip leading/trailing punctuation
-    """
+    """Casefold, strip leading/trailing punctuation, keep hyphenated forms ("umbrella-ya")."""
     if tok is None:
         return None
     s = str(tok).strip()
     if not s:
         return None
-    # strip punctuation at edges only
     s = re.sub(r"^[\W_]+|[\W__]+$", "", s, flags=re.UNICODE)
     if not s:
         return None
@@ -44,12 +36,9 @@ def freq_normalize_token(tok: str):
 
 
 def compute_word_frequencies(blocks, allowed_labels=None):
-    """Compute word frequencies from annotated blocks.
-    Returns:
-        freq: dict[token] -> total count
-        by_label: dict[token] -> {label: count}
-        total_tokens: int
-    Meta rows (MatrixLang, EmbedLang, SentenceID, blanks) are excluded.
+    """Word frequencies from annotated blocks, excluding meta rows (MatrixLang,
+    EmbedLang, SentenceID, blanks). Returns (freq, by_label, total_tokens):
+    token -> count, token -> {label: count}, int.
     """
     freq = {}
     by_label = {}
@@ -78,12 +67,9 @@ def compute_word_frequencies(blocks, allowed_labels=None):
 
 
 def sheet_rows_to_txt(rows, headers):
-    """Convert grid rows to TXT exactly like the UI: tab-separated rows.
-    Blank grid rows become blank lines (block separators).
-
-    Behavior:
-    - If idx is blank (meta rows), omit the idx column in the output.
-    - Trailing empty fields are removed.
+    """Grid rows to TXT as the UI does: tab-separated, blank grid rows become
+    blank lines (block separators). Meta rows (blank idx) omit the idx column;
+    trailing empty fields are removed.
     """
     out_lines = []
     for rr in rows:
@@ -128,10 +114,8 @@ def renumber_tokens(blocks):
 
 
 def reconstruct_text_from_blocks(blocks, extra_headers):
-    """Fallback TXT reconstruction from the Python model.
-
-    Includes extra user-defined columns. For meta rows (blank idx), idx is omitted.
-    Trailing empty fields are trimmed.
+    """Fallback TXT reconstruction from the model, including extra columns;
+    meta rows omit idx and trailing empty fields are trimmed.
     """
     renumber_tokens(blocks)
     out_blocks = []
@@ -170,13 +154,12 @@ _TOKEN_LABEL_RE = re.compile(r"^(\S+)\s+(TR|EN|MIXED|UID|NE|OTHER|LANG3)\s*$")
 
 
 def parse_annotated_text_to_blocks(text, extra_headers=None):
-    """Parse pipeline output (or a reconstructed TXT-style export) into a
-    fresh `blocks` list, exactly as `App._populate_table` has always parsed
-    it: blocks are separated by a blank line, rows are tab-separated
-    (2 fields = token, label; 3+ fields = idx, token, label, ...), with a
-    fallback to a whitespace `TOKEN LABEL` pattern for lines with no tabs.
-    `idx` is left at the placeholder 0 -- call `renumber_tokens` afterward.
-    Does not mutate `extra_headers`."""
+    """Parse pipeline output (or a reconstructed TXT export) into a fresh
+    `blocks` list, as App._populate_table does: blank-line-separated blocks,
+    tab-separated rows (2 fields = token, label; 3+ = idx, token, label, ...),
+    falling back to whitespace `TOKEN LABEL` for lines without tabs. `idx` is
+    left at 0; call `renumber_tokens` afterward. Does not mutate
+    `extra_headers`."""
     headers = list(extra_headers) if extra_headers else []
     blocks = []
     for b in text.split("\n\n"):
@@ -219,9 +202,8 @@ def resolve_row(row_index_map, sep_rows, visible_row):
 
 
 def iter_visible_rows(blocks, row_index_map, sep_rows):
-    """Iterate visible (non-separator) grid rows in sorted order, resolving
-    each to its underlying model row. Skips rows that don't resolve to a
-    model position (bidx is None)."""
+    """Visible (non-separator) grid rows in sorted order, resolved to model
+    rows; skips rows with no model position."""
     for vis_r in sorted(row_index_map.keys()):
         if vis_r in sep_rows:
             continue
@@ -233,19 +215,11 @@ def iter_visible_rows(blocks, row_index_map, sep_rows):
 
 
 def collect_label_rows(blocks, row_index_map, sep_rows, labels):
-    """Collect every TOKEN row whose label is in `labels` (an iterable of
-    label strings, e.g. {"UID"}), in corpus/visible order. Returns a list of
-    {"vis_r", "bidx", "ridx"} dicts. Used by the Confidence Review Tool for
-    its default UID list and, with a different label set, for its other
-    label-scoped views.
-
-    Meta rows (MatrixLang/EmbedLang/SentenceID) are always excluded, even
-    when their own value happens to match `labels` -- e.g. a MatrixLang row
-    is stored as {"token": "MatrixLang", "label": "TR"}, so filtering for
-    {"TR"} would otherwise incorrectly collect it as if it were a TR TOKEN.
-    This never mattered while the only caller filtered for {"UID"} (no meta
-    row's value is ever "UID"), but matters as soon as a caller filters for
-    TR/EN, so it is fixed here rather than left as a latent trap."""
+    """Every TOKEN row whose label is in `labels`, in corpus order, as
+    {"vis_r", "bidx", "ridx"} dicts. Meta rows are always excluded even if
+    their value matches (a MatrixLang row is stored as
+    {"token": "MatrixLang", "label": "TR"}, so filtering for {"TR"} would
+    otherwise collect it)."""
     wanted = set(labels)
     out = []
     for vis_r, bidx, ridx, row in iter_visible_rows(blocks, row_index_map, sep_rows):
@@ -257,10 +231,9 @@ def collect_label_rows(blocks, row_index_map, sep_rows, labels):
 
 
 def _normalize_for_match(tok, exact_surface, case_sensitive):
-    """Normalize a token for occurrence matching. Default policy (exact_surface=False,
-    case_sensitive=False): Unicode-aware casefold plus stripping only leading/trailing
-    punctuation -- the same edge-punctuation rule freq_normalize_token uses, not a
-    substring match. exact_surface=True compares the raw surface form instead (still
+    """Default (exact_surface=False, case_sensitive=False): Unicode casefold plus
+    stripping only edge punctuation, as freq_normalize_token does; not a
+    substring match. exact_surface=True compares the raw surface form (still
     subject to case_sensitive)."""
     if tok is None:
         return None
@@ -277,15 +250,10 @@ def _normalize_for_match(tok, exact_surface, case_sensitive):
 def find_occurrences(blocks, row_index_map, sep_rows, query, *,
                       case_sensitive=False, exact_surface=False,
                       label_filter=None, bidx_filter=None):
-    """Find every occurrence of `query` in corpus order. Returns a list of
-    {"vis_r", "bidx", "ridx"} dicts.
-
-    Default matching policy: normalized form (Unicode casefold + strip only
-    leading/trailing punctuation), NOT substring matching. Pass
-    exact_surface=True to compare raw surface forms instead (still subject to
-    case_sensitive). Pass bidx_filter=<int> to restrict to one sentence/block
-    ("current sentence only"). Pass label_filter=<iterable of labels> to
-    restrict to specific current labels.
+    """Every occurrence of `query` in corpus order, as {"vis_r", "bidx", "ridx"}
+    dicts. Matching follows _normalize_for_match (not substring).
+    `bidx_filter` restricts to one block; `label_filter` (iterable) to the
+    given current labels.
     """
     target = _normalize_for_match(query, exact_surface, case_sensitive)
     if not target:
@@ -307,11 +275,8 @@ def find_occurrences(blocks, row_index_map, sep_rows, query, *,
 
 
 def rows_are_adjacent_same_block(blocks, bidx, ridx_list):
-    """True iff ridx_list (2 or more row indices) are all within the same
-    block `bidx`, form a contiguous run of positions once sorted, and none
-    of them is a meta row (SentenceID/MatrixLang/EmbedLang/blank). Used to
-    gate token merging: no cross-sentence merge, no merge across a gap, and
-    no merge that would swallow a structural row."""
+    """True iff ridx_list (2+ indices) lies in block `bidx`, is contiguous once
+    sorted, and contains no meta row; gates token merging."""
     if ridx_list is None or len(ridx_list) < 2:
         return False
     if bidx is None or bidx < 0 or bidx >= len(blocks):
@@ -332,15 +297,10 @@ def rows_are_adjacent_same_block(blocks, bidx, ridx_list):
 
 
 def merge_token_rows(blocks, bidx, ridx_list, merged_token, merged_label, merged_gloss):
-    """Replace the contiguous rows at blocks[bidx][ridx] for ridx in
-    ridx_list with a single merged row. Requires
-    rows_are_adjacent_same_block(blocks, bidx, ridx_list) to be True --
-    raises ValueError otherwise (no cross-sentence merge, no merge across a
-    gap, no merge that includes a meta row). Caller must call
-    renumber_tokens(blocks) afterward. Never infers the merged label or
-    gloss -- both must be supplied explicitly by the caller (the UI's
-    confirmation dialog), matching the "do not automatically infer the
-    merged label" requirement."""
+    """Replace the contiguous rows ridx_list in blocks[bidx] with one merged
+    row. Raises ValueError unless rows_are_adjacent_same_block(...). The merged
+    label and gloss are never inferred; the caller supplies them and must call
+    renumber_tokens(blocks) afterward."""
     if not rows_are_adjacent_same_block(blocks, bidx, ridx_list):
         raise ValueError(
             "rows to merge must be 2+, contiguous, in the same sentence, "
@@ -358,12 +318,9 @@ def merge_token_rows(blocks, bidx, ridx_list, merged_token, merged_label, merged
 
 
 def build_grid_view(blocks, extra_headers, skip_separator_after_empty_block):
-    """Build tksheet-ready row data plus row_index_map/sep_rows from blocks.
-    Returns (data, row_index_map, sep_rows).
-
-    A separator row is inserted after every block except the last.
-    If skip_separator_after_empty_block is True, that separator is
-    additionally skipped when the block itself has no rows.
+    """tksheet-ready (data, row_index_map, sep_rows) from blocks. A separator row
+    follows every block except the last; with skip_separator_after_empty_block
+    it is also skipped after a block with no rows.
     """
     data = []
     row_index_map = {}
@@ -396,43 +353,27 @@ def build_grid_view(blocks, extra_headers, skip_separator_after_empty_block):
 # ---------------------------------------------------------------------------
 # Multiple annotation datasets
 #
-# A project is a list of independent "dataset" dicts plus which one is
-# active. Each dataset dict has exactly these keys:
-#   id             -- stable internal string id (never shown in the UI)
-#   name           -- user-visible name, e.g. "Data 1"
-#   source_text    -- the complete raw input text this dataset was built from
-#   blocks         -- the annotation blocks (same shape as the single-dataset
-#                      `blocks` list documented in docs/file-formats.md)
-#   extra_headers  -- this dataset's user-added grid columns
-#   source_filename -- optional: the basename (e.g. "corpus.txt") of the
-#                      file this dataset's source_text was read from (Add
-#                      New Data -> Open New File), for display/reference
-#                      only. May be None/absent. Deliberately NEVER a full
-#                      path: an absolute path can expose the user's account
-#                      name and local directory structure if the project
-#                      file is shared, is non-portable, and provides no
-#                      reopening benefit since source_text is already the
-#                      authoritative, fully self-contained content. Nothing
-#                      about reopening a project ever depends on the
-#                      original file still existing on disk, still less at
-#                      that same path. `make_dataset` defensively takes only
-#                      os.path.basename() of whatever is passed here, so a
-#                      full path can never end up stored even by accident.
-# `make_dataset` always deep-copies `blocks`/`extra_headers` so two datasets
-# never share a mutable row dict, even if built from the same source.
+# A project is a list of independent dataset dicts plus the active index. Keys:
+#   id               stable internal id (never shown)
+#   name             user-visible name, e.g. "Data 1"
+#   source_text      complete raw input the dataset was built from
+#   blocks           annotation blocks (shape in docs/file-formats.md)
+#   extra_headers    user-added grid columns
+#   source_filename  optional display-only basename of the file source_text came
+#                    from. Never a full path: it could expose the user's account
+#                    name and directory layout in a shared project, and reopening
+#                    never depends on the file (source_text is self-contained).
+#                    make_dataset takes os.path.basename() of whatever is passed.
+# make_dataset deep-copies blocks/extra_headers so datasets never share row dicts.
 # ---------------------------------------------------------------------------
 
 _DEFAULT_DATASET_NAME_RE = re.compile(r"^Data (\d+)$")
 
 
 def make_dataset(name, source_text="", blocks=None, extra_headers=None, dataset_id=None, source_filename=None):
-    """Build a new, fully independent dataset dict. `blocks` and
-    `extra_headers` are deep-copied so the new dataset never shares mutable
-    row dicts with whatever list was passed in. `source_filename` is
-    optional, display-only metadata -- see the module docstring above. Only
-    `os.path.basename(source_filename)` is ever stored, even if a full path
-    is passed in, so this function itself is the single choke point that
-    guarantees a full path can never leak into a saved project."""
+    """New independent dataset dict; `blocks`/`extra_headers` are deep-copied.
+    Only os.path.basename(source_filename) is stored, so a full path can never
+    leak into a saved project."""
     return {
         "id": dataset_id or uuid.uuid4().hex,
         "name": str(name),
@@ -444,9 +385,9 @@ def make_dataset(name, source_text="", blocks=None, extra_headers=None, dataset_
 
 
 def next_default_dataset_name(existing_names):
-    """"Data N" for the smallest N whose default name isn't already used by
-    an *auto-generated* name in `existing_names` (a user-renamed dataset
-    doesn't reserve a slot). Always returns "Data 1" for an empty project."""
+    """"Data N" for the smallest N not used by an auto-generated name in
+    `existing_names` (renamed datasets reserve nothing); "Data 1" for an empty
+    project."""
     max_n = 0
     for n in existing_names or []:
         m = _DEFAULT_DATASET_NAME_RE.match(str(n).strip())
@@ -456,41 +397,31 @@ def next_default_dataset_name(existing_names):
 
 
 def sanitize_dataset_filename(name):
-    """Filesystem-safe slug derived from a dataset name, for use as (part
-    of) an export filename. Never returns an empty string."""
+    """Filesystem-safe slug from a dataset name for export filenames; never empty."""
     s = str(name or "").strip()
     s = re.sub(r"[^\w\-]+", "_", s, flags=re.UNICODE).strip("_")
     return s or "dataset"
 
 
-# `.trenproj` schema version history:
+# `.trenproj` schema versions:
 #   1 -- single implicit dataset: top-level "blocks"/"input_text"/"extra_headers".
-#        REQUIRES this exact shape -- a "datasets" key present alongside
-#        "version": 1 is rejected as malformed, never silently accepted.
-#   2 -- multiple datasets: top-level "datasets" (list) + "active_dataset_index".
-#        REQUIRES a non-empty "datasets" list.
-# A project file with no "version" key at all predates versioning and is
-# treated as version 1 (so it too requires the legacy shape). The dispatch
-# is version-driven, not shape-driven: datasets_from_payload never infers
-# the schema from which keys happen to be present. Bump
-# CURRENT_PROJECT_SCHEMA_VERSION and extend SUPPORTED_PROJECT_SCHEMA_VERSIONS
-# (plus datasets_from_payload below) when the schema changes again -- never
-# reinterpret an unrecognized version silently.
+#        A "datasets" key alongside "version": 1 is rejected as malformed.
+#   2 -- top-level "datasets" (non-empty list) + "active_dataset_index".
+# A file with no "version" key predates versioning and is treated as 1.
+# Dispatch is version-driven, never inferred from which keys are present. When
+# the schema changes, bump CURRENT_PROJECT_SCHEMA_VERSION and extend
+# SUPPORTED_PROJECT_SCHEMA_VERSIONS and datasets_from_payload; never reinterpret
+# an unknown version.
 CURRENT_PROJECT_SCHEMA_VERSION = 2
 SUPPORTED_PROJECT_SCHEMA_VERSIONS = (1, 2)
 
 
 def datasets_to_payload(datasets, active_index):
-    """Build the `.trenproj`-ready portion of a project payload for a list
-    of dataset dicts: "version" (always CURRENT_PROJECT_SCHEMA_VERSION for a
-    freshly-written save), "datasets", and "active_dataset_index". Merge the
-    result into the rest of the save payload (name, cfg, ...). Deliberately
-    does NOT include each dataset's session-only undo stacks (see
-    App._sync_active_dataset_from_live) -- positional undo/redo records are
-    never persisted to disk, only kept in memory for the current session.
-    "source_filename" is only written when set -- it's optional, display-
-    only metadata (see the module docstring above; a basename only, NEVER a
-    full path), never required to reopen the project."""
+    """`.trenproj`-ready part of a project payload: "version"
+    (CURRENT_PROJECT_SCHEMA_VERSION), "datasets" and "active_dataset_index";
+    merge it into the rest of the save payload. Session-only undo stacks are
+    deliberately not persisted (see App._sync_active_dataset_from_live).
+    "source_filename" (basename only) is written only when set."""
     out_datasets = []
     for ds in datasets:
         item = {
@@ -502,12 +433,7 @@ def datasets_to_payload(datasets, active_index):
         }
         source_filename = ds.get("source_filename")
         if source_filename:
-            # os.path.basename is a defensive no-op here in the normal
-            # case (ds["source_filename"] already went through
-            # make_dataset's own basename-ing), but this is the last line
-            # of defense before anything gets written to disk -- a full
-            # path must never survive to a saved .trenproj no matter how
-            # it ended up on the in-memory dataset dict.
+            # Defensive: a full path must never reach a saved .trenproj, however it got onto the in-memory dict.
             item["source_filename"] = os.path.basename(source_filename)
         out_datasets.append(item)
     return {
@@ -518,31 +444,16 @@ def datasets_to_payload(datasets, active_index):
 
 
 def datasets_from_payload(payload):
-    """Rebuild a list of independent dataset dicts (see module docstring
-    above) plus an active index from a loaded `.trenproj` payload.
+    """Rebuild independent dataset dicts and the active index from a loaded
+    `.trenproj` payload, driven strictly by the declared version (never by
+    payload shape): a missing "version" means 1; an invalid one (non-int, bool
+    or unsupported) raises ValueError. Version 1 requires the legacy
+    single-dataset shape and becomes one dataset "Data 1" (a "datasets" key is
+    rejected as malformed). Version 2 requires a non-empty "datasets" list.
 
-    Strict version-driven policy (the shape of the payload never overrides
-    what its declared version requires):
-
-    - A missing "version" key defaults to 1 (pre-versioning projects).
-    - An invalid version (non-int, bool, or outside
-      SUPPORTED_PROJECT_SCHEMA_VERSIONS) raises ValueError immediately,
-      rather than guessing at its shape.
-    - Version 1 REQUIRES the legacy single-dataset shape (top-level
-      "blocks"/"input_text"/"extra_headers") and becomes exactly one
-      dataset named "Data 1". A version-1 payload that also contains a
-      "datasets" key is rejected as malformed -- version 1 never takes the
-      multi-dataset path, even if it happens to have that key (e.g. a
-      hand-edited or half-migrated file); there is no "detect by shape"
-      fallback here.
-    - Version 2 REQUIRES a non-empty "datasets" list; a version-2 payload
-      missing "datasets" is rejected as malformed.
-
-    Raises ValueError with a human-readable message on any malformed
-    structure so the caller can show an error dialog instead of crashing or
-    silently discarding data. Returned datasets never share row dicts with
-    the payload or each other, even if the payload itself aliased them.
-    Never mutates `payload`."""
+    Raises ValueError with a readable message on any malformed structure.
+    Returned datasets never share row dicts with the payload or each other;
+    `payload` is not mutated."""
     version = payload.get("version", 1)
     if not isinstance(version, int) or isinstance(version, bool):
         raise ValueError(f"Invalid project schema version: {version!r}.")
@@ -601,14 +512,8 @@ def datasets_from_payload(payload):
         if source_filename is not None and not isinstance(source_filename, str):
             raise ValueError(f"dataset #{i + 1} 'source_filename' must be a string.")
         if source_filename is None:
-            # Best-effort migration for a development-only payload that
-            # still used the old "source_path" field name (predating this
-            # privacy fix): take only its basename into memory, never the
-            # raw path itself, and never write "source_path" back out on
-            # the next save (datasets_to_payload no longer knows that key
-            # exists). A malformed legacy value is ignored safely rather
-            # than rejected -- it's optional fallback data, not a
-            # structurally required field.
+            # Migrate a development-only "source_path" field: keep only its basename in
+            # memory, never write it back; a malformed value is ignored (optional data).
             legacy_source_path = item.get("source_path")
             if isinstance(legacy_source_path, str) and legacy_source_path:
                 source_filename = os.path.basename(legacy_source_path)
@@ -628,11 +533,9 @@ def datasets_from_payload(payload):
 
 
 def blocks_to_export_rows(blocks, extra_headers):
-    """Grid-style export rows -- [idx, token, label, gloss, *extras] per
-    row, with a blank separator row between (but not after) each block --
-    for exporting a dataset that is not the currently-rendered grid (so
-    there is no live tksheet to read from). Renumbers a deep copy; never
-    mutates the `blocks` argument."""
+    """Grid-style export rows [idx, token, label, gloss, *extras], with a blank
+    separator row between blocks, for a dataset that is not the rendered grid.
+    Renumbers a deep copy."""
     extra_headers = list(extra_headers or [])
     work = copy.deepcopy(blocks or [])
     renumber_tokens(work)
@@ -654,26 +557,20 @@ def blocks_to_export_rows(blocks, extra_headers):
 # ---------------------------------------------------------------------------
 # CoNLL / JSONL export
 #
-# Both formats are TREN-specific (documented in README.md as "TREN
-# CoNLL-style", explicitly NOT CoNLL-U or any external shared-task format).
-# Both use 1-based per-sentence token indices (restarting at 1 in every
-# sentence/block), not the global running `idx` used by the grid/TXT/CSV
-# export -- this matches conventional CoNLL-style tooling and keeps a single
-# sentence's rows self-describing without needing the whole document.
+# Both formats are TREN-specific ("TREN CoNLL-style", not CoNLL-U) and use
+# 1-based token indices that restart in every sentence, unlike the global idx
+# of the grid/TXT/CSV export.
 # ---------------------------------------------------------------------------
 
 
 def _export_lexical_rows(rows):
-    """Real token rows of a block, in order, excluding meta rows
-    (SentenceID/MatrixLang/EmbedLang/blank)."""
+    """Real token rows of a block (meta rows excluded)."""
     return [r for r in rows if not is_meta_row_token(r.get("token", ""))]
 
 
 def _export_sentence_meta(rows, fallback_sent_id):
-    """(sent_id, matrix_lang, embedded_lang) for a block, read from its meta
-    rows. sent_id falls back to `fallback_sent_id` (the block's 1-based
-    position) when no SentenceID row is present; matrix_lang/embedded_lang
-    fall back to "" when their meta row is absent (never fabricated)."""
+    """(sent_id, matrix_lang, embedded_lang) from a block's meta rows; sent_id
+    falls back to `fallback_sent_id`, the languages to "" (never fabricated)."""
     sent_id = str(fallback_sent_id)
     matrix_lang = ""
     embedded_lang = ""
@@ -698,9 +595,7 @@ def _conll_field(value):
 
 
 def blocks_to_conll(blocks):
-    """Serialize `blocks` to TREN's CoNLL-style export text (see module
-    docstring above). Does not mutate `blocks`. Deterministic for identical
-    input. Blocks with zero rows (transient empty blocks) are skipped."""
+    """TREN CoNLL-style export text; skips empty blocks; does not mutate `blocks`."""
     lines = ["# TREN CoNLL export", "# columns = TokenIndex Token Label Gloss"]
     sentence_chunks = []
     for bidx, rows in enumerate(blocks or []):
@@ -727,9 +622,7 @@ def blocks_to_conll(blocks):
 
 
 def blocks_to_jsonl_records(blocks, dataset_name):
-    """List of plain-dict sentence records (see blocks_to_jsonl for the
-    schema), one per non-empty block, in block order. Does not mutate
-    `blocks`."""
+    """Plain-dict sentence records, one per non-empty block, in block order."""
     records = []
     for bidx, rows in enumerate(blocks or []):
         if not rows:
@@ -758,10 +651,8 @@ def blocks_to_jsonl_records(blocks, dataset_name):
 
 
 def blocks_to_jsonl(blocks, dataset_name):
-    """Serialize `blocks` to JSONL text: one `json.dumps` object per
-    non-empty sentence/block, one physical line each, UTF-8, Unicode
-    preserved (ensure_ascii=False). Does not mutate `blocks`. Deterministic
-    for identical input."""
+    """JSONL text: one json.dumps object per non-empty block, one line each
+    (UTF-8, ensure_ascii=False). Does not mutate `blocks`."""
     records = blocks_to_jsonl_records(blocks, dataset_name)
     lines = [json.dumps(rec, ensure_ascii=False) for rec in records]
     return "\n".join(lines) + ("\n" if lines else "")

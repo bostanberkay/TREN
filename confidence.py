@@ -1,83 +1,31 @@
-# confidence.py
-"""Production-safe, deterministic confidence and uncertainty layer.
+"""Read-only confidence/uncertainty layer computed after the full pipeline
+(Annotator.annotate() -> reranking.apply_reranker() -> Matrix/Embedded Language
+consistency) has decided each token's final label.
 
-Purpose
---------------------------------------------------------------------------
-For every already-labeled token (i.e. AFTER the full, unmodified production
-pipeline -- Annotator.annotate() -> reranking.apply_reranker()
-[frozen Phase 5F reranker + residual verbal detector + UID->TR resolver] ->
-Matrix/Embedded Language consistency -- has already run and decided a final
-label), this module computes a per-token confidence record: how much
-converging/conflicting evidence supports the label the pipeline already
-chose. It NEVER changes a label. It is a purely observational, read-only
-second pass over data the production pipeline already produced.
+Guarantees: never mutates a label, never retrains or rethresholds the frozen
+reranker, never adds an NER model (the only NER call, gated behind
+`compute_entity_types`, reuses `annotator.ner`), and never learns from user
+corrections; output is a pure function of the token, its rule-based and final
+labels, and the annotator/cfg/bundle passed in.
 
-Hard safety guarantees (see CLAUDE.md section 2/3 and the task brief this
-module was built from):
-  - Never renames/redefines the 7-label schema.
-  - Never promotes, demotes, or otherwise mutates any token's label.
-  - Never retrains, rethresholds, or modifies the frozen Phase 5F reranker,
-    resources/models/*, or any lexicon.
-  - Never adds a new NER model -- the only NER call this module ever makes
-    (see `compute_entity_types`) reuses the SAME cached Stanza pipeline
-    object (`annotator.ner`) the production pipeline already loaded.
-  - Never learns from user corrections or persisted "review" history --
-    every score is a pure, deterministic function of the token, its labels
-    (rule-based and final), and the annotator/cfg/bundle passed in. Running
-    this module twice on identical input always produces identical output.
+NOT a statistical/calibrated confidence: `confidence_score` is an additive,
+rule-based point score and must not be reported as a probability of
+correctness. Every serialized record carries `CALIBRATION_NOTE` for this reason.
 
-NOT a statistical/calibrated confidence
---------------------------------------------------------------------------
-`confidence_score` is a deterministic, additive point score built from
-explainable rule-based evidence (lexicon membership, fastText probability,
-Turkish suffix-chain analysis, the frozen reranker's own probability/
-margin, the residual verbal detector's verdict, the UID->TR resolver's own
-evidence score, Matrix/Embedded Language consistency, and hard token-shape
-exclusions). It is NOT the output of a model trained/validated against a
-held-out gold-labeled confidence dataset, and must never be presented or
-reported as a calibrated probability of correctness. Every serialized
-record below carries `CALIBRATION_NOTE` verbatim for exactly this reason.
-Calibration against a suitable gold corpus is future work (see
-docs/roadmap.md-adjacent evaluation report this module was built for).
+Evidence, all recomputed read-only via existing code: the rule-based label
+(recovered by the caller by diffing pre-reranker annotate() output against the
+final output; see `attach_confidence_to_blocks`), Turkish/English lexicons,
+fastText, Turkish suffix analysis, best-effort Stanza entity type, the frozen
+reranker's probability/margin (as `reranking._rerank_token_label` computes it),
+the residual verbal detector and UID->TR resolver verdicts, Matrix/Embed
+consistency, and token-shape exclusions (`cs_pipeline.is_other_token`, imported
+lazily to avoid pulling in stanza).
 
-Evidence sources consulted (read-only reuse of existing, already-tested
-production/experimental code -- nothing here duplicates their logic):
-  - rule-based label (recovered by diffing the pre-reranker
-    Annotator.annotate() output against the final post-pipeline output;
-    supplied by the caller, see `attach_confidence_to_blocks`)
-  - Turkish/English lexicon membership (`annotator.turkish_freq_top/_all`,
-    `annotator.english_freq_words`)
-  - fastText language/probability (`reranking.fasttext_predict_raw`,
-    itself a thin read-only adapter over `Annotator._ft_predict`)
-  - Turkish suffix-chain / morphology evidence
-    (`Annotator._has_valid_turkish_nominal_analysis`, read-only)
-  - Stanza NE evidence and entity type (best-effort only, gated behind
-    `compute_entity_types`; see `_detect_entity_type`)
-  - the frozen reranker's own probability/margin, recomputed read-only
-    exactly the way `reranking._rerank_token_label` does
-    (`reranking.classify_candidate`/`build_structured_feature_dict` +
-    `bundle.model.predict_proba`) -- never touches the frozen model itself
-  - the residual verbal detector's verdict
-    (`reranking.evaluate_residual_verbal_promotion`, read-only)
-  - the UID->TR resolver's own explainable evidence/score
-    (`reranking.decide`, read-only)
-  - MatrixLang/EmbedLang sentence-level consistency
-  - token-shape hard exclusions (URLs, mentions, hashtags, numbers, codes,
-    emoji, apostrophes -- `cs_pipeline.is_other_token`, imported lazily
-    exactly like reranking.py's UID->TR resolver section already does, so importing this module
-    does not force `cs_pipeline`'s module-level `import stanza`)
-
-Persistence
---------------------------------------------------------------------------
-`attach_confidence_to_blocks` stores one JSON-serializable dict at
-`row["confidence"]` per non-meta token row, plus `row["reviewed"]` (a plain
-bool, defaulted to False, set True only by the review tool's Apply action).
-Both are ordinary extra keys on the same row dicts `.trenproj` already
-round-trips verbatim (see `annotation_model.datasets_to_payload`) -- no
-schema version bump, no change to TXT/CSV/CoNLL/JSONL export, and a legacy
-project loaded without a "confidence" key on its rows is handled
-gracefully everywhere in this module (treated as "not yet computed", never
-a crash) -- see `get_confidence`/`is_reviewed` below.
+Persistence: `row["confidence"]` (JSON dict) and `row["reviewed"]` (bool,
+default False, set by the review tool's Apply) are ordinary row keys that
+`.trenproj` already round-trips; rows without them (legacy projects) are
+treated as "not yet computed" by `get_confidence`/`is_reviewed`. No schema
+bump or export change.
 """
 
 import re
@@ -95,11 +43,7 @@ CALIBRATION_NOTE = (
     "calibrated against a held-out gold-labeled confidence corpus."
 )
 
-# ---------------------------------------------------------------------------
-# Configurable thresholds (requirement: "Use configurable thresholds").
-# HIGH: score >= thresholds["HIGH"]; MEDIUM: thresholds["MEDIUM"] <= score <
-# thresholds["HIGH"]; LOW: score < thresholds["MEDIUM"].
-# ---------------------------------------------------------------------------
+# Score bands: HIGH >= thresholds["HIGH"]; MEDIUM >= thresholds["MEDIUM"]; otherwise LOW.
 DEFAULT_THRESHOLDS = {"HIGH": 0.85, "MEDIUM": 0.60}
 
 BAND_HIGH = "HIGH"
@@ -108,17 +52,12 @@ BAND_LOW = "LOW"
 
 ALL_LABELS = ("TR", "EN", "MIXED", "UID", "NE", "OTHER", "LANG3")
 
-# Reranker-candidate-eligible predicted labels, re-derived from
-# reranking's own frozen constants (SCHEMA_LABELS minus
-# NON_CANDIDATE_LABELS) rather than duplicating the set by hand -- stays in
-# sync automatically if either constant ever changes.
+# Reranker-candidate-eligible labels, derived from reranking's constants so they stay in sync.
 _RERANKER_ELIGIBLE_LABELS = frozenset(mr.SCHEMA_LABELS) - mr.NON_CANDIDATE_LABELS
 
-# Mirrors reranking._RESIDUAL_VERBAL_ELIGIBLE_LABELS /
-# _UID_TR_RESOLVER_ELIGIBLE_LABELS (not imported directly, to avoid any
-# import-time coupling to that module's private names -- these are the
-# same two frozensets, restated here as this module's own read-only
-# eligibility gates for evidence *reconstruction*, not label mutation).
+# Same sets as reranking._RESIDUAL_VERBAL_ELIGIBLE_LABELS /
+# _UID_TR_RESOLVER_ELIGIBLE_LABELS, restated to avoid depending on that
+# module's private names.
 _RESIDUAL_VERBAL_ELIGIBLE_LABELS = frozenset({"UID", "TR"})
 _UID_TR_RESOLVER_ELIGIBLE_LABELS = frozenset({"UID"})
 
@@ -190,14 +129,10 @@ def _gather_common_evidence(token: str, annotator, cfg) -> _CommonEvidence:
 
 
 def _reranker_probability(token: str, rule_label: str, annotator, cfg, bundle) -> Optional[float]:
-    """Re-derive the frozen Phase 5F reranker's own probability for `token`
-    at its rule-based label, exactly the way
-    reranking._rerank_token_label does internally -- read-only,
-    never touches the frozen model/threshold. Returns None if `bundle` is
-    unavailable, `rule_label` was never candidate-eligible, or any step
-    fails (mirrors _rerank_token_label's own fail-safe contract: a failure
-    here must never interrupt confidence computation for the rest of the
-    token/block)."""
+    """The frozen reranker's probability for `token` at its rule-based label,
+    recomputed read-only as reranking._rerank_token_label does. None if
+    `bundle` is unavailable, `rule_label` was never candidate-eligible, or any
+    step fails."""
     if bundle is None or rule_label not in _RERANKER_ELIGIBLE_LABELS:
         return None
     try:
@@ -217,11 +152,9 @@ def _reranker_probability(token: str, rule_label: str, annotator, cfg, bundle) -
 
 
 def _residual_verbal_evidence(token: str, rule_label: str, annotator, cfg) -> Optional[Tuple[bool, str]]:
-    """Re-derive reranking.evaluate_residual_verbal_promotion's verdict
-    for `token`, read-only, only when `rule_label` was ever eligible for
-    that stage in production (mirrors
-    reranking._RESIDUAL_VERBAL_ELIGIBLE_LABELS). Returns
-    (promote, reason) or None if not eligible / evaluation failed."""
+    """Verdict of reranking.evaluate_residual_verbal_promotion, only when
+    `rule_label` was eligible for that stage. Returns (promote, reason), or
+    None if not eligible / evaluation failed."""
     if rule_label not in _RESIDUAL_VERBAL_ELIGIBLE_LABELS:
         return None
     try:
@@ -232,11 +165,9 @@ def _residual_verbal_evidence(token: str, rule_label: str, annotator, cfg) -> Op
 
 
 def _uid_resolver_evidence(token: str, rule_label: str, annotator, cfg, matrix_lang):
-    """Re-derive reranking.decide()'s full explainable decision for
-    `token`, read-only, only when `rule_label` was ever eligible in
-    production (mirrors
-    reranking._UID_TR_RESOLVER_ELIGIBLE_LABELS). Returns a
-    ur.ResolverDecision or None if not eligible / evaluation failed."""
+    """Full decision of reranking.decide(), only when `rule_label` was eligible
+    in production. Returns a ResolverDecision, or None if not eligible /
+    evaluation failed."""
     if rule_label not in _UID_TR_RESOLVER_ELIGIBLE_LABELS:
         return None
     try:
@@ -246,17 +177,11 @@ def _uid_resolver_evidence(token: str, rule_label: str, annotator, cfg, matrix_l
 
 
 def _detect_entity_type(annotator, sentence_text: str, token: str) -> Optional[str]:
-    """Best-effort Stanza entity-type lookup for `token` within
-    `sentence_text`. Reuses the SAME cached Stanza pipeline object the
-    production pipeline already loaded (`annotator.ner`) -- never loads or
-    constructs a new NER model. This re-runs NER inference for the
-    sentence (Stanza itself keeps no per-call state affecting future
-    calls), so it is gated behind `compute_entity_types=False` by default
-    in the interactive app (see attach_confidence_to_blocks) and only
-    enabled where the extra inference cost is acceptable (e.g. an offline
-    evaluation run). Returns None on any failure, when NER was never
-    enabled for this annotator, or when no matching entity is found --
-    never raises."""
+    """Best-effort Stanza entity type of `token` within `sentence_text`,
+    reusing the already-loaded `annotator.ner`. Re-runs NER on the sentence,
+    hence off by default in the interactive app (`compute_entity_types=False`).
+    None on failure, when NER is disabled, or when nothing matches; never
+    raises."""
     try:
         if getattr(annotator, "ner", None) is None:
             return None
@@ -272,13 +197,10 @@ def _detect_entity_type(annotator, sentence_text: str, token: str) -> Optional[s
 
 def _promoted_by(rule_label: str, final_label: str, reranker_prob: Optional[float],
                   bundle, residual, uid_decision) -> Optional[str]:
-    """Deterministically identify which production stage (if any) changed
-    `token`'s label from `rule_label` to `final_label`, by re-checking each
-    stage's own real condition in the same order production applies them
-    (frozen reranker -> residual verbal detector -> UID->TR resolver). This
-    never guesses: every branch below reuses evidence already recomputed
-    read-only by this module. Returns None when the label was never
-    changed (rule_label == final_label)."""
+    """Which production stage (if any) changed `token` from `rule_label` to
+    `final_label`, found by re-checking each stage's condition in production
+    order (reranker -> residual verbal -> UID->TR). None when the label is
+    unchanged."""
     if rule_label == final_label:
         return None
     if final_label == "MIXED":
@@ -294,12 +216,9 @@ def _promoted_by(rule_label: str, final_label: str, reranker_prob: Optional[floa
     return "unknown_stage"
 
 
-# ---------------------------------------------------------------------------
-# Per-label scoring. Each function returns (score, reasons, evidence_summary)
-# -- `score` unclamped (clamped to [0, 1] by the caller), `reasons` a list of
-# short machine-stable strings explaining any uncertainty, `evidence_summary`
-# a list of short human-readable evidence descriptions.
-# ---------------------------------------------------------------------------
+# Per-label scoring. Each function returns (score, reasons, evidence_summary):
+# an unclamped score (the caller clamps to [0, 1]), short machine-stable
+# reason strings, and human-readable evidence descriptions.
 
 def _score_other(ev: _CommonEvidence, **_) -> Tuple[float, List[str], List[str]]:
     if ev.hard_excluded:
@@ -467,9 +386,7 @@ def _score_uid(ev: _CommonEvidence, reranker_prob=None, bundle=None, residual=No
             and ev.ft_lang not in ("TR", "EN")):
         score += 0.05
         summary.append("no lexicon/suffix/fastText evidence found for any label (genuinely unresolvable)")
-    # UID is semantically "confidence below the LID threshold" -- it must
-    # never be reported as a HIGH-confidence label no matter how much
-    # corroborating "nothing else fits" evidence accumulates.
+    # UID means "below the LID threshold", so it is never reported as HIGH.
     score = min(score, 0.75)
     return score, reasons, summary
 
@@ -500,25 +417,16 @@ def compute_token_confidence(token: str, rule_label: Optional[str], final_label:
                               *, matrix_lang: Optional[str] = None, embed_lang: Optional[str] = None,
                               bundle=None, ne_entity_type: Optional[str] = None,
                               thresholds: Optional[Dict[str, float]] = None) -> ConfidenceRecord:
-    """The single entry point combining evidence gathering, per-label
-    scoring, and banding for one token. Deterministic: identical inputs
-    always produce an identical ConfidenceRecord. Never raises -- any
-    unexpected failure in an evidence sub-step is caught locally (see the
-    `_*_evidence`/`_reranker_probability` helpers) and simply omits that
-    piece of evidence rather than aborting the whole computation.
-
-    `rule_label` is the label Annotator.annotate() itself produced for this
-    token, BEFORE apply_reranker() ran (None if unknown/unavailable, e.g. a
-    manually-inserted row with no corresponding pre-rerank row -- treated
-    as "no promotion detected", never a crash).
-    """
+    """Entry point for one token: gather evidence, score per label, band.
+    Deterministic; never raises (a failing evidence sub-step just omits that
+    evidence). `rule_label` is what Annotator.annotate() produced before
+    apply_reranker(); None (unknown, e.g. a manually inserted row) means no
+    promotion detected."""
     rule_label_eff = rule_label if rule_label is not None else final_label
     try:
         ev = _gather_common_evidence(token, annotator, cfg)
     except Exception:
-        # A malformed/incomplete `annotator` (e.g. missing lexicon sets)
-        # must never crash confidence computation -- fall back to a
-        # neutral "no evidence available" reading instead.
+        # Malformed annotator (e.g. missing lexicon sets): fall back to neutral no-evidence.
         ev = _CommonEvidence(tr_top=False, tr_all=False, en_lex=False, ft_lang="", ft_prob=0.0,
                               has_suffix_analysis=False, orthographic=False,
                               has_apostrophe=("'" in token or "’" in token), hard_excluded=False)
@@ -566,10 +474,6 @@ def compute_token_confidence(token: str, rule_label: Optional[str], final_label:
     )
 
 
-# ---------------------------------------------------------------------------
-# Block/dataset-level integration
-# ---------------------------------------------------------------------------
-
 def _block_matrix_embed(rows) -> Tuple[Optional[str], Optional[str]]:
     matrix_lang = None
     embed_lang = None
@@ -589,20 +493,11 @@ def _non_meta_rows(rows):
 def compute_block_confidence(rows, rule_rows, annotator, cfg, bundle=None,
                               compute_entity_types: bool = False,
                               thresholds: Optional[Dict[str, float]] = None) -> None:
-    """Mutate `rows` (one block/sentence's list of row dicts, in the same
-    shape `annotation_model.parse_annotated_text_to_blocks` produces) in
-    place: sets `row["confidence"]` (a JSON-serializable dict, see
-    ConfidenceRecord.to_dict) and `row.setdefault("reviewed", False)` on
-    every non-meta token row.
-
-    `rule_rows` must be the SAME sentence's rows parsed from the
-    pre-reranker Annotator.annotate() output (same token order) -- used
-    only to recover each token's pre-reranker rule label by position among
-    non-meta rows. A length mismatch (should not happen in production,
-    since neither apply_reranker() nor Matrix/Embed consistency ever
-    add/remove token rows) degrades gracefully to `rule_label=None` for the
-    unmatched tail rather than raising or misaligning.
-    """
+    """Set `row["confidence"]` and `row.setdefault("reviewed", False)` in place
+    on every non-meta token row of one block. `rule_rows` is the same sentence
+    parsed from the pre-reranker output, used to recover each token's rule label
+    by position among non-meta rows; a length mismatch gives rule_label=None
+    for the unmatched tail instead of raising."""
     matrix_lang, embed_lang = _block_matrix_embed(rows)
     rule_non_meta = _non_meta_rows(rule_rows) if rule_rows else []
 
@@ -631,10 +526,7 @@ def compute_block_confidence(rows, rule_rows, annotator, cfg, bundle=None,
             )
             r["confidence"] = record.to_dict()
         except Exception as e:
-            # Never let one token's confidence computation interrupt the
-            # rest of the block/dataset -- mirrors apply_reranker()'s own
-            # fail-safe contract. The label itself (r["label"]) is never
-            # touched here regardless of this failure.
+            # One token's failure must not interrupt the rest; the label itself is never touched.
             r["confidence"] = ConfidenceRecord(
                 token=tok, rule_based_label=rule_label, final_label=final_label,
                 confidence_score=0.0, confidence_band=BAND_LOW,
@@ -647,24 +539,18 @@ def compute_block_confidence(rows, rule_rows, annotator, cfg, bundle=None,
 def attach_confidence_to_blocks(blocks, rule_blocks, annotator, cfg, bundle=None,
                                  compute_entity_types: bool = False,
                                  thresholds: Optional[Dict[str, float]] = None) -> None:
-    """Mutate `blocks` (a full dataset's list of blocks) in place, calling
-    `compute_block_confidence` for every block. `rule_blocks` must be the
-    pre-reranker parse of the SAME annotation run (same block count, same
-    per-block token order) -- see `_run_annotation_pipeline_with_confidence`
-    in cs_annotator_app.py for how the two texts are produced together.
-    A block-count mismatch degrades gracefully (extra blocks in `blocks`
-    get `rule_label=None` for every token) rather than raising."""
+    """Run compute_block_confidence for every block in place. `rule_blocks` must
+    be the pre-reranker parse of the same run; a block-count mismatch gives
+    extra blocks rule_label=None instead of raising."""
     for bidx, rows in enumerate(blocks):
         rule_rows = rule_blocks[bidx] if rule_blocks and bidx < len(rule_blocks) else []
         compute_block_confidence(rows, rule_rows, annotator, cfg, bundle=bundle,
                                   compute_entity_types=compute_entity_types, thresholds=thresholds)
 
 
-# ---------------------------------------------------------------------------
-# Read-only accessors used by the review tool / tests. Both are defensive
-# against legacy rows/projects that predate this module (no "confidence"
-# key at all) -- never raise, never fabricate a fake high-confidence result.
-# ---------------------------------------------------------------------------
+# Read-only accessors for the review tool and tests; defensive against legacy
+# rows with no "confidence" key (never raise, never fabricate a high-confidence
+# result).
 
 def get_confidence(row: dict) -> Optional[dict]:
     val = row.get("confidence")
@@ -680,18 +566,11 @@ def mark_reviewed(row: dict) -> None:
 
 
 def note_manual_edit(row: dict) -> None:
-    """Call whenever a row's label is manually changed outside the
-    automatic pipeline (e.g. the review tool's Apply action). The row's
-    existing "confidence" record (if any) was computed for the PREVIOUS
-    label and would be actively misleading if left in place (its
-    evidence_summary/uncertainty_reasons describe a label this row no
-    longer carries) -- this replaces it with a minimal, honest marker
-    instead of leaving stale text around or silently deleting the key.
-    Never recomputes real evidence inline (that would mean running the
-    frozen reranker/residual-verbal/UID-resolver inference on every
-    manual edit); a fresh, evidence-backed confidence record for the new
-    label is only ever produced by re-running the annotation pipeline.
-    Also marks the row reviewed=True. Deterministic, no I/O."""
+    """Call when a row's label is changed manually (e.g. the review tool's
+    Apply). The existing confidence record describes the previous label, so it
+    is replaced with a minimal marker rather than left stale or deleted; real
+    evidence is only recomputed by re-annotating. Also marks the row
+    reviewed=True. Deterministic, no I/O."""
     row["confidence"] = {
         "token": row.get("token", ""),
         "rule_based_label": None,
@@ -713,14 +592,8 @@ def band_of(row: dict) -> Optional[str]:
 
 
 def is_review_required(row: dict) -> bool:
-    """Whether `row` should appear in an "all uncertain tokens" view,
-    across any label (TR/EN/MIXED/UID/NE/OTHER/LANG3) -- reuses the
-    confidence record's own `review_recommended` flag verbatim (the same
-    flag `compute_token_confidence` sets from the record's band; see
-    `band_for_score`/`DEFAULT_THRESHOLDS`), never a label-based rule. A row
-    with no confidence record at all (legacy project, or never
-    re-annotated since this layer was added) is not "required" -- there is
-    no evidence either way, so it is excluded rather than assumed
-    uncertain."""
+    """Whether `row` belongs in the "all uncertain" view: the confidence
+    record's own `review_recommended` flag, for any label. Rows without a
+    record (legacy or never re-annotated) are excluded, not assumed uncertain."""
     conf = get_confidence(row)
     return bool(conf) and bool(conf.get("review_recommended"))

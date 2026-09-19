@@ -1,12 +1,7 @@
-# tests/test_dataset_tabs_gui.py
-"""
-Permanent GUI regression tests for multiple annotation datasets (dataset
-tab bar, Add New Data dialog, dataset-scoped state) and the Export Table
-dialog (dataset + format chooser, including CoNLL/JSONL).
-
-Follows the same real-Tk-event conventions as test_confidence_review_tool_gui.py.
-Requires a real, working Tk display; the whole module is skipped otherwise
-so the rest of the suite still runs (e.g. a CI runner with no X server).
+"""GUI regression tests for multiple datasets (tab bar, Add New Data dialog,
+dataset-scoped state) and the Export Table dialog (dataset + format chooser,
+including CoNLL/JSONL). Same real-Tk-event conventions as
+test_confidence_review_tool_gui.py; skipped without a Tk display.
 """
 import copy
 import json

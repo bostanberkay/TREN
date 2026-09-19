@@ -1,18 +1,7 @@
-# tests/test_tdk_checker_gui.py
-"""Permanent GUI regression tests for the TDK Checker tool -- a SEPARATE
-tool from the Confidence Review Tool (Tools -> TDK Checker; never replaces
-or renames it).
-
-Every test in this file uses tdk.py's (formerly dictionary_provider.py's)
-MockDictionaryProvider or UnavailableProvider, injected directly via
-`app._tdk_provider`, set BEFORE any lookup is triggered. No test here (or
-anywhere in the suite) ever constructs a real tdk.TDKProvider or makes a real network
-call -- see tests/test_dictionary_provider.py for the provider's own
-network-shaped tests, all of which use an injected fake opener instead of
-the real network too.
-
-Requires a real, working Tk display; skipped entirely otherwise (mirrors
-tests/test_confidence_review_tool_gui.py's own convention).
+"""GUI regression tests for the TDK Checker. Every test injects
+MockDictionaryProvider or UnavailableProvider via `app._tdk_provider` before any
+lookup, so no test builds a real TDKProvider or touches the network. Requires a
+real Tk display; skipped otherwise.
 """
 import copy
 import os

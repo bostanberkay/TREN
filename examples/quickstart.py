@@ -1,15 +1,8 @@
-# examples/quickstart.py
-"""Minimal, deterministic quickstart example for cs_pipeline.Annotator.
+"""Minimal deterministic quickstart for cs_pipeline.Annotator.
 
-Runs the real Annotator.annotate() pipeline on a short Turkish-English
-code-switching sentence, without loading any real Stanza or fastText
-model. Instantiation bypasses Annotator.__init__ (which would otherwise
-read the real frequency-list files and load a fastText binary model) via
-Annotator.__new__, using small synthetic Turkish/English lexicon sets
-instead. Only the fastText prediction call (_ft_predict) is replaced --
-the narrowest possible boundary -- so tokenization, suffix parsing, MIXED
-detection, Matrix/Embedded Language voting, and final output construction
-all run as real, unmodified code.
+Runs the real Annotator.annotate() on a short Turkish-English sentence without
+loading Stanza or fastText: Annotator.__new__ bypasses __init__, small synthetic
+lexicons stand in for the word lists, and only _ft_predict is replaced.
 
 Run from the repository root:
     python examples/quickstart.py
@@ -19,9 +12,7 @@ import os
 import sys
 from unittest.mock import patch
 
-# Running `python examples/quickstart.py` puts the examples/ directory,
-# not the repository root, on sys.path by default. Add the repo root so
-# `import cs_pipeline` resolves regardless of the current working directory.
+# Running the script puts examples/, not the repo root, on sys.path; add the root so `import cs_pipeline` resolves.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cs_pipeline import Annotator, DEFAULTS

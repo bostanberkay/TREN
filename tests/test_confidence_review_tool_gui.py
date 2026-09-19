@@ -1,34 +1,19 @@
-# tests/test_confidence_review_tool_gui.py
-"""
-Permanent GUI regression tests for the Confidence Review Tool (formerly
-"UID Review Tool" -- it now reviews uncertain/low-confidence tokens across
-any of the 7 schema labels, not just UID; see confidence.py) and the main
-annotation table's Merge Cells feature.
+"""GUI regression tests for the Confidence Review Tool (reviews uncertain tokens
+across all labels; see confidence.py) and the main table's Merge Cells.
 
-These tests drive REAL Tk widgets with REAL event_generate calls -- mouse
-clicks at coordinates read from each widget's own geometry, real keyboard
-events, and clicks into the actual combobox popdown listbox -- instead of
-calling internal handlers directly, so they exercise Tk's own binding
-dispatch, not just the Python callback underneath it.
+Tests drive real Tk widgets with real event_generate calls (clicks at widget
+coordinates, key events, the combobox popdown listbox), so Tk's binding dispatch
+is exercised and not only the callbacks.
 
-One documented exception: the main sheet is tksheet, a custom canvas-based
-widget. In this environment, synthetic `event_generate` clicks against its
-internal MainTable canvas did not reliably reproduce real hardware mouse
-behavior for hit-testing a specific target row (the first click after
-`deselect()` did not land on the requested row; see the manual verification
-notes in the project report for the exact reproduction). Rather than build
-tests on that unreliable foundation, multi-row selection for Merge Cells is
-set up via tksheet's own public, real selection API,
-`sheet.create_selection_box(r1, c1, r2, c2)` -- the same internal
-selection-state entry point tksheet's own mouse-drag handler populates, and
-exactly what `merge_selected_cells()` reads back via
-`sheet.get_selected_cells()`. Where a real mouse event *was* confirmed to
-produce a genuine multi-row selection (a fresh click + shift-click with no
-prior `deselect()`), a test below uses that real sequence directly.
+Exception: synthetic clicks on tksheet's canvas did not reliably hit a specific
+row (the first click after `deselect()` missed the requested row), so multi-row
+selection for Merge Cells is set up with tksheet's public
+`sheet.create_selection_box(...)`, which is what tksheet's own drag handler
+populates and `merge_selected_cells()` reads back. Where a real click +
+shift-click with no prior `deselect()` was confirmed to work, tests use it.
 
-Requires a real, working Tk display. If none is available (e.g. a CI runner
-with no X server/Xvfb), the module is skipped entirely via the
-`_tk_available()` probe below, so the rest of the suite still runs.
+Requires a real Tk display; the module is skipped entirely otherwise
+(`_tk_available()`).
 """
 import copy
 import os

@@ -1,10 +1,5 @@
-# tests/test_dictionary_provider.py
-"""Pure-function tests for tdk.py's dictionary lookup provider abstraction
-(formerly dictionary_provider.py -- see CLAUDE.md section 3). NO test in
-this file (or anywhere in the suite)
-ever calls the real TDK website -- TDKProvider is only ever exercised here
-via its injectable `opener` callable, which never performs a real network
-request."""
+"""Pure-function tests for tdk.py's dictionary providers. No test makes a real
+network request: TDKProvider is exercised only through its injectable `opener`."""
 import os
 import sys
 import threading

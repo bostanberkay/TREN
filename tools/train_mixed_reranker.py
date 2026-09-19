@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# tools/train_mixed_reranker.py
 """Phase 2, isolated experiment: train and evaluate a baseline MIXED
 reranker (character TF-IDF + structured features -> LogisticRegression)
 from the dataset built by tools/build_reranker_dataset.py.
@@ -71,11 +70,10 @@ def split_rows(rows):
 
 def build_features(train_rows, dev_rows, test_rows):
     """Fit TfidfVectorizer + DictVectorizer on TRAIN ONLY; transform dev/test.
-    lowercase=True for the char n-gram vectorizer is an explicit, documented
-    choice (case-folded character shapes generalize better across the small
-    corpus) -- distinct from, and not in tension with, the alignment step's
-    separate decision to apply NO lowercasing when matching gold/pred Item
-    text for row alignment (a different purpose: identity vs. generalization).
+    lowercase=True for the char n-grams is deliberate (case-folded shapes
+    generalize better on a small corpus); row alignment in
+    build_reranker_dataset applies no lowercasing, since it needs identity,
+    not generalization.
     """
     tfidf = TfidfVectorizer(analyzer='char', ngram_range=(2, 5), lowercase=True)
     dictvec = DictVectorizer(sparse=True)
@@ -191,13 +189,10 @@ def multiclass_report(gold_labels, pred_labels):
 # ---------------------------------------------------------------------------
 
 def simulate_cascade(test_rows, full_model, tfidf, dictvec, threshold):
-    """Non-candidate rows keep pred_label unchanged. Candidate rows become
-    MIXED only if the full model's P(MIXED) >= threshold on THIS row;
-    otherwise they retain pred_label (KEEP_ORIGINAL). Model probability is
-    computed for every test row (for analysis/test_predictions.csv
-    transparency) but only used to flip a label when is_candidate is True --
-    this is enforced by the `if row['is_candidate']` gate below, not by
-    omitting the computation.
+    """Non-candidate rows keep pred_label. Candidate rows become MIXED only if
+    P(MIXED) >= threshold on THIS row, else keep pred_label (KEEP_ORIGINAL).
+    Probability is computed for every test row (for test_predictions.csv) but
+    only flips a label behind the `if row['is_candidate']` gate below.
     """
     text = [r['text'] for r in test_rows]
     struct = [r['structured_features'] for r in test_rows]
@@ -399,9 +394,6 @@ def main():
           f"-> simulated MIXED F1={cascade_f1['simulated_multiclass']['per_label'].get('MIXED', {}).get('f1', 0):.4f}  "
           f"(changes={cascade_f1['n_changes']}, beneficial={cascade_f1['n_beneficial']}, harmful={cascade_f1['n_harmful']})")
 
-    # -----------------------------------------------------------------
-    # Write artifacts
-    # -----------------------------------------------------------------
     model_path = os.path.join(args.out_dir, 'model.joblib')
     joblib.dump(full_model, model_path)
     vectorizer_path = os.path.join(args.out_dir, 'vectorizer.joblib')

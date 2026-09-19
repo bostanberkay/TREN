@@ -1,15 +1,7 @@
-# tests/test_uid_resolver.py
-"""Tests for the EXPERIMENTAL, offline-only UID->TR resolver (formerly
-uid_resolver.py, now the last section of reranking.py -- see CLAUDE.md
-section 3 and the merge commit).
-
-apply_uid_to_tr_resolver() below is not exercised by any production code
-path -- production calls decide() directly, per token, from inside
-reranking.apply_reranker() (see the last test class below, which asserts
-that the single integration point remains apply_reranker()). Uses the same
-bypass-__init__ Annotator convention already established in
-tests/test_cs_pipeline.py, tests/test_mixed_reranker.py, and
-tests/test_reranker_integration.py.
+"""Tests for the UID->TR resolver in reranking.py. apply_uid_to_tr_resolver() is
+offline-only; production calls decide() per token from reranking.apply_reranker(),
+which the last test class asserts remains the single integration point. Uses the
+bypass-__init__ Annotator convention from tests/test_cs_pipeline.py.
 """
 
 import os
