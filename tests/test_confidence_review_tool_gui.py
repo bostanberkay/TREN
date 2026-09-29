@@ -1,7 +1,7 @@
 """GUI regression tests for the Confidence Review Tool and Merge Cells, driven by
-real Tk events. Multi-row selection uses tksheet's create_selection_box because
-synthetic canvas clicks after deselect() did not reliably hit a row. Skipped
-without a Tk display.
+real Tk events. Most Merge Cells tests build the selection with tksheet's
+create_selection_box; the meta-row test uses real clicks, in widget coordinates.
+Skipped without a Tk display.
 """
 import copy
 import os
@@ -514,24 +514,40 @@ def test_merge_cells_rejects_non_adjacent_selection():
 
 
 def test_merge_cells_rejects_meta_row_via_real_mouse_selection():
-    """A real click + Shift-click (no prior deselect) selects a range that includes
-    the SentenceID row, which Merge Cells must reject."""
+    """A real click on the SentenceID row + Shift-click on a token row selects a
+    range that includes the meta row, which Merge Cells must reject."""
     app = make_app(merge_blocks())
     try:
         before = copy.deepcopy(app.blocks)
         mt = app.sheet.MT
-        rp = mt.row_positions
-        cp = mt.col_positions
-        x = (cp[2] + cp[3]) // 2
-        y1 = (rp[1] + rp[2]) // 2
-        y2 = (rp[2] + rp[3]) // 2
+        app.update()
+        assert mt.winfo_viewable(), "table must be mapped before clicking"
+        app.sheet.deselect()
+        mt.xview_moveto(0)
+        mt.yview_moveto(0)
+        app.update()
+
+        # row/col_positions are canvas coordinates; events take widget coordinates.
+        def cell_center(r, c):
+            rp, cp = mt.row_positions, mt.col_positions
+            x = int((cp[c] + cp[c + 1]) // 2 - mt.canvasx(0))
+            y = int((rp[r] + rp[r + 1]) // 2 - mt.canvasy(0))
+            assert 0 <= x < mt.winfo_width() and 0 <= y < mt.winfo_height(), (
+                f"cell ({r}, {c}) is not visible in the {mt.winfo_width()}x{mt.winfo_height()} table")
+            return x, y
+
+        x0, y0 = cell_center(0, 2)
+        x2, y2 = cell_center(2, 2)
         mt.focus_force()
         app.update()
-        mt.event_generate('<ButtonPress-1>', x=x, y=y1)
-        mt.event_generate('<ButtonRelease-1>', x=x, y=y1)
+        mt.event_generate('<ButtonPress-1>', x=x0, y=y0)
+        mt.event_generate('<ButtonRelease-1>', x=x0, y=y0)
         app.update()
-        mt.event_generate('<Shift-ButtonPress-1>', x=x, y=y2)
-        mt.event_generate('<Shift-ButtonRelease-1>', x=x, y=y2)
+        assert sorted(set(r for r, _c in app.sheet.get_selected_cells())) == [0], \
+            "a real click on the SentenceID row must select it"
+
+        mt.event_generate('<Shift-ButtonPress-1>', x=x2, y=y2)
+        mt.event_generate('<Shift-ButtonRelease-1>', x=x2, y=y2)
         app.update()
 
         sel = app.sheet.get_selected_cells()

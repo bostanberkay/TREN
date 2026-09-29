@@ -562,3 +562,55 @@ def test_reranker_status_updated_when_bundle_loads(monkeypatch):
         assert app._reranker_status_reason == "missing file"
     finally:
         app.destroy()
+
+
+# =========================================================================
+# Plain mouse click selects a grid cell
+# =========================================================================
+
+def _click_cell(sheet, r, c):
+    mt = sheet.MT
+    mt.update()
+    assert mt.winfo_viewable(), "table must be mapped before clicking"
+    mt.xview_moveto(0)
+    mt.yview_moveto(0)
+    mt.update()
+    rp, cp = mt.row_positions, mt.col_positions
+    x = int((cp[c] + cp[c + 1]) // 2 - mt.canvasx(0))
+    y = int((rp[r] + rp[r + 1]) // 2 - mt.canvasy(0))
+    mt.event_generate('<ButtonPress-1>', x=x, y=y)
+    mt.event_generate('<ButtonRelease-1>', x=x, y=y)
+    mt.update()
+
+
+def test_plain_click_selects_cell_in_main_grid(monkeypatch):
+    # Regression: sheet.bind("<Button-1>") replaced tksheet's own click
+    # handler, so clicking a cell never changed the selection.
+    app, _ = make_app(monkeypatch)
+    try:
+        run_once(app)
+        app._active_area = "text"
+        target = vis_row(app, "amazing")
+        _click_cell(app.sheet, target, 2)
+        cur = app.sheet.get_currently_selected()
+        assert (cur.row, cur.column) == (target, 2)
+        assert app._active_area == "sheet"
+    finally:
+        app.destroy()
+
+
+def test_plain_click_selects_cell_in_full_edit_window(monkeypatch):
+    app, _ = make_app(monkeypatch)
+    try:
+        run_once(app)
+        app.open_full_edit_window()
+        app.update()
+        full = app._full_sheet
+        app._active_sheet = None
+        target = vis_row(app, "boss'um")
+        _click_cell(full, target, 3)
+        cur = full.get_currently_selected()
+        assert (cur.row, cur.column) == (target, 3)
+        assert app._active_sheet is full
+    finally:
+        app.destroy()

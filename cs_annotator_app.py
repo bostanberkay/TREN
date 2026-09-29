@@ -2961,7 +2961,9 @@ VOC vocative
             ])
             try:
                 self.sheet.bind("<FocusIn>", lambda e: setattr(self, "_active_area", "sheet"))
-                self.sheet.bind("<Button-1>", lambda e: setattr(self, "_active_area", "sheet"))
+                # tksheet runs "<ButtonPress-1>" after its own cell selection; "<Button-1>"
+                # would replace tksheet's handler, so a click would no longer select.
+                self.sheet.bind("<ButtonPress-1>", lambda e: setattr(self, "_active_area", "sheet"))
             except Exception:
                 pass
 
@@ -3383,7 +3385,7 @@ VOC vocative
 
         try:
             sh.bind("<FocusIn>", lambda e: setattr(self, "_active_sheet", sh))
-            sh.bind("<Button-1>", lambda e: setattr(self, "_active_sheet", sh))
+            sh.bind("<ButtonPress-1>", lambda e: setattr(self, "_active_sheet", sh))
         except Exception:
             pass
 
