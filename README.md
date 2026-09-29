@@ -27,20 +27,11 @@ TREN is intended for use by researchers working on bilingual and multilingual la
 
 TREN is currently available as a packaged application for macOS. Support for other operating systems will be added in future releases; on any platform with Python 3.11+ you can run it from source (see below).
 
-### Release status: packaged v1.3.0 vs. the development version
+### Release status
 
-The latest packaged release is **v1.3.0** (`TREN_v1.3.0.dmg`). This README documents the current development version on the `main` branch, which has **not been released or packaged yet**. The following features are described below but are only available when running from source, not in the v1.3.0 `.dmg`:
+The latest packaged release is **v1.4.0** (`TREN_v1.4.0.dmg`), built for **Apple silicon Macs (arm64)** only; on an Intel Mac, run TREN from source. See [CHANGELOG.md](CHANGELOG.md) for what changed since v1.3.0.
 
-- Confidence Review Tool (sequential review of uncertain tokens), TDK Checker, and Merge Cells / Undo Merge Cells
-- multiple datasets per project (tab bar, Add New Data) and the `.trenproj` schema version 2
-- the Export Table dialog, including TREN CoNLL-style (`.conll`) and JSONL export
-- the UID→TR resolver stage of the annotation pipeline
-- project dirty-state tracking, and the unsaved-changes check on File ▸ Exit and macOS Quit (⌘Q)
-- the Run confirmation, Label-column validation, offline NER with cached models, and the reranker status indicator
-
-See the `[Unreleased]` section of [CHANGELOG.md](CHANGELOG.md) for the full list.
-
-### macOS (packaged v1.3.0)
+### macOS (packaged v1.4.0)
 
 <ol>
  <li>
@@ -53,11 +44,11 @@ See the `[Unreleased]` section of [CHANGELOG.md](CHANGELOG.md) for the full list
   <li>Launch the application from the Applications folder.</li>
 </ol>
 
-If you encounter a security warning on first launch:
+The app is not signed with an Apple Developer ID or notarized, so macOS blocks it on first launch:
 
 <ul>
-  <li>Right-click (or Ctrl-click) the <strong>TREN</strong> app and select <strong>Open</strong>.</li>
-  <li>Confirm the prompt from macOS Gatekeeper.</li>
+  <li>On macOS 15 (Sequoia) and later: try to open TREN once, then go to <strong>System Settings ▸ Privacy &amp; Security</strong> and click <strong>Open Anyway</strong> next to the TREN message.</li>
+  <li>On earlier macOS versions: right-click (or Ctrl-click) the <strong>TREN</strong> app, select <strong>Open</strong>, and confirm the prompt.</li>
 </ul>
 
 ## Run from Source (Python)
@@ -194,9 +185,7 @@ python tools/train_mixed_reranker.py --dataset <out-dir>/dataset.json \
 
 Batch C is included by default; pass `--exclude-batch-c-features` to disable it. Batch B and Batch D remain available via `--include-batch-b-features` / `--include-batch-d-features` for reproducing the rejected experiments, but are not part of the active baseline shown above.
 
-## Production Status (development version, unreleased)
-
-This section describes the pipeline on `main`. The packaged v1.3.0 release does not include the UID→TR resolver stage.
+## Production Status (v1.4.0)
 
 ### Pipeline
 
