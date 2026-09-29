@@ -572,12 +572,13 @@ def _click_cell(sheet, r, c):
     mt = sheet.MT
     mt.update()
     assert mt.winfo_viewable(), "table must be mapped before clicking"
-    mt.xview_moveto(0)
-    mt.yview_moveto(0)
+    sheet.see(r, c)
     mt.update()
     rp, cp = mt.row_positions, mt.col_positions
     x = int((cp[c] + cp[c + 1]) // 2 - mt.canvasx(0))
     y = int((rp[r] + rp[r + 1]) // 2 - mt.canvasy(0))
+    assert 0 <= x < mt.winfo_width() and 0 <= y < mt.winfo_height(), (
+        f"cell ({r}, {c}) is not visible in the {mt.winfo_width()}x{mt.winfo_height()} table")
     mt.event_generate('<ButtonPress-1>', x=x, y=y)
     mt.event_generate('<ButtonRelease-1>', x=x, y=y)
     mt.update()

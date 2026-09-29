@@ -513,7 +513,23 @@ def test_merge_cells_rejects_non_adjacent_selection():
         app.destroy()
 
 
-def test_merge_cells_rejects_meta_row_via_real_mouse_selection():
+def _narrow_until_column_offscreen(app, mt, c):
+    """Shrink the window until column `c` starts off-screen at scroll 0 while one
+    column still fits, as in CI's 223 px table."""
+    cp = mt.col_positions
+    w = app.winfo_width()
+    while w >= 300:
+        app.geometry(f"{w}x{app.winfo_height()}")
+        app.update_idletasks()
+        app.update()
+        if (cp[c + 1] - cp[c]) + 10 <= mt.winfo_width() <= cp[c]:
+            return
+        w -= 10
+    pytest.fail(f"could not narrow the table to hide column {c} (width {mt.winfo_width()})")
+
+
+@pytest.mark.parametrize("narrow", [False, True], ids=["default-window", "narrow-table"])
+def test_merge_cells_rejects_meta_row_via_real_mouse_selection(narrow):
     """A real click on the SentenceID row + Shift-click on a token row selects a
     range that includes the meta row, which Merge Cells must reject."""
     app = make_app(merge_blocks())
@@ -522,33 +538,33 @@ def test_merge_cells_rejects_meta_row_via_real_mouse_selection():
         mt = app.sheet.MT
         app.update()
         assert mt.winfo_viewable(), "table must be mapped before clicking"
+        if narrow:
+            _narrow_until_column_offscreen(app, mt, 2)
         app.sheet.deselect()
-        mt.xview_moveto(0)
-        mt.yview_moveto(0)
         app.update()
 
-        # row/col_positions are canvas coordinates; events take widget coordinates.
-        def cell_center(r, c):
+        # Scroll the cell into view first, then convert its canvas position to
+        # widget coordinates (recomputed per click, since see() may scroll).
+        def click_cell(r, c, shift=False):
+            app.sheet.see(r, c)
+            app.update()
             rp, cp = mt.row_positions, mt.col_positions
             x = int((cp[c] + cp[c + 1]) // 2 - mt.canvasx(0))
             y = int((rp[r] + rp[r + 1]) // 2 - mt.canvasy(0))
             assert 0 <= x < mt.winfo_width() and 0 <= y < mt.winfo_height(), (
                 f"cell ({r}, {c}) is not visible in the {mt.winfo_width()}x{mt.winfo_height()} table")
-            return x, y
+            mod = 'Shift-' if shift else ''
+            mt.event_generate(f'<{mod}ButtonPress-1>', x=x, y=y)
+            mt.event_generate(f'<{mod}ButtonRelease-1>', x=x, y=y)
+            app.update()
 
-        x0, y0 = cell_center(0, 2)
-        x2, y2 = cell_center(2, 2)
         mt.focus_force()
         app.update()
-        mt.event_generate('<ButtonPress-1>', x=x0, y=y0)
-        mt.event_generate('<ButtonRelease-1>', x=x0, y=y0)
-        app.update()
+        click_cell(0, 2)
         assert sorted(set(r for r, _c in app.sheet.get_selected_cells())) == [0], \
             "a real click on the SentenceID row must select it"
 
-        mt.event_generate('<Shift-ButtonPress-1>', x=x2, y=y2)
-        mt.event_generate('<Shift-ButtonRelease-1>', x=x2, y=y2)
-        app.update()
+        click_cell(2, 2, shift=True)
 
         sel = app.sheet.get_selected_cells()
         rows = sorted(set(r for r, _c in sel))
