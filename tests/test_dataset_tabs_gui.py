@@ -35,12 +35,8 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _isolated_app_dir(monkeypatch, tmp_path):
-    """Every test in this module gets its own fake ~/.cs_annotator. Without
-    this, App.__init__'s scheduled _auto_restore_last_project (or an
-    explicit open_project_save/save_project_progress call in one test) could
-    read or write the developer's REAL project-save directory, and a project
-    saved by one test could silently leak into and pollute a later test's
-    fresh App() instance via that real pointer file."""
+    """Fake ~/.cs_annotator per test, so no test touches the real save directory
+    or leaks a project into another test via the pointer file."""
     app_dir = tmp_path / "cs_annotator_home"
     monkeypatch.setattr(caa, "APP_DIR", str(app_dir))
     monkeypatch.setattr(caa, "LAST_PROJECT_PTR", str(app_dir / "last_project.json"))
@@ -121,6 +117,9 @@ def make_app(monkeypatch):
     monkeypatch.setattr(caa.messagebox, "showwarning", lambda *a, **k: None)
     monkeypatch.setattr(caa.messagebox, "showerror", lambda *a, **k: None)
     monkeypatch.setattr(caa.messagebox, "showinfo", lambda *a, **k: None)
+    # Run over existing annotations asks first; tests that re-run mean "yes".
+    # Tests of the confirmation itself override this.
+    monkeypatch.setattr(caa.messagebox, "askokcancel", lambda *a, **k: True)
     app.update()
     return app
 
@@ -296,13 +295,8 @@ def test_blank_name_does_not_create_dataset(monkeypatch):
         text_boxes = [w for w in widgets if isinstance(w, caa.ScrolledText)]
         buttons = {w.cget('text'): w for w in widgets if isinstance(w, caa.ttk.Button)}
 
-        # Clear the name field via the widget API rather than a simulated
-        # mouse drag-select: dragging over an Entry's text depends on the
-        # dialog already having real, mapped geometry, which is timing-
-        # sensitive for a Toplevel that was just created this instant (it
-        # was observed to occasionally miss and leave the prefilled default
-        # name in place, which is not what this test is about -- it is
-        # testing the blank-name validation path, not text-drag-selection).
+        # Cleared via the widget API: drag-selecting in a just-created dialog is
+        # timing-sensitive, and this test is about blank-name validation.
         entries[0].delete(0, 'end')
         text_boxes[0].insert("1.0", "some text")
         real_click(buttons["Create"])
@@ -443,11 +437,7 @@ def test_open_new_file_does_not_alter_existing_dataset(monkeypatch, tmp_path):
         real_click(buttons["Create"])
         app.update()
 
-        # The active dataset's blocks are untouched by adding a new dataset
-        # (Add New Data never runs the pipeline against dataset 0); its
-        # source_text correctly reflects the editor at the moment of Create
-        # (the same "sync before switching away" behavior tab-switching
-        # already relies on), not some earlier snapshot.
+        # Dataset 0's blocks are untouched, and its source_text is synced at Create.
         assert app.datasets[0]['source_text'] == "original active dataset text"
         assert app.datasets[0]['blocks'] == before_blocks
         assert app._active_dataset_index == 1  # switched to the NEW dataset, not overwritten
@@ -650,11 +640,8 @@ def test_open_new_file_save_reopen_retains_dataset_without_external_file(monkeyp
 
 
 def test_open_new_file_saved_project_never_contains_full_local_path(monkeypatch, tmp_path):
-    # End-to-end privacy regression: a real Open New File -> Create ->
-    # Save Project Progress flow must never write the file's full local
-    # path (which would expose the user's account name and directory
-    # structure if the .trenproj were shared) into the saved file --
-    # only the basename, and only inside "source_filename".
+    # Privacy regression: the saved .trenproj must contain only the basename, in
+    # "source_filename", never the full local path.
     src_dir = tmp_path / "private-folder"
     src_dir.mkdir()
     src_path = _write_utf8_file(src_dir, "corpus.txt", "hassas icerik")
@@ -1100,9 +1087,8 @@ def test_open_malformed_project_shows_error_and_does_not_crash(monkeypatch, tmp_
 
 
 # =========================================================================
-# Open Project: unsaved-changes guard, and the ordering that protects
-# dirty work (read + validate the selected file BEFORE ever touching the
-# current project or even asking to save it)
+# Open Project: the file is read and validated before the unsaved-changes
+# guard ever touches the current project.
 # =========================================================================
 
 def _write_valid_project(path, text="new content", token="new"):
@@ -1969,11 +1955,8 @@ def test_run_pipeline_failure_leaves_previous_dataset_intact(monkeypatch):
 
 
 def test_populate_table_is_transactional_on_grid_construction_failure(monkeypatch):
-    # Distinct from test_run_pipeline_failure_leaves_previous_dataset_intact
-    # above: here the annotation pipeline itself SUCCEEDS and returns text,
-    # but the grid-construction step inside _populate_table fails. Before
-    # the transactional rewrite this would have already replaced
-    # self.blocks with the freshly (but incompletely) parsed result.
+    # Here the pipeline succeeds but grid construction fails; the old code had
+    # already replaced self.blocks at that point.
     app = make_app(monkeypatch)
     stub_pipeline(app, monkeypatch)
     try:

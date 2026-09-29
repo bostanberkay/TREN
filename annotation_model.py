@@ -36,10 +36,8 @@ def freq_normalize_token(tok: str):
 
 
 def compute_word_frequencies(blocks, allowed_labels=None):
-    """Word frequencies from annotated blocks, excluding meta rows (MatrixLang,
-    EmbedLang, SentenceID, blanks). Returns (freq, by_label, total_tokens):
-    token -> count, token -> {label: count}, int.
-    """
+    """(freq, by_label, total_tokens) over non-meta rows: token -> count,
+    token -> {label: count}, int."""
     freq = {}
     by_label = {}
     total = 0
@@ -150,16 +148,33 @@ def is_matrixembed_locked(token, new_value) -> bool:
     return token in ("MatrixLang", "EmbedLang") and new_value not in ("TR", "EN")
 
 
+TOKEN_LABELS = ("TR", "EN", "MIXED", "UID", "NE", "OTHER", "LANG3")
+
+
+def validate_label_edit(token, new_value):
+    """Value to store for a Label edit on the row holding `token`, or None to
+    reject it. Other rows (blank-token rows included) accept a schema label in
+    any case (stored canonical) or empty, like Clear; SentenceID keeps its id."""
+    value = "" if new_value is None else str(new_value)
+    if token in ("MatrixLang", "EmbedLang"):
+        return None if is_matrixembed_locked(token, value) else value
+    tok = "" if token is None else str(token).strip()
+    if tok and is_meta_row_token(tok):
+        return value
+    stripped = value.strip()
+    if not stripped:
+        return ""
+    canonical = stripped.upper()
+    return canonical if canonical in TOKEN_LABELS else None
+
+
 _TOKEN_LABEL_RE = re.compile(r"^(\S+)\s+(TR|EN|MIXED|UID|NE|OTHER|LANG3)\s*$")
 
 
 def parse_annotated_text_to_blocks(text, extra_headers=None):
-    """Parse pipeline output (or a reconstructed TXT export) into a fresh
-    `blocks` list, as App._populate_table does: blank-line-separated blocks,
-    tab-separated rows (2 fields = token, label; 3+ = idx, token, label, ...),
-    falling back to whitespace `TOKEN LABEL` for lines without tabs. `idx` is
-    left at 0; call `renumber_tokens` afterward. Does not mutate
-    `extra_headers`."""
+    """Parse pipeline output or a TXT export into a fresh `blocks` list. Tab
+    rows: 2 fields = token, label; 3+ = idx, token, label, ...; lines without
+    tabs fall back to `TOKEN LABEL`. Call renumber_tokens afterward."""
     headers = list(extra_headers) if extra_headers else []
     blocks = []
     for b in text.split("\n\n"):
@@ -359,11 +374,8 @@ def build_grid_view(blocks, extra_headers, skip_separator_after_empty_block):
 #   source_text      complete raw input the dataset was built from
 #   blocks           annotation blocks (shape in docs/file-formats.md)
 #   extra_headers    user-added grid columns
-#   source_filename  optional display-only basename of the file source_text came
-#                    from. Never a full path: it could expose the user's account
-#                    name and directory layout in a shared project, and reopening
-#                    never depends on the file (source_text is self-contained).
-#                    make_dataset takes os.path.basename() of whatever is passed.
+#   source_filename  optional display-only basename; never a full path, which
+#                    would leak the user's directory layout in a shared project.
 # make_dataset deep-copies blocks/extra_headers so datasets never share row dicts.
 # ---------------------------------------------------------------------------
 
@@ -417,11 +429,8 @@ SUPPORTED_PROJECT_SCHEMA_VERSIONS = (1, 2)
 
 
 def datasets_to_payload(datasets, active_index):
-    """`.trenproj`-ready part of a project payload: "version"
-    (CURRENT_PROJECT_SCHEMA_VERSION), "datasets" and "active_dataset_index";
-    merge it into the rest of the save payload. Session-only undo stacks are
-    deliberately not persisted (see App._sync_active_dataset_from_live).
-    "source_filename" (basename only) is written only when set."""
+    """The "version"/"datasets"/"active_dataset_index" part of a save payload.
+    Undo stacks are session-only and deliberately not persisted."""
     out_datasets = []
     for ds in datasets:
         item = {
@@ -444,15 +453,9 @@ def datasets_to_payload(datasets, active_index):
 
 
 def datasets_from_payload(payload):
-    """Rebuild independent dataset dicts and the active index from a loaded
-    `.trenproj` payload, driven strictly by the declared version (never by
-    payload shape): a missing "version" means 1; an invalid one (non-int, bool
-    or unsupported) raises ValueError. Version 1 requires the legacy
-    single-dataset shape and becomes one dataset "Data 1" (a "datasets" key is
-    rejected as malformed). Version 2 requires a non-empty "datasets" list.
-
-    Raises ValueError with a readable message on any malformed structure.
-    Returned datasets never share row dicts with the payload or each other;
+    """(datasets, active_index) from a loaded payload, dispatched strictly on
+    the declared version (missing = 1), never on payload shape. Raises
+    ValueError with a readable message on anything invalid or malformed;
     `payload` is not mutated."""
     version = payload.get("version", 1)
     if not isinstance(version, int) or isinstance(version, bool):
@@ -482,7 +485,6 @@ def datasets_from_payload(payload):
             source_text = ""
         return [make_dataset("Data 1", source_text, blocks, extra_headers)], 0
 
-    # version == 2 (the only other currently-supported version).
     if "datasets" not in payload:
         raise ValueError(
             f"Project declares schema version {version} but is missing the 'datasets' list."

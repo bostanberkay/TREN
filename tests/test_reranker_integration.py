@@ -250,6 +250,54 @@ def test_load_reranker_bundle_missing_dependency(tmp_path, monkeypatch):
     assert bundle is None
 
 
+class _ModelThatCannotPredict:
+    """Stands in for the frozen model unpickled under scikit-learn <= 1.7,
+    which loads but raises on every prediction (verified against 1.7.2 and
+    1.6.1: "'LogisticRegression' object has no attribute 'multi_class'")."""
+
+    def predict_proba(self, X):
+        raise AttributeError("'LogisticRegression' object has no attribute 'multi_class'")
+
+
+def test_load_reranker_bundle_rejects_model_that_cannot_predict(tmp_path):
+    # Regression: such a bundle used to be returned as loaded, and every
+    # per-token prediction failure was swallowed -- a silently disabled
+    # reranker that still looked active.
+    shutil.copy(os.path.join(REAL_MODEL_DIR, ri.METADATA_FILENAME), tmp_path / ri.METADATA_FILENAME)
+    shutil.copy(os.path.join(REAL_MODEL_DIR, ri.VECTORIZER_FILENAME), tmp_path / ri.VECTORIZER_FILENAME)
+    joblib.dump(_ModelThatCannotPredict(), tmp_path / ri.MODEL_FILENAME)
+    bundle = ri.load_reranker_bundle(str(tmp_path))
+    assert bundle is None
+    assert "cannot run with the installed scikit-learn" in ri.last_load_failure
+    assert "multi_class" in ri.last_load_failure
+
+
+def test_load_reranker_bundle_records_failure_reason(tmp_path):
+    bundle = ri.load_reranker_bundle(str(tmp_path / "does_not_exist"))
+    assert bundle is None
+    assert ri.last_load_failure
+    assert "metadata.json" in ri.last_load_failure
+
+
+def test_load_reranker_bundle_success_clears_failure_reason(tmp_path):
+    ri.load_reranker_bundle(str(tmp_path / "does_not_exist"))
+    assert ri.last_load_failure
+    bundle = ri.load_reranker_bundle(REAL_MODEL_DIR)
+    assert bundle is not None
+    assert ri.last_load_failure is None
+
+
+def test_real_model_predicts_with_installed_scikit_learn():
+    # The load-time probe must accept the tracked artifacts under the
+    # environment requirements.txt installs (scikit-learn>=1.8).
+    bundle = ri.load_reranker_bundle(REAL_MODEL_DIR)
+    assert bundle is not None
+    import scipy.sparse as sp
+    X = sp.hstack([bundle.tfidf.transform(["meeting'e"]), bundle.dictvec.transform([{}])]).tocsr()
+    prob = bundle.model.predict_proba(X)[0, 1]
+    assert 0.0 <= prob <= 1.0
+
+
 # ---------------------------------------------------------------------------
 # Lazy-loading contract
 # ---------------------------------------------------------------------------
@@ -290,17 +338,9 @@ def test_reranker_bundle_is_immutable_namedtuple():
 
 
 # ---------------------------------------------------------------------------
-# Phase 6.2: apply_reranker()
-#
-# Fixture tokens below were empirically verified once against the real,
-# frozen resources/models/ bundle (not guessed): "boostlamak"/UID (stem
-# "boost" in english_words, mocked EN fastText 0.95) -> P(MIXED)=0.985,
-# clears the 0.85 threshold. "zzqxwv"/UID (no lexicon/fastText evidence) ->
-# P(MIXED)=0.045, a candidate that stays rejected. "applar"/TR (stem "app"
-# in english_words) -> P(MIXED)=0.819, a candidate rejected only because it
-# falls just short of 0.85 -- distinct from "masada"/TR (already in
-# turkish_all, no non-Turkish stem evidence at all) which is never even a
-# candidate. These four cover every branch of _rerank_token_label.
+# Phase 6.2: apply_reranker(). Fixture probabilities, measured against the real
+# frozen bundle: "boostlamak"/UID 0.985 (promoted), "zzqxwv"/UID 0.045,
+# "applar"/TR 0.819 (just under 0.85); "masada"/TR is never a candidate.
 # ---------------------------------------------------------------------------
 
 def _make_annotator(turkish_top=(), turkish_all=(), english_words=()):
@@ -406,11 +446,8 @@ def test_apply_reranker_promotion_is_deterministic(real_bundle):
 
 
 def test_apply_reranker_recomputes_matrix_embed_when_label_changes(real_bundle):
-    # Sentence has one TR token and the promoted-to-MIXED token; before
-    # promotion labels_in_sent=["TR"] (UID never counted) -> Matrix=TR,
-    # Embed="-". After promotion labels_in_sent=["TR","MIXED"] -> Embed
-    # must become "EN" (matrix stays TR, MIXED now counts as an EN-ish
-    # signal for embed purposes per Annotator._decide_matrix_embed).
+    # Before promotion Embed is "-" (UID is not counted); after it, MIXED counts
+    # and Embed must become "EN".
     obj = _make_annotator(english_words={"boost"}, turkish_all={"kitap"})
     original = _sentence_block(1, [("kitap", "TR"), ("boostlamak", "UID")], matrix="TR", embed="-")
     with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.95)):
@@ -494,25 +531,13 @@ def test_apply_reranker_never_raises_on_malformed_block(real_bundle):
 
 
 # ---------------------------------------------------------------------------
-# Phase 6.3: GUI wiring regression guard. cs_annotator_app.py's GUI methods
-# have no other automated coverage (its App class needs a display to
-# instantiate), so this checks the wiring structurally via source
-# inspection -- the same technique test_module_does_not_import_joblib_at_top_level
-# already uses above -- rather than building new GUI test infrastructure.
-# Importing cs_annotator_app itself needs no display; only instantiating
-# App() would.
+# Phase 6.3: GUI wiring checked structurally via source inspection (importing
+# cs_annotator_app needs no display).
 # ---------------------------------------------------------------------------
 
 def test_run_pipeline_calls_reranker_in_the_expected_order():
-    # The lazy-load -> annotate -> rerank -> matrix/embed-consistency chain
-    # now lives in App._run_annotation_pipeline (extracted so the "Add New
-    # Data" / "Re-run Current Text" dataset flow can share the exact same
-    # wiring instead of duplicating it -- see
-    # test_create_dataset_from_text_shares_run_annotation_pipeline below).
-    # The lazy load itself is factored one level further into
-    # _ensure_annotator_ready, which _run_annotation_pipeline calls first.
-    # run_pipeline itself just calls _run_annotation_pipeline and then
-    # populates the active dataset's table from the result.
+    # The chain lives in App._run_annotation_pipeline, shared by Run and Add New
+    # Data; run_pipeline only calls it and populates the table.
     import inspect
     import cs_annotator_app
 
@@ -552,12 +577,9 @@ def test_app_init_declares_reranker_cache_slots():
 
 
 # ---------------------------------------------------------------------------
-# Residual verbal MIXED detector -- production wiring inside apply_reranker().
-# Strict evidence only (reranking.evaluate_residual_verbal_promotion's,
-# formerly mixed_reranker.evaluate_residual_verbal_promotion's, default);
-# this file only tests PLACEMENT, fail-safety, and Matrix/Embed
-# interaction with the frozen-reranker stage -- the detection RULE itself
-# (parsing/evidence/gating) is tested exhaustively in test_mixed_reranker.py.
+# Residual verbal detector wiring inside apply_reranker(): placement,
+# fail-safety and Matrix/Embed only; the rule itself is tested in
+# test_mixed_reranker.py.
 # ---------------------------------------------------------------------------
 
 def test_apply_reranker_residual_stage_runs_after_rerank_loop_in_source():
@@ -571,11 +593,8 @@ def test_apply_reranker_residual_stage_runs_after_rerank_loop_in_source():
 
 
 def test_residual_stage_never_reconsiders_a_token_already_promoted_by_frozen_reranker(real_bundle):
-    # Item 14 (functional): "boostlamak" would ALSO qualify for the
-    # residual stage on its own (stem "boost" + verbalizer+infinitive) --
-    # this proves the residual stage's eligibility check sees the
-    # ALREADY-promoted post-rerank label and never even calls the residual
-    # evaluator for it, rather than merely producing the same answer twice.
+    # "boostlamak" would also qualify for the residual stage; its evaluator must
+    # not even be called for an already-promoted token.
     obj = _make_annotator(english_words={"boost"})
     original = _sentence_block(1, [("boostlamak", "UID")], matrix="-", embed="-")
     with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.95)), \
@@ -657,10 +676,8 @@ def test_frozen_reranker_output_unchanged_by_presence_of_residual_stage(real_bun
 
 
 # ---------------------------------------------------------------------------
-# Residual verbal MIXED detector -- production regression targets (item 11)
-# and native-Turkish controls (item 12), exercised through the FULL
-# apply_reranker() wiring (frozen reranker disabled, so promotions below are
-# attributable only to the residual stage).
+# Residual verbal targets and native-Turkish controls through apply_reranker()
+# (frozen reranker disabled, so promotions come only from the residual stage).
 # ---------------------------------------------------------------------------
 
 _RESIDUAL_PROD_TARGETS = [
@@ -699,22 +716,14 @@ def test_residual_production_native_controls_never_promote_via_apply_reranker(to
 
 
 # ---------------------------------------------------------------------------
-# UID->TR resolver -- production integration inside apply_reranker() (see
-# reranking.py's module docstring for the authorized brief this
-# implements: real corpus + both synthetic benchmarks re-evaluated with zero
-# harmful changes and zero regression on any other label). This file tests
-# PLACEMENT, the UID_TR_RESOLVER_ENABLED flag, byte-identical non-UID
-# handling, Matrix/Embed recomputation, and fail-safety through the FULL
-# apply_reranker() wiring. The resolver's own gate/evidence/threshold logic
-# is tested exhaustively, in isolation, in tests/test_uid_resolver.py.
+# UID->TR resolver inside apply_reranker(): placement, the enable flag,
+# non-UID handling, Matrix/Embed and fail-safety. Its own logic is tested in
+# tests/test_uid_resolver.py.
 # ---------------------------------------------------------------------------
 
 def _disable_frozen_and_residual_stages():
-    """Context-manager-friendly pair of patches that make the frozen
-    reranker pass and the residual verbal pass both permanently decline,
-    so any promotion observed in a test using this is attributable ONLY to
-    the UID->TR resolver stage (mirrors the existing convention above for
-    isolating the residual stage from the frozen reranker)."""
+    """Patches that make the frozen and residual stages always decline, so any
+    promotion comes only from the UID->TR resolver."""
     return (
         mock.patch("reranking.classify_candidate", return_value=(False, None, None)),
         mock.patch("reranking.evaluate_residual_verbal_promotion",
@@ -757,12 +766,8 @@ def test_uid_to_tr_resolver_stage_never_reconsiders_a_token_already_promoted_to_
 
 
 def test_uid_to_tr_resolver_stage_never_overrides_english_root_turkish_suffix_candidate(real_bundle):
-    # End-to-end, real (unmocked) reranking.decide() (formerly uid_resolver.decide()): "uploadın" = stem
-    # "upload" (English lexicon) + Turkish genitive suffix "ın" -- exactly
-    # the shape the frozen reranker/residual stage treat as a MIXED
-    # candidate, so the resolver's own hard gate must block it, leaving it
-    # UID (neither stage promotes it here since classify_candidate/
-    # evaluate_residual_verbal_promotion are disabled below).
+    # Real decide(): "uploadın" (English stem + Turkish genitive) is a MIXED shape,
+    # so the resolver's own gate must keep it UID.
     obj = _make_annotator(english_words={"upload"})
     original = _sentence_block(1, [("uploadın", "UID")], matrix="-", embed="-")
     p1, p2 = _disable_frozen_and_residual_stages()

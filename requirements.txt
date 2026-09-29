@@ -7,4 +7,8 @@ tksheet
 # Runtime dependencies for the Phase 5F reranker infrastructure (reranking.py, formerly reranker_integration.py).
 joblib
 scipy
-scikit-learn
+# resources/models/ was pickled with scikit-learn 1.9.0. Verified: 1.8.0, 1.9.0 and
+# 1.9.1 give identical probabilities; 1.7.2 and 1.6.1 unpickle it but raise on every
+# prediction ('multi_class'), so the reranker is rejected at load time there.
+# scikit-learn>=1.8 itself requires Python>=3.11.
+scikit-learn>=1.8

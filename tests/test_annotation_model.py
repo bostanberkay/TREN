@@ -12,6 +12,8 @@ from annotation_model import (
     renumber_tokens,
     reconstruct_text_from_blocks,
     is_matrixembed_locked,
+    validate_label_edit,
+    TOKEN_LABELS,
     iter_visible_rows,
     resolve_row,
     build_grid_view,
@@ -533,6 +535,54 @@ def test_is_matrixembed_locked_case_sensitive():
     assert is_matrixembed_locked("embedlang", "XYZ") is False
 
 
+# --- validate_label_edit ---------------------------------------------------
+
+def test_token_labels_match_the_frozen_schema():
+    assert TOKEN_LABELS == ("TR", "EN", "MIXED", "UID", "NE", "OTHER", "LANG3")
+
+
+@pytest.mark.parametrize("label", ["TR", "EN", "MIXED", "UID", "NE", "OTHER", "LANG3"])
+def test_validate_label_edit_accepts_every_schema_label(label):
+    assert validate_label_edit("kitap", label) == label
+
+
+@pytest.mark.parametrize("typed, stored", [
+    ("mixed", "MIXED"), (" tr ", "TR"), ("Lang3", "LANG3"), ("uid", "UID"),
+])
+def test_validate_label_edit_canonicalizes_case_and_whitespace(typed, stored):
+    assert validate_label_edit("kitap", typed) == stored
+
+
+@pytest.mark.parametrize("typed", ["mixd", "TURKISH", "TR EN", "X", "-", "1"])
+def test_validate_label_edit_rejects_non_schema_values_on_token_rows(typed):
+    assert validate_label_edit("kitap", typed) is None
+
+
+@pytest.mark.parametrize("token", ["", None])
+def test_validate_label_edit_blank_token_rows_are_validated_too(token):
+    # Inserted rows start with an empty token; their label must still be a schema label.
+    assert validate_label_edit(token, "garbage") is None
+    assert validate_label_edit(token, "en") == "EN"
+
+
+@pytest.mark.parametrize("typed", ["", "   ", None])
+def test_validate_label_edit_allows_empty_like_clear(typed):
+    assert validate_label_edit("kitap", typed) == ""
+
+
+def test_validate_label_edit_sentence_id_row_keeps_its_id():
+    assert validate_label_edit("SentenceID", "12") == "12"
+    assert validate_label_edit("sent_id", "3") == "3"
+
+
+@pytest.mark.parametrize("token", ["MatrixLang", "EmbedLang"])
+def test_validate_label_edit_matrix_embed_rows_follow_existing_lock(token):
+    assert validate_label_edit(token, "TR") == "TR"
+    assert validate_label_edit(token, "EN") == "EN"
+    assert validate_label_edit(token, "MIXED") is None
+    assert validate_label_edit(token, "tr") is None  # lock is exact, unchanged
+
+
 # --- iter_visible_rows -------------------------------------------------
 
 def test_iter_visible_rows_normal_multiple_blocks():
@@ -597,11 +647,8 @@ def test_iter_visible_rows_interleaved_separators():
 
 
 def test_iter_visible_rows_stale_row_index_map_raises_index_error():
-    # Documents current, accepted behavior (see the S2 disclosure in review):
-    # a row_index_map entry pointing past the end of blocks is not silently
-    # skipped -- it raises IndexError when the generator is consumed. This
-    # only matters if row_index_map and blocks are already out of sync, which
-    # shouldn't happen in normal operation.
+    # Accepted behavior: an out-of-range row_index_map entry raises IndexError
+    # (only possible if the map and blocks are already out of sync).
     blocks = [[_row("a", "MIXED")]]
     row_index_map = {0: (0, 0), 1: (5, 0)}
     sep_rows = set()
@@ -775,12 +822,8 @@ def test_build_grid_view(name, blocks, skip_policy):
 
 
 def test_build_grid_view_separator_policies_diverge_for_empty_middle_block():
-    # Regression guard for the discovered _populate_table vs.
-    # _rebuild_grid_from_model inconsistency: for a block structure with an
-    # empty middle block, the two policies MUST produce different sep_rows.
-    # If this test ever passes with skip_policy True and False producing the
-    # same result for this input, the divergence this parameter exists to
-    # encode has been lost.
+    # Regression guard: with an empty middle block the two separator policies
+    # (_populate_table vs. _rebuild_grid_from_model) must differ.
     blocks = [[_row("a", "TR")], [], [_row("b", "EN")]]
 
     _, _, sep_true = build_grid_view(copy.deepcopy(blocks), [], skip_separator_after_empty_block=True)
@@ -946,12 +989,8 @@ def test_rows_are_adjacent_same_block_false_for_gap():
 
 def test_rows_are_adjacent_same_block_false_across_sentences():
     blocks = [[_row("a")], [_row("b")]]
-    # even if a caller mistakenly passes ridx values from different blocks,
-    # this function only ever looks within ONE bidx -- cross-sentence
-    # merges must be rejected by construction at the call site (ridx_list
-    # can only reference one block's positions), and a single-block index
-    # list spanning bidx 0's single row plus a nonexistent bidx-0 position
-    # 1 (which is really block 1's row) must fail as out-of-range.
+    # Only one bidx is ever consulted, so a position that is really block 1's
+    # row must fail as out-of-range.
     assert rows_are_adjacent_same_block(blocks, 0, [0, 1]) is False
 
 

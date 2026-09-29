@@ -25,9 +25,22 @@ TREN is intended for use by researchers working on bilingual and multilingual la
 
 ## Installation
 
-TREN is currently available for macOS. Support for other operating systems will be added in future releases.
+TREN is currently available as a packaged application for macOS. Support for other operating systems will be added in future releases; on any platform with Python 3.11+ you can run it from source (see below).
 
-### macOS
+### Release status: packaged v1.3.0 vs. the development version
+
+The latest packaged release is **v1.3.0** (`TREN_v1.3.0.dmg`). This README documents the current development version on the `main` branch, which has **not been released or packaged yet**. The following features are described below but are only available when running from source, not in the v1.3.0 `.dmg`:
+
+- Confidence Review Tool (sequential review of uncertain tokens), TDK Checker, and Merge Cells / Undo Merge Cells
+- multiple datasets per project (tab bar, Add New Data) and the `.trenproj` schema version 2
+- the Export Table dialog, including TREN CoNLL-style (`.conll`) and JSONL export
+- the UID→TR resolver stage of the annotation pipeline
+- project dirty-state tracking, and the unsaved-changes check on File ▸ Exit and macOS Quit (⌘Q)
+- the Run confirmation, Label-column validation, offline NER with cached models, and the reranker status indicator
+
+See the `[Unreleased]` section of [CHANGELOG.md](CHANGELOG.md) for the full list.
+
+### macOS (packaged v1.3.0)
 
 <ol>
  <li>
@@ -59,17 +72,15 @@ python cs_annotator_app.py
 ```
 ### Requirements
 
-If you choose to run the application from source, you will need **Python 3.9 or higher** and the following Python packages:
-
-- fasttext  
-- stanza  
-- tksheet  
-
-All required dependencies are listed in the `requirements.txt` file. To install them automatically, run:
+If you choose to run the application from source, you will need **Python 3.11 or higher** (with Tk support) and the packages listed in `requirements.txt`: `fasttext`, `numpy<2`, `stanza`, `tksheet`, `joblib`, `scipy`, and `scikit-learn>=1.8`. Install them with:
 
 ```bash
 pip install -r requirements.txt
 ```
+
+The Python 3.11 minimum comes from `scikit-learn>=1.8`, which is required by the bundled MIXED-token reranker model (it was built with scikit-learn 1.9.0; versions 1.7 and older can load the file but cannot run it). If the reranker cannot be used, TREN still annotates with rule-based MIXED detection only and shows **MIXED reranker: unavailable** in the toolbar (see [Loading and fallback behavior](#loading-and-fallback-behavior)).
+
+**Named Entity Recognition and internet access.** NER (enabled by default) uses Stanza's Turkish models. They are downloaded automatically the first time you run annotation with NER enabled, which needs an internet connection. After that, TREN reuses the cached models and works offline. If the models are missing and cannot be downloaded, Run shows an error explaining this; turn off the **NER** checkbox in the toolbar to annotate without NER.
 
 ## Example Usage
 
@@ -133,7 +144,7 @@ The structured features are organized into independently-gated, opt-in **batches
 
 ### Loading and fallback behavior
 
-The trained model (`resources/models/model.joblib`, `vectorizer.joblib`, `metadata.json` — a byte-for-byte copy of the frozen Phase 5F experiment artifacts) is loaded lazily: nothing is loaded at application startup, only on the first annotation request, and the result is cached for the rest of the session. If `joblib`/`scikit-learn` aren't installed, the model files are missing or corrupted, or the metadata fails validation against the frozen Phase 5F configuration, loading fails safely and annotation falls back to exactly the original rule-based output — no crash, no dialog, no interruption. Saved projects (`.trenproj`) and the TXT/CSV export formats are unaffected either way: the reranker's output uses the identical text format `Annotator.annotate()` itself produces.
+The trained model (`resources/models/model.joblib`, `vectorizer.joblib`, `metadata.json` — a byte-for-byte copy of the frozen Phase 5F experiment artifacts) is loaded lazily: nothing is loaded at application startup, only on the first annotation request, and the result is cached for the rest of the session. If `joblib`/`scikit-learn` aren't installed, the model files are missing or corrupted, or the metadata fails validation against the frozen Phase 5F configuration, loading fails safely and annotation falls back to exactly the original rule-based output — no crash, no dialog, no interruption. The same applies when the installed scikit-learn can load the model file but not run it (scikit-learn 1.7 and older): the loader runs one probe prediction and rejects the model if it fails. After the first annotation request, the toolbar shows **MIXED reranker: active** or **MIXED reranker: unavailable (rule-based only)**; hovering over the unavailable status shows the reason. Saved projects (`.trenproj`) and the TXT/CSV export formats are unaffected either way: the reranker's output uses the identical text format `Annotator.annotate()` itself produces.
 
 ### Frozen production configuration: Phase 5F
 
@@ -169,7 +180,7 @@ These numbers are the reranker's held-out benchmark results — a fixed measurem
 
 ### Reproducing / testing
 
-The reranker's own automated tests (`tests/test_mixed_reranker.py`, `tests/test_reranker_integration.py`) are included in the project's main test suite; **707 tests currently pass** across the whole repository (`python -m pytest`). To rebuild the active-baseline dataset and retrain the model yourself:
+The reranker's own automated tests (`tests/test_mixed_reranker.py`, `tests/test_reranker_integration.py`) are included in the project's main test suite; run the whole repository's suite with `python -m pytest`. To rebuild the active-baseline dataset and retrain the model yourself:
 
 ```bash
 python tools/build_reranker_dataset.py --gold <gold.csv> --pred <pred.csv> \
@@ -183,7 +194,9 @@ python tools/train_mixed_reranker.py --dataset <out-dir>/dataset.json \
 
 Batch C is included by default; pass `--exclude-batch-c-features` to disable it. Batch B and Batch D remain available via `--include-batch-b-features` / `--include-batch-d-features` for reproducing the rejected experiments, but are not part of the active baseline shown above.
 
-## Production Status (v1.3.0)
+## Production Status (development version, unreleased)
+
+This section describes the pipeline on `main`. The packaged v1.3.0 release does not include the UID→TR resolver stage.
 
 ### Pipeline
 
@@ -244,6 +257,8 @@ Integrated after offline validation across the real corpus and both synthetic be
 
 UID remains weak and heterogeneous; NE precision is limited by third-party Stanza behavior; rare Turkish lexicon coverage causes UID predictions; TR/EN dual-lexicon collisions are context-insensitive; proper-name/common-word ambiguity remains; nominal suffix substring false positives can occur on bare English words (e.g. `office`/`remote`); complex nominal MIXED chains (e.g. `cloudumuza`) may still be missed.
 
+The frozen reranker can promote a proper name carrying a Turkish case suffix from `NE` to `MIXED`, although the reference annotation labels such tokens `NE` (e.g. `Almanya’ya`, `Türkiye'den`, `İran'dan`). Both of the reranker's harmful changes on its held-out test split were of this kind (`Store'da`, `Obscur'ün`: gold `NE` → `MIXED`). In spot checks with NER enabled, `İstanbul'a`, `Ankara'da`, `İzmir'den`, `Bursa'ya`, and `Antalya'ya` all ended up `MIXED`. Review suffixed proper names in the Confidence Review Tool or the grid. This behavior is unchanged pending a decision on the frozen model.
+
 # Documentation of TREN
 
 
@@ -273,6 +288,8 @@ Each region is designed to support a specific stage of the annotation workflow.
 
 The input panel is a free-text editor where users load or paste raw textual data containing code-switching phenomena. This panel represents the unprocessed input and remains editable throughout the annotation process.
 
+**Sentence units and tokenization.** The annotation pipeline treats **each non-empty line** of the input as one sentence (one `SentenceID` block); it does not split sentences at `.`, `?`, or `!`, so put one sentence per line if you want sentence-level Matrix/Embedded Language values. Blank lines only separate blocks. Punctuation marks such as `.`, `,`, `!`, `?`, and `:)` are **not emitted as tokens**; they are dropped during tokenization, so they never appear in the grid or in exports. Numbers (`100`, `3.5`), URLs, `@mentions`, `#hashtags`, emoji, and a stand-alone apostrophe are kept as tokens and labeled `OTHER`. An apostrophe inside a word is kept (`meeting'e` is one token).
+
 Key characteristics:
 
 • Displays the original text exactly as provided by the user.  
@@ -299,6 +316,10 @@ The grid supports:
 • Direct cell editing and double-click editing.  
 • Multi-cell selection with copy, cut, and paste operations.  
 • Dynamic addition of user-defined annotation columns.  
+
+The **Label** column of a token row only accepts the seven schema labels (`TR`, `EN`, `MIXED`, `UID`, `NE`, `LANG3`, `OTHER`), typed in any letter case (`mixed` is stored as `MIXED`), or an empty value (the same as Clear). Any other typed or pasted value is rejected and the previous label is kept. Meta rows keep their own values: the `SentenceID` row's Label cell holds the sentence number, and `MatrixLang`/`EmbedLang` rows accept only `TR` or `EN` (a `-` written by the pipeline for "no embedded language" is preserved).
+
+**Running the pipeline again** on a dataset that already has annotations replaces all of them (labels, glosses, extra-column values, and reviewed marks) and cannot be undone, so **Run** asks for confirmation first; Cancel leaves the current annotations untouched. To keep them and annotate the text again, use **Add New Data ▸ Re-run Current Text**, which creates a separate dataset.
 
 ---
 
@@ -349,7 +370,7 @@ Available labels include:
 
 • LANG3=language other than tr and en 
 
-• OTHER=numbers, punctuation marks, symbols, and non-lexical items
+• OTHER=numbers, punctuation marks, symbols, and non-lexical items (the automatic tokenizer drops punctuation marks rather than emitting them, see [Input Panel](#input-panel); `OTHER` still applies to punctuation tokens added manually)
 
 Structural constraints are enforced for specific meta-rows, such as Matrix Language and Embedded Language rows, to prevent invalid label assignments.
 
@@ -364,6 +385,8 @@ Core actions include:
 - Open: Loading input text.
 - Run: Running the annotation pipeline.
 - Export: Opens the Export Table dialog to choose a dataset and format (see [Export Table](#export-table)).
+
+After the first annotation request, a status label next to these buttons shows whether the MIXED-token reranker is **active** or **unavailable (rule-based only)**; hover over it for the reason.
 
 Feature toggles allow users to enable or disable optional components:
 
@@ -394,12 +417,14 @@ The menu bar provides access to core application functions, project management u
 
 ![File menu](images/ui-menu-file.png)
 
+*(This screenshot predates the current menu: the items are now **Open Input...**, **Run**, **Export Table...**, and **Exit**, without keyboard shortcuts.)*
+
 The **File** menu contains basic actions for managing input and output during the annotation workflow.
 
-- **Open Input**: Load a raw text file into the input panel.
-- **Run**: Execute the annotation pipeline on the current input text.
+- **Open Input**: Load a raw UTF-8 text file into the input panel. A file that is not valid UTF-8 or cannot be read shows an error and leaves the input panel unchanged.
+- **Run**: Execute the annotation pipeline on the current input text (asks for confirmation first if the dataset already has annotations, see [Annotation Grid](#annotation-grid)).
 - **Export Table**: Open the Export Table dialog to choose a dataset and format (TXT, CSV, TREN CoNLL-style, or JSONL) and export it to disk. See [Export Table](#export-table).
-- **Exit**: Close the application.
+- **Exit**: Close the application, with the same unsaved-changes check as closing the window (see [Project](#project)). On macOS, **Quit TREN** / ⌘Q goes through the same check.
 
 ---
 
@@ -415,7 +440,7 @@ The **Project** menu is used to manage annotation sessions.
 
 Project files store every dataset (name, source text, annotation blocks, and Matrix/Embedded Language values), which dataset was active, configuration settings, and cursor/selection position. They do **not** store Merge Cells / Confidence Review Tool undo history, which is session-only (see [Multiple Data Sets](#multiple-data-sets)).
 
-New Project, Open Project Save, and closing the application all share the same unsaved-changes check: if nothing has changed since the project was last saved (or opened/created), the action proceeds immediately with no prompt. Otherwise you're asked to Save, Discard, or Cancel — Save only proceeds once the save has actually completed, Discard proceeds without saving, and Cancel leaves the current project untouched. Opening a project defers this check until after the selected file has been fully read and validated, so cancelling the file chooser or picking an invalid file never touches your current work.
+New Project, Open Project Save, and closing the application (the window's close button, File ▸ Exit, or on macOS Quit / ⌘Q) all share the same unsaved-changes check: if nothing has changed since the project was last saved (or opened/created), the action proceeds immediately with no prompt. Otherwise you're asked to Save, Discard, or Cancel — Save only proceeds once the save has actually completed, Discard proceeds without saving, and Cancel leaves the current project untouched. Opening a project defers this check until after the selected file has been fully read and validated, so cancelling the file chooser or picking an invalid file never touches your current work.
 
 `.trenproj` files carry a schema version, and which version a file declares strictly determines how it must be shaped — the loader never guesses the shape from whichever keys happen to be present. Version 2 is the current format and requires a non-empty `"datasets"` list. Version 1 is the older, single-dataset format from before this feature and requires the legacy `"blocks"`/`"input_text"`/`"extra_headers"` top-level shape; a version 1 file that also contains a `"datasets"` key (for example a hand-edited or half-migrated file) is rejected as malformed rather than silently accepted. A file with no `"version"` key at all predates versioning and is treated as version 1, so the same requirement applies to it. A version 1 project still opens correctly and appears as a single dataset named `Data 1`; it is not rewritten on disk (and stays version 1) until you explicitly save it again, at which point it is written as version 2. An unrecognized future version is likewise rejected with a clear error rather than being misread.
 
@@ -472,7 +497,30 @@ Choose which dataset to export (defaulting to the currently active one) and a fo
 
 ### TXT and CSV
 
-Unchanged from previous versions — see [`docs/file-formats.md`](docs/file-formats.md) for the exact column and separator rules. Exporting the active dataset still reflects exactly what the grid currently displays (including any as-yet-uncommitted edits); exporting any other dataset is built from its stored annotation data.
+Unchanged from previous versions. Exporting the active dataset reflects exactly what the grid currently displays; exporting any other dataset is built from its stored annotation data.
+
+**TXT** (`.txt`): UTF-8 plain text, one grid row per line, fields separated by a tab, in grid column order: `Token` (running index), `Item`, `Label`, `Gloss`, then any user-added columns. A blank line separates sentence blocks.
+
+- Token rows start with the running index: `3	boss'um	MIXED	boss-POSS.1SG`.
+- Meta rows have no index, so their line starts with the row name: `SentenceID	1`, `MatrixLang	TR`, `EmbedLang	EN`.
+- Trailing empty fields are omitted, so a token row without a gloss is `2	amazing	EN`. The number of fields per line therefore varies; recognize meta rows by their first field.
+
+```
+SentenceID	1
+1	kitap	TR
+2	amazing	EN
+3	boss'um	MIXED	boss-POSS.1SG
+MatrixLang	TR
+EmbedLang	EN
+
+SentenceID	2
+4	bugün	TR
+...
+```
+
+**CSV** (`.csv`): UTF-8, comma-separated with standard quoting, a header row with the grid's column names (`Token,Item,Label,Gloss,...`), then one row per grid row with every column present (blank separator rows included as empty rows).
+
+TXT and CSV are export-only: **Open Input** always treats a file as raw text to annotate, so an exported TXT cannot be loaded back as annotations. Use a project save (`.trenproj`) to resume work.
 
 ### TREN CoNLL-style (`.conll`)
 
@@ -667,7 +715,7 @@ The **Concordance (KWIC)** tool provides a keyword-in-context view over the inpu
 
 The **Show Sentence (Context Viewer)** displays the full sentence containing the currently selected token in the annotation grid, allowing users to inspect annotations in their immediate linguistic context.
 
-• The sentence is extracted directly from the input text using punctuation and line breaks as boundaries.  
+• The sentence is extracted directly from the input text using `.`, `?`, `!`, and line breaks as boundaries. This is a display convenience only: the annotation pipeline's sentence unit (`SentenceID`) is always a whole input line, see [Input Panel](#input-panel).  
 • The selected token is highlighted within the sentence for easy identification.  
 • The viewer operates in read-only mode and does not modify annotation data.
 
@@ -848,6 +896,8 @@ Tokens that do not meet linguistic labeling criteria are assigned to residual ca
 
 label(t) = OTHER  
   if t is a number, punctuation mark, symbol, or non-lexical item  
+
+**Note:** the tokenizer does not emit most punctuation marks as tokens (they are dropped before labeling), so in practice `OTHER` is assigned to numbers, URLs, mentions, hashtags, emoji, and stand-alone apostrophes. See [Input Panel](#input-panel).
 
 label(t) = UID  
   if t cannot be confidently identified as Turkish or English, including

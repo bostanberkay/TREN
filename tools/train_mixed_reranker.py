@@ -70,10 +70,8 @@ def split_rows(rows):
 
 def build_features(train_rows, dev_rows, test_rows):
     """Fit TfidfVectorizer + DictVectorizer on TRAIN ONLY; transform dev/test.
-    lowercase=True for the char n-grams is deliberate (case-folded shapes
-    generalize better on a small corpus); row alignment in
-    build_reranker_dataset applies no lowercasing, since it needs identity,
-    not generalization.
+    lowercase=True is deliberate: case-folded shapes generalize better on a
+    small corpus.
     """
     tfidf = TfidfVectorizer(analyzer='char', ngram_range=(2, 5), lowercase=True)
     dictvec = DictVectorizer(sparse=True)
@@ -189,10 +187,8 @@ def multiclass_report(gold_labels, pred_labels):
 # ---------------------------------------------------------------------------
 
 def simulate_cascade(test_rows, full_model, tfidf, dictvec, threshold):
-    """Non-candidate rows keep pred_label. Candidate rows become MIXED only if
-    P(MIXED) >= threshold on THIS row, else keep pred_label (KEEP_ORIGINAL).
-    Probability is computed for every test row (for test_predictions.csv) but
-    only flips a label behind the `if row['is_candidate']` gate below.
+    """Candidate rows become MIXED only if P(MIXED) >= threshold; every other
+    row keeps pred_label. Probability is still computed for every row.
     """
     text = [r['text'] for r in test_rows]
     struct = [r['structured_features'] for r in test_rows]

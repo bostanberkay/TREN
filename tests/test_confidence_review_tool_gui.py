@@ -1,19 +1,7 @@
-"""GUI regression tests for the Confidence Review Tool (reviews uncertain tokens
-across all labels; see confidence.py) and the main table's Merge Cells.
-
-Tests drive real Tk widgets with real event_generate calls (clicks at widget
-coordinates, key events, the combobox popdown listbox), so Tk's binding dispatch
-is exercised and not only the callbacks.
-
-Exception: synthetic clicks on tksheet's canvas did not reliably hit a specific
-row (the first click after `deselect()` missed the requested row), so multi-row
-selection for Merge Cells is set up with tksheet's public
-`sheet.create_selection_box(...)`, which is what tksheet's own drag handler
-populates and `merge_selected_cells()` reads back. Where a real click +
-shift-click with no prior `deselect()` was confirmed to work, tests use it.
-
-Requires a real Tk display; the module is skipped entirely otherwise
-(`_tk_available()`).
+"""GUI regression tests for the Confidence Review Tool and Merge Cells, driven by
+real Tk events. Multi-row selection uses tksheet's create_selection_box because
+synthetic canvas clicks after deselect() did not reliably hit a row. Skipped
+without a Tk display.
 """
 import copy
 import os
@@ -164,13 +152,8 @@ def confident_confidence(label="TR", score=0.95):
 
 
 def two_sentence_blocks():
-    """Both UID tokens ("backend", "cat") carry a review-required
-    confidence record and the TR token ("sunucusu") carries a confident
-    (review_recommended=False) one, so the tool's new "All Uncertain"
-    default view yields the exact same [backend, cat] list/order every
-    test below has always assumed -- these fixtures now exercise the new
-    default path instead of the old fixed UID-only path, with no change to
-    any test body."""
+    """Both UID tokens need review and the TR token is confident, so the default
+    "All Uncertain" view yields [backend, cat]."""
     return [
         [
             {"idx": "", "token": "SentenceID", "label": "1", "gloss": ""},
@@ -251,11 +234,8 @@ def test_selected_row_populates_label_gloss_context():
 
 
 def test_consecutive_arrow_keys_keep_working():
-    """Regression test: _uid_jump_to_main used to call _ensure_sheet_focus(),
-    which silently stole real keyboard focus from the tool's tree to the main
-    sheet on every selection change -- breaking the SECOND consecutive
-    arrow-key press (the first still worked because the tree already had
-    focus from the initial click)."""
+    """Regression: _uid_jump_to_main stole focus to the main sheet, breaking the
+    second consecutive arrow-key press."""
     app = make_app(two_sentence_blocks())
     try:
         app.open_uid_review_tool()
@@ -356,11 +336,8 @@ def test_apply_updates_shared_model():
 
 
 def test_apply_updates_visible_main_sheet_including_matrix_embed():
-    """Direct regression test for the bug found in review: _uid_apply()
-    used to patch only the edited label/gloss cells via set_cell_data and
-    never refreshed the visible MatrixLang/EmbedLang cells, even though
-    self.blocks was already recomputed correctly -- so the sheet display
-    went stale relative to the model after every Apply."""
+    """Regression: Apply patched only the edited cells and left the visible
+    MatrixLang/EmbedLang cells stale."""
     app = make_app(two_sentence_blocks())
     try:
         app.open_uid_review_tool()
@@ -537,11 +514,8 @@ def test_merge_cells_rejects_non_adjacent_selection():
 
 
 def test_merge_cells_rejects_meta_row_via_real_mouse_selection():
-    """A real (non-API) mouse click followed by a real Shift-click on the
-    live MainTable canvas -- with no prior deselect() -- reliably produces a
-    genuine multi-row selection in this environment. Here it lands on a
-    contiguous range that happens to include row 0 (the SentenceID meta
-    row), which is exactly one of the selections Merge Cells must reject."""
+    """A real click + Shift-click (no prior deselect) selects a range that includes
+    the SentenceID row, which Merge Cells must reject."""
     app = make_app(merge_blocks())
     try:
         before = copy.deepcopy(app.blocks)
@@ -587,8 +561,13 @@ def test_right_click_does_not_clear_selection_and_merge_still_succeeds():
 
         # Real right-click event (mac binds both Button-2 and Button-3 for
         # the grid context menu; neither handler touches selection state).
+        # tk_popup is recorded, not shown: on macOS a posted menu runs a native
+        # modal loop that blocks the test run until the menu is dismissed.
+        popups = []
+        app._grid_menu.tk_popup = lambda x, y, *a: popups.append((x, y))
         app.sheet.event_generate('<Button-3>', x=10, y=10)
         app.update()
+        assert len(popups) == 1, "right-click must open the grid context menu"
 
         after_sel = app.sheet.get_selected_cells()
         assert after_sel == before_sel, "right-click must not clear an existing multi-row selection"
@@ -717,13 +696,8 @@ def test_undo_merge_cells_keeps_uid_list_valid():
 
 
 def test_apply_then_merge_then_uid_undo_causes_no_wrong_row_mutation():
-    """7. Apply UID, then perform Merge Cells, then press UID Undo; confirm
-    no wrong-row mutation occurs.
-
-    The UID Apply undo stack is positional (bidx, ridx). After Merge Cells
-    reshuffles row positions, _uid_on_structural_change() clears that stack
-    entirely -- so this UID Undo must be a safe no-op (bell/no-op), never a
-    restoration into whatever row now occupies that old position.
+    """Apply, Merge Cells, then Undo: the merge clears the positional undo stack,
+    so Undo must be a safe no-op, never a write into a shifted row.
     """
     blocks = [
         [
@@ -768,9 +742,7 @@ def test_apply_then_merge_then_uid_undo_causes_no_wrong_row_mutation():
 
 
 # =========================================================================
-# Terminology rename: "UID Review Tool" -> "Confidence Review Tool"
-# (user-facing text only; internal method/attribute names like
-# open_uid_review_tool/_uid_win are unchanged, see task scope).
+# Rename "UID Review Tool" -> "Confidence Review Tool" (user-facing text only).
 # =========================================================================
 
 def test_window_title_says_confidence_review_tool_not_uid_review_tool():
@@ -810,11 +782,8 @@ def test_tools_menu_label_says_confidence_review_tool():
 
 
 def test_matrixembed_locked_warning_uses_confidence_review_tool_title():
-    """Direct-call regression for the (defensive, currently unreachable via
-    normal list navigation since MatrixLang/EmbedLang rows are meta rows
-    and never appear in _uid_items) is_matrixembed_locked guard inside
-    _uid_apply -- the messagebox title must say "Confidence Review Tool",
-    not the old "UID Review Tool"."""
+    """The defensive MatrixLang/EmbedLang guard in _uid_apply (unreachable via
+    normal navigation) must use the new tool title."""
     blocks = two_sentence_blocks()
     app = make_app(blocks)
     try:

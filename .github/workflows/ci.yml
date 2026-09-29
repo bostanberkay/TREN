@@ -29,5 +29,14 @@ jobs:
       - name: Run quickstart
         run: python examples/quickstart.py
 
+      # GUI tests (tests/test_*_gui.py and parts of test_confidence_integration.py)
+      # skip themselves when Tk cannot open a display; run them under a virtual
+      # X server, and fail here rather than silently skipping them if Tk is unusable.
+      - name: Install virtual display for GUI tests
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Check Tk can open a display
+        run: xvfb-run -a python -c "import tkinter; tkinter.Tk().destroy()"
+
       - name: Run tests
-        run: python -m pytest
+        run: xvfb-run -a python -m pytest -rs

@@ -408,15 +408,10 @@ class MockDictionaryProvider(DictionaryProvider):
 # Proposes a root, ordered suffix segments, a category and per-boundary
 # explanations for user review; never assigns a language label.
 #
-# Candidates: reranking's nominal/verbal enumeration, this module's atomic
-# VERB_TAM/VERB_PERSON tables, and the unsplit token. All compete in one
-# additive score (_score_candidate). There is deliberately no "whole token
-# in lexicon -> never split" rule: the frequency lexicons contain inflected
-# surface forms ("geldi", "filmin"), so membership alone cannot decide.
-# Score terms: stem lexicon tier/rank, structural bonus for an atomic
-# TAM(+person) match or all-valid nominal segments, longer stem, penalty per
-# single-character segment, soft vowel-harmony agreement. Ties break on
-# stem length. Not a calibrated model.
+# All candidate splits and the unsplit token compete in one additive score
+# (_score_candidate; not a calibrated model). There is deliberately no "whole
+# token in lexicon -> never split" rule: the frequency lexicons contain
+# inflected surface forms ("geldi", "filmin").
 # ---------------------------------------------------------------------------
 
 

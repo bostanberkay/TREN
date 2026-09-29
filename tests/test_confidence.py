@@ -176,8 +176,7 @@ def test_en_conflicting_turkish_lexicon_lowers_confidence_to_medium_or_low():
 
 
 # ---------------------------------------------------------------------------
-# Frozen reranker score/margin reconstruction (real bundle, empirically
-# known fixture tokens -- same ones documented in
+# Frozen reranker score/margin (real bundle, fixture tokens from
 # tests/test_reranker_integration.py)
 # ---------------------------------------------------------------------------
 

@@ -204,12 +204,8 @@ def test_review_tool_default_combobox_value_is_all_uncertain():
 
 @pytestmark_gui
 def test_review_tool_default_view_is_all_uncertain_across_labels():
-    """The tool's default view is now "All Uncertain": every token (any
-    label) whose confidence record has review_recommended=True -- backend
-    (UID, LOW) and kelime (TR, MEDIUM) both qualify; cool (EN, HIGH,
-    review_recommended=False) must not appear even though it's already
-    marked reviewed=True is irrelevant here -- it's excluded purely for
-    being confident, not because it was reviewed."""
+    """Default "All Uncertain" view: backend (UID) and kelime (TR) need review;
+    cool (EN) is excluded for being confident, not for being reviewed."""
     app = make_app(_mixed_label_blocks())
     try:
         app.open_uid_review_tool()
@@ -241,12 +237,8 @@ def test_review_tool_uid_only_view_still_reproduces_old_default():
 
 
 def _all_seven_labels_blocks():
-    """One row per schema label, each with an explicit confidence record --
-    the odd-indexed ones (index 1, 3, 5) marked confident/HIGH
-    (review_recommended=False), the rest marked uncertain
-    (review_recommended=True) -- so the expected "All Uncertain" result set
-    spans TR/MIXED/UID/LANG3 (uncertain) while EN/NE/OTHER (confident) are
-    excluded, deliberately not correlated with any single label."""
+    """One row per label, alternating uncertain/confident, so the expected result
+    is deliberately not correlated with any single label."""
     def conf(label, uncertain):
         return {
             "token": "", "rule_based_label": label, "final_label": label,

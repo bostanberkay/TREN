@@ -56,9 +56,8 @@ def test_filmin_does_not_treat_m_as_an_arbitrary_single_character_suffix():
 
 
 # ---------------------------------------------------------------------------
-# The second reported bug: "sürdü" must parse as "sür" + "dü" (one atomic
-# past-tense suffix), never "sürd" + "ü". Zero-marked 3rd-person-singular:
-# no invented agreement suffix.
+# Reported bug: "sürdü" must parse as "sür" + "dü" (one past-tense suffix),
+# never "sürd" + "ü".
 # ---------------------------------------------------------------------------
 
 def test_surdu_splits_as_sur_plus_du_not_surd_plus_u():
@@ -172,12 +171,8 @@ def test_ambiguous_candidate_category_for_close_competing_readings():
 
 
 def test_never_produces_a_spurious_short_stem_split_for_a_base_noun():
-    """Regression for a real bug found during development: reranking.py's
-    (formerly mixed_reranker.py's) permissive "verbal" fallback table
-    proposed "ka" + "le" + "m" for "kalem" -- a 2-character coincidental
-    stem. tdk.py's parser (formerly tdk_parser.py) must never surface that:
-    whichever candidate wins, it must not be a 2-character "verbal"-sourced
-    stem."""
+    """Regression: the permissive verbal fallback proposed "ka" + "le" + "m" for
+    "kalem"; a 2-character verbal-sourced stem must never win."""
     r = tp.parse_token("kalem", ANN)
     assert not (len(r.root) < 3 and r.source == "verbal")
 
@@ -203,10 +198,7 @@ def test_vowel_harmony_consistent_soft_signal_never_raises():
 
 
 # ---------------------------------------------------------------------------
-# Apostrophe / punctuation handling (parser sees whatever token text it is
-# given -- normalization/edge-punctuation stripping is the caller's job in
-# annotation_model.py, not this module's; this just documents that
-# parse_token never raises on punctuation-bearing input).
+# Punctuation stripping is the caller's job; parse_token must just never raise.
 # ---------------------------------------------------------------------------
 
 def test_parse_token_with_apostrophe_never_raises():
@@ -295,9 +287,7 @@ def test_parse_result_to_dict_json_serializable():
 
 
 # ---------------------------------------------------------------------------
-# Segment explanations: every segment of a successful automatic split
-# carries a human-readable rule string (the "explain how suffixes were
-# found" requirement).
+# Every segment of an automatic split carries a human-readable rule string.
 # ---------------------------------------------------------------------------
 
 def test_segment_explanations_present_for_every_automatic_segment():

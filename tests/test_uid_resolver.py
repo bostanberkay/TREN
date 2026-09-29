@@ -383,17 +383,9 @@ def test_apply_resolver_never_raises_on_evaluation_failure():
 
 
 # ---------------------------------------------------------------------------
-# Integration boundary: as of the UID->TR resolver's production integration
-# (see reranking.py's module docstring / CHANGELOG), decide() is called
-# directly, per token, from inside reranking.apply_reranker() -- cs_pipeline.py
-# (the core rule-based engine) must not reference reranking.py at all, and
-# cs_annotator_app.py (the GUI) must not call reranking.decide() directly,
-# bypassing apply_reranker()'s own staging/ordering; the single integration
-# point is reranking.apply_reranker(), exactly mirroring where the residual
-# verbal detector was already integrated. (Before the tdk.py/reranking.py
-# consolidation, this was enforced as "uid_resolver.py is only imported by
-# reranker_integration.py" -- the underlying invariant is unchanged, only
-# its expression given that all three former modules now share one file.)
+# Integration boundary: reranking.apply_reranker() is the single production
+# caller of decide(); cs_pipeline.py must not reference reranking at all, and
+# cs_annotator_app.py must not call reranking.decide() directly.
 # ---------------------------------------------------------------------------
 
 def test_uid_resolver_not_referenced_by_cs_pipeline_or_gui():

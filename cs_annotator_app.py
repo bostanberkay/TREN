@@ -468,11 +468,8 @@ VOC vocative
     # =====================================================================
     # Confidence Review Tool
     #
-    # Sequential review of uncertain tokens across all labels (see
-    # confidence.py), filterable by label and confidence band. Works on the
-    # same self.blocks / self._row_index_map / self._sep_rows as the main
-    # table and mirrors edits through _rebuild_grid_from_model, so Save and
-    # Export stay in sync.
+    # Edits the same self.blocks as the main table and mirrors them through
+    # _rebuild_grid_from_model, so Save and Export stay in sync.
     # =====================================================================
 
     ALL_LABELS = ("TR", "EN", "MIXED", "UID", "NE", "OTHER", "LANG3")
@@ -480,10 +477,7 @@ VOC vocative
     # Bands the review filter can restrict to; an empty self._review_band_filter means no restriction.
     REVIEW_BANDS = (confidence.BAND_HIGH, confidence.BAND_MEDIUM, confidence.BAND_LOW)
 
-    # View presets. "All Uncertain" (default): any token whose confidence record
-    # has review_recommended=True. "UID Only": label filter {"UID"}, no band
-    # restriction. "Custom": the label/band checkboxes are in control (set
-    # whenever one is touched).
+    # "Custom" is selected automatically whenever a label/band checkbox is touched.
     REVIEW_VIEW_ALL_UNCERTAIN = "All Uncertain"
     REVIEW_VIEW_UID_ONLY = "UID Only"
     REVIEW_VIEW_CUSTOM = "Custom"
@@ -563,18 +557,10 @@ VOC vocative
             self._uid_refresh_items(preserve_index=True)
 
     def _uid_on_structural_change(self):
-        """Call after any edit outside this tool that changes row positions or
-        counts in self.blocks (Merge Cells / Undo Merge Cells). _uid_items and
-        _uid_undo_stack hold positional (bidx, ridx, vis_r) references that such
-        an edit invalidates.
-
-        The undo stack is cleared rather than remapped: after a merge there is
-        no reliable way to know whether the same position still means the same
-        edit, and restoring an old (label, gloss) into a merged row would
-        silently corrupt it. _uid_items is recomputed, and the previously
-        selected token is re-selected by (bidx, token text) when it still
-        exists, else the closest remaining item (the same preserve_index
-        fallback used after every Apply/Undo).
+        """Call after an outside edit that moves rows (Merge Cells / Undo), which
+        invalidates this tool's positional references. The undo stack is cleared
+        rather than remapped: restoring an old (label, gloss) into a merged row
+        would silently corrupt it.
         """
         self._uid_undo_stack = []
 
@@ -625,9 +611,7 @@ VOC vocative
                 self.blocks, self._row_index_map, self._sep_rows, self._uid_query)
 
         if self._review_view_mode == 'all_uncertain':
-            # Default view: every token whose confidence record has
-            # review_recommended=True, across all labels. Rows with no
-            # confidence record are excluded, not assumed uncertain.
+            # Rows without a confidence record are excluded, not assumed uncertain.
             raw = annotation_model.collect_label_rows(
                 self.blocks, self._row_index_map, self._sep_rows, set(self.ALL_LABELS))
             raw = [it for it in raw
@@ -1070,24 +1054,14 @@ VOC vocative
     # =====================================================================
     # TDK Checker
     #
-    # Separate from the Confidence Review Tool. Looks up a token, its
-    # parser-proposed root and each suffix segment via a tdk.DictionaryProvider,
-    # constructed lazily (see _ensure_tdk_provider) so starting the app or
-    # annotating never touches the network. Lookups run only from the "Check
-    # TDK" button and "Open in TDK Checker" (an explicit click), never
-    # automatically or at startup.
-    #
-    # TDK membership is evidence, not a label decision: this tool never reads
-    # or writes `label` or `gloss`; Apply Correction only updates the row's
-    # `tdk_segmentation` dict.
+    # Network lookups happen only on an explicit click, never at startup or
+    # during annotation. TDK membership is evidence, not a label decision: this
+    # tool never writes `label` or `gloss`, only the row's `tdk_segmentation`.
     # =====================================================================
 
     def _ensure_tdk_parser_annotator(self):
-        """Lightweight stand-in Annotator for the parser only (not self.annotator,
-        which loads fastText and Stanza). tdk.parse_token needs the real
-        turkish_freq_top/_all/english_freq_words lists, which
-        tdk.load_lexicon_annotator() reads from plain text files in the
-        resources/ working directory."""
+        """Lexicon-only Annotator for the parser, so the TDK Checker never loads
+        fastText or Stanza."""
         if getattr(self, '_tdk_parser_annotator', None) is None:
             self._tdk_parser_annotator = tdk.load_lexicon_annotator()
         return self._tdk_parser_annotator
@@ -1103,11 +1077,8 @@ VOC vocative
     # --- row resolution (main grid) -----------------------------------
 
     def _resolve_tdk_grid_selection(self):
-        """Resolve the main-grid selection to a single token row via
-        self._row_index_map / annotation_model.resolve_row (visual row != token
-        index). Returns (bidx, ridx, vis_r, error); `error` is None or
-        (messagebox_kind, message): 'info' for no selection, 'warning' for an
-        unusable one."""
+        """(bidx, ridx, vis_r, error) for the main-grid selection; `error` is
+        None or (messagebox_kind, message)."""
         if self.sheet is None:
             return None, None, None, ('info', "Select a token row first.")
         try:
@@ -1869,9 +1840,6 @@ VOC vocative
         self.annotator = None
         self._reranker_bundle = None
         self._reranker_load_attempted = False
-        # Pre-reranker text from the latest _run_annotation_pipeline(), kept so
-        # confidence.py can recover each token's rule-based label without a second
-        # annotate() call. Not shown or persisted.
         self._last_rule_based_output = ""
         self.current_text = ""
         self.current_output = ""
@@ -1885,10 +1853,6 @@ VOC vocative
         self._dirty = False
         self._suppress_dirty = False
 
-        # self.blocks/_extra_headers mirror the active dataset
-        # (self.datasets[self._active_dataset_index]); self.blocks IS that dataset's
-        # "blocks" list (same object), so existing self.blocks mutators keep working.
-        # See _sync_active_dataset_from_live/_load_dataset_into_live.
         self.datasets = [annotation_model.make_dataset("Data 1", "", [], [])]
         self._active_dataset_index = 0
         self.blocks = self.datasets[0]["blocks"]
@@ -1929,11 +1893,8 @@ VOC vocative
         self._uid_query = ''    # last Find-All-Occurrences query
         self._uid_search_var = None
         self._uid_evidence_var = None
-        # Review filter state. _review_view_mode: 'all_uncertain' (default) lists
-        # every token, any label, with review_recommended=True; 'checkbox_based'
-        # uses the label/band checkboxes ("UID Only" and "Custom" differ only in
-        # which boxes are set). The filter defaults below ({"UID"}, no band
-        # restriction) are what "UID Only" selects.
+        # _review_view_mode: 'all_uncertain' (default) or 'checkbox_based'; the
+        # filter defaults below are what "UID Only" selects.
         self._review_view_mode = 'all_uncertain'
         self._review_view_var = None
         self._review_label_filter = {"UID"}
@@ -1948,9 +1909,7 @@ VOC vocative
         # Merge Cells command.
         self._merge_cells_undo_stack = []
 
-        # TDK Checker state. _tdk_provider is created lazily on the first explicit
-        # lookup (see _ensure_tdk_provider); tests may set it to a
-        # MockDictionaryProvider first.
+        # TDK Checker state; _tdk_provider is created on the first explicit lookup.
         self._tdk_win = None
         self._tdk_provider = None
         self._tdk_parser_annotator = None
@@ -1961,9 +1920,7 @@ VOC vocative
         self._tdk_current = None  # {'bidx','ridx','vis_r'} of the row currently loaded, or None if opened standalone
         self._tdk_parse_result = None
         self._tdk_lookup_generation = 0  # bumped per lookup request; stale async responses are dropped
-        # {'full','root','segments'} snapshot Check TDK last ran against, compared
-        # with the current fields to mark results STALE_RESULT
-        # (see _tdk_recompute_staleness).
+        # Fields Check TDK last ran against; edits since then mark results STALE_RESULT.
         self._tdk_last_query_snapshot = None
         self._tdk_last_results = []
         self._tdk_results_stale = False
@@ -1999,6 +1956,12 @@ VOC vocative
         # confirm on close
         try:
             self.protocol("WM_DELETE_WINDOW", self._on_close_request)
+        except Exception:
+            pass
+        # macOS app-menu Quit / Cmd+Q / Dock Quit call ::tk::mac::Quit, which
+        # otherwise exits without going through WM_DELETE_WINDOW.
+        try:
+            self.createcommand("::tk::mac::Quit", self._on_close_request)
         except Exception:
             pass
 
@@ -2192,11 +2155,11 @@ VOC vocative
     def _build_menu(self):
         menubar = tk.Menu(self, tearoff=False)
         filem = tk.Menu(menubar, tearoff=False, bg=DARK_BG, fg=DARK_FG)
-        filem.add_command(label="Open Input (⌘O / Ctrl+O)", command=self.open_input)
-        filem.add_command(label="Run (⌘R / Ctrl+R)", command=self.run_pipeline)
-        filem.add_command(label="Export Table... (⌘S / Ctrl+S)", command=self.save_output)
+        filem.add_command(label="Open Input...", command=self.open_input)
+        filem.add_command(label="Run", command=self.run_pipeline)
+        filem.add_command(label="Export Table...", command=self.save_output)
         filem.add_separator()
-        filem.add_command(label="Exit", command=self.destroy)
+        filem.add_command(label="Exit", command=self._on_close_request)
         menubar.add_cascade(label="File", menu=filem)
 
         projm = tk.Menu(menubar, tearoff=False, bg=DARK_BG, fg=DARK_FG)
@@ -2238,10 +2201,8 @@ VOC vocative
         self.config(menu=menubar)
 
 
-    # Project dirty-state tracking: self._dirty is a real flag, not a "contains
-    # data" test, so a save with no further changes does not prompt again. Every
-    # mutation call site calls _mark_dirty(); switching dataset tabs and
-    # exporting deliberately do not.
+    # Every mutation calls _mark_dirty(); switching dataset tabs and exporting
+    # deliberately do not.
     def _mark_dirty(self):
         self._dirty = True
 
@@ -2284,10 +2245,8 @@ VOC vocative
         return getattr(self, '_dirty', False)
 
     def _confirm_proceed_over_unsaved_changes(self, title, message):
-        """Shared unsaved-changes guard for New/Open/Close. Returns True if the
-        caller may proceed, False if it must abort with the project untouched.
-        Clean: proceeds. Dirty: Save (proceeds only if save_project_progress()
-        returned True), Discard (proceeds), Cancel (aborts)."""
+        """Save/Discard/Cancel guard shared by New, Open and every close path.
+        True means proceed; Save proceeds only if the save actually succeeded."""
         if not self._has_unsaved_progress():
             return True
         res = messagebox.askyesnocancel(title, message)
@@ -2307,10 +2266,8 @@ VOC vocative
         except Exception:
             pass
 
-    # Multiple annotation datasets: self.blocks/_extra_headers are the live view of
-    # self.datasets[self._active_dataset_index] (same list objects), so existing
-    # mutators keep working; switching datasets is the only place that identity
-    # changes.
+    # self.blocks/_extra_headers are the active dataset's own list objects, so
+    # existing mutators keep working; only switching datasets changes them.
     def _sync_active_dataset_from_live(self):
         """Write the live self.blocks/_extra_headers/source-text/undo-stacks
         back into the active dataset dict. Call before anything that reads
@@ -2472,6 +2429,7 @@ VOC vocative
         if not self._reranker_load_attempted:
             self._reranker_bundle = reranking.load_reranker_bundle()
             self._reranker_load_attempted = True
+            self._update_reranker_status()
 
     def _run_annotation_pipeline(self, text):
         """Run annotate -> apply_reranker -> matrix/embed consistency on `text`;
@@ -2503,11 +2461,8 @@ VOC vocative
             return f.read()
 
     def _create_dataset_from_text(self, name, source_text, source_filename=None):
-        """Run the production pipeline on `source_text` and return a new
-        independent dataset dict, leaving self.blocks and existing datasets
-        untouched. Raises on annotation failure; the caller must not create a
-        tab in that case. `source_filename` is display-only (basename; see
-        annotation_model.make_dataset)."""
+        """New dataset dict from `source_text`, leaving existing datasets
+        untouched. Raises on annotation failure, so no tab is created."""
         out = self._run_annotation_pipeline(source_text)
         blocks = annotation_model.parse_annotated_text_to_blocks(out, [])
         annotation_model.renumber_tokens(blocks)
@@ -2541,9 +2496,7 @@ VOC vocative
         file_row = ttk.Frame(frm, style='Dark.TFrame')
         file_row.pack(fill='x', padx=(18, 0), pady=(2, 8))
         ttk.Label(file_row, text="File:", style='Dark.TLabel').pack(side='left')
-        # Kept only for this dialog's lifetime to open the file on Create; never
-        # stored on the dataset or in .trenproj (only the basename leaves, via
-        # source_filename).
+        # Full path lives only as long as this dialog; only the basename is stored.
         file_path_var = tk.StringVar(value='')
         file_display_var = tk.StringVar(value='(none selected)')
         file_label = ttk.Label(file_row, textvariable=file_display_var, style='Dark.TLabel',
@@ -2663,6 +2616,7 @@ VOC vocative
             return
 
         self.cfg = DEFAULTS.copy()
+        self._sync_toolbar_from_cfg()
         self.datasets = [annotation_model.make_dataset("Data 1", "", [], [])]
         self._close_dataset_scoped_windows()
         self._load_dataset_into_live(0)
@@ -2769,6 +2723,7 @@ VOC vocative
             return
 
         self.cfg = payload.get("cfg", DEFAULTS.copy())
+        self._sync_toolbar_from_cfg()
         self.datasets = datasets
         self._close_dataset_scoped_windows()
         self._load_dataset_into_live(active_index)
@@ -2825,6 +2780,7 @@ VOC vocative
 
         try:
             self.cfg = payload.get("cfg", DEFAULTS.copy())
+            self._sync_toolbar_from_cfg()
             self.datasets = datasets
             self._close_dataset_scoped_windows()
             self._load_dataset_into_live(active_index)
@@ -2846,6 +2802,22 @@ VOC vocative
                 self.sheet.see(r, c)
         except Exception:
             pass
+
+    _TOOLBAR_CFG_VARS = (
+        ("v_lang", "FEATURE_LANGUAGE_PER_ITEM"),
+        ("v_mlx", "FEATURE_MATRIX_LANGUAGE"),
+        ("v_emb", "FEATURE_EMBEDDED_LANGUAGE"),
+        ("v_ner", "NER_ENABLED"),
+    )
+
+    def _sync_toolbar_from_cfg(self):
+        """Make the toolbar checkboxes show self.cfg after it was replaced
+        (New/Open/auto-restore). Setting a BooleanVar does not fire the
+        checkbox command, so this never marks the project dirty."""
+        for attr, key in self._TOOLBAR_CFG_VARS:
+            var = getattr(self, attr, None)
+            if var is not None:
+                var.set(bool(self.cfg.get(key, DEFAULTS.get(key, False))))
 
     def _build_toolbar(self):
         bar = tk.Frame(self, bg=DARK_BG)
@@ -2871,6 +2843,31 @@ VOC vocative
 
         btn_save = ttk.Button(bar, text="Export", command=self.save_output, style='Dark.TButton')
         btn_save.pack(side="right", padx=4)
+
+        # Empty until the first annotation request loads the reranker.
+        self._reranker_status_var = tk.StringVar(value="")
+        self._reranker_status_label = tk.Label(bar, textvariable=self._reranker_status_var,
+                                               bg=DARK_BG, fg="#888888")
+        self._reranker_status_label.pack(side="right", padx=8)
+        self._reranker_status_reason = ""
+
+    def _update_reranker_status(self):
+        """Show whether the MIXED reranker is active; when it failed to load,
+        annotation silently falls back to rule-based output, so say so here
+        (no dialog, per the reranker's fallback contract)."""
+        var = getattr(self, '_reranker_status_var', None)
+        if var is None:
+            return
+        if self._reranker_bundle is not None:
+            var.set("MIXED reranker: active")
+            self._reranker_status_label.configure(fg="#888888")
+            self._reranker_status_reason = (
+                f"Frozen MIXED-token reranker loaded (threshold {self._reranker_bundle.threshold}).")
+        else:
+            var.set("MIXED reranker: unavailable (rule-based only)")
+            self._reranker_status_label.configure(fg="#ffcc66")
+            self._reranker_status_reason = reranking.last_load_failure or "unknown error"
+        self._make_tooltip(self._reranker_status_label, self._reranker_status_reason)
 
     def _build_body(self):
         main = tk.Frame(self, bg=DARK_BG)
@@ -3979,36 +3976,44 @@ VOC vocative
         if getattr(self, "_relabel_busy", False):
             return
         self._relabel_busy = True
-        self._ensure_sheet_focus()
-        self._cancel_edit_if_any()
-        r, _ = self._ensure_valid_selection(prefer_col=2)
-        if r is None:
-            self.bell()
-            return
-        c = 2  # force Label column
-        bidx, ridx = annotation_model.resolve_row(self._row_index_map, self._sep_rows, r)
-        if bidx is None:
-            self.bell()
-            return
-        tok = self.blocks[bidx][ridx].get('token')
-        if annotation_model.is_matrixembed_locked(tok, new_value):
-            self.bell()
-            return
-        self.blocks[bidx][ridx]['label'] = new_value
-        self._mark_dirty()
         try:
-            self.sheet.set_cell_data(r, c, new_value)
-            self.sheet.select_cell(r, c)
-            self.sheet.see(r, c)
-            if hasattr(self.sheet, "refresh"):
-                self.sheet.refresh()
             self._ensure_sheet_focus()
-            self.update_idletasks()
-        except Exception:
-            pass
-        # clear busy flag after Tk has processed UI updates
-        self.after_idle(lambda: setattr(self, "_relabel_busy", False))
-        self._last_pos = (r, c)
+            self._cancel_edit_if_any()
+            r, _ = self._ensure_valid_selection(prefer_col=2)
+            if r is None:
+                self.bell()
+                return
+            c = 2  # force Label column
+            bidx, ridx = annotation_model.resolve_row(self._row_index_map, self._sep_rows, r)
+            if bidx is None:
+                self.bell()
+                return
+            tok = self.blocks[bidx][ridx].get('token')
+            new_value = annotation_model.validate_label_edit(tok, new_value)
+            if new_value is None:
+                self.bell()
+                return
+            self.blocks[bidx][ridx]['label'] = new_value
+            self._mark_dirty()
+            try:
+                self.sheet.set_cell_data(r, c, new_value)
+                self.sheet.select_cell(r, c)
+                self.sheet.see(r, c)
+                if hasattr(self.sheet, "refresh"):
+                    self.sheet.refresh()
+                self._ensure_sheet_focus()
+                self.update_idletasks()
+            except Exception:
+                pass
+            self._last_pos = (r, c)
+        finally:
+            # Cleared on every exit path (early return or exception), after Tk
+            # has processed the UI updates; a stuck flag would silently disable
+            # the relabel panel for the rest of the session.
+            try:
+                self.after_idle(lambda: setattr(self, "_relabel_busy", False))
+            except Exception:
+                self._relabel_busy = False
 
     def _is_macos(self):
         try:
@@ -4111,26 +4116,52 @@ VOC vocative
         path = filedialog.askopenfilename(title="Open text file",
                                           filetypes=[("Text files","*.txt"),("All files","*.*")])
         if not path: return
-        with open(path, "r", encoding="utf-8") as f:
-            self.current_text = f.read()
+        try:
+            text = self._read_utf8_text_file(path)
+        except UnicodeDecodeError as e:
+            messagebox.showerror("Open Input", f"The selected file is not valid UTF-8:\n{e}")
+            return
+        except OSError as e:
+            messagebox.showerror("Open Input", f"Could not read the selected file:\n{e}")
+            return
+        self.current_text = text
         self.current_path = path
         self.txt_input.delete("1.0", "end")
         self.txt_input.insert("1.0", self.current_text)
         self._mark_dirty()
+
+    def _confirm_replace_current_annotations(self):
+        """Run rebuilds the active dataset from scratch, so any existing token
+        rows (with their labels, glosses, extra-column values and reviewed
+        marks) are lost. Ask first; True means proceed."""
+        has_tokens = any(
+            not annotation_model.is_meta_row_token(row.get('token'))
+            for block in self.blocks for row in block
+        )
+        if not has_tokens:
+            return True
+        return bool(messagebox.askokcancel(
+            "Run",
+            "Running the pipeline replaces every annotation in the current dataset "
+            "(labels, glosses, extra-column values and reviewed marks) and cannot be undone.\n\n"
+            "To keep the current annotations, use \"Add New Data\" (the + tab) with "
+            "\"Re-run Current Text\" instead.\n\nReplace the current annotations?",
+            icon="warning", default="cancel",
+        ))
 
     def run_pipeline(self):
         txt = self.txt_input.get("1.0", "end-1c")
         if not txt.strip():
             messagebox.showwarning("Empty", "No input text.")
             return
+        if not self._confirm_replace_current_annotations():
+            return
         try:
             out = self._run_annotation_pipeline(txt)
             self._populate_table(out)
             self._attach_confidence(self.blocks)
             self.current_output = out
-            # _populate_table replaces self.blocks with a new list object; sync it into
-            # the active dataset now. A failed pipeline raises before this point,
-            # leaving self.blocks untouched.
+            # _populate_table replaced self.blocks with a new list; re-link the dataset.
             self._sync_active_dataset_from_live()
             self._mark_dirty()
         except Exception as e:
@@ -4178,9 +4209,7 @@ VOC vocative
     def _sheet_rows_to_txt(self, rows):
         return annotation_model.sheet_rows_to_txt(rows, self._all_headers())
 
-    # Export Table: save_output (menu/toolbar/⌘S) always opens the dataset+format
-    # chooser, even for a single dataset, so the workflow stays consistent as
-    # datasets are added.
+    # save_output always opens the dataset+format chooser, even for one dataset.
     _EXPORT_FORMATS = ("TXT", "CSV", "CoNLL", "JSONL")
     _EXPORT_EXTENSIONS = {"TXT": ".txt", "CSV": ".csv", "CoNLL": ".conll", "JSONL": ".jsonl"}
 
@@ -4385,10 +4414,9 @@ VOC vocative
                 if c == 0 or c >= len(hdrs):
                     continue
 
-                # Matrix/Embed constraint only for Label column
                 if hdrs[c] == "Label":
-                    tok = self.blocks[bidx][ridx].get('token')
-                    if annotation_model.is_matrixembed_locked(tok, val):
+                    val = annotation_model.validate_label_edit(self.blocks[bidx][ridx].get('token'), val)
+                    if val is None:
                         continue
 
                 if hdrs[c] == "Item":
@@ -4530,9 +4558,7 @@ VOC vocative
 
     # --- Merge Cells (main annotation table) --------------------------------
     #
-    # Uses the sheet's existing multi-cell selection and
-    # annotation_model.merge_token_rows / rows_are_adjacent_same_block; operates
-    # on self.blocks only (no Stanza, fastText or reranker).
+    # Operates on self.blocks only; never re-runs any model.
 
     def merge_selected_cells(self):
         if self.sheet is None:
@@ -4735,10 +4761,8 @@ VOC vocative
         return r, c
 
     def paste_to_selected(self, new_value):
-        """Apply `new_value` to the selected cell: leaves edit mode, focuses the
-        sheet, and selects the first valid cell if there is no (or a separator)
-        selection. Column 0 (idx) is not editable; on MatrixLang/EmbedLang rows
-        Label only accepts TR/EN."""
+        """Apply `new_value` to the selected cell (the first valid cell if none).
+        Column 0 (idx) is not editable; Label goes through validate_label_edit."""
         if self.sheet is None:
             return
 
@@ -4760,12 +4784,12 @@ VOC vocative
             self.bell()
             return
 
-        # Matrix/Embed
         if c == 2:
-            tok = self.blocks[bidx][ridx].get('token')
-            if annotation_model.is_matrixembed_locked(tok, new_value):
+            valid = annotation_model.validate_label_edit(self.blocks[bidx][ridx].get('token'), new_value)
+            if valid is None:
                 self.bell()
                 return
+            new_value = valid
             self.blocks[bidx][ridx]['label'] = new_value
         elif c == 1:
             # Item
@@ -4833,11 +4857,8 @@ VOC vocative
         return "\n\n".join(new_blocks)
 
     def _populate_table(self, text):
-        """Parse annotate() output into blocks, build the model and fill the grid
-        (global idx). Transactional: parsing, renumbering and grid construction
-        use locals first; self.blocks/_row_index_map/_sep_rows and the sheet are
-        replaced only after every step succeeds, so a failure leaves state
-        unchanged (run_pipeline's except branch handles it)."""
+        """Parse annotate() output and fill the grid. Transactional: state and
+        sheet are replaced only after every step succeeds."""
         if self.sheet is None:
             return
 
@@ -4976,13 +4997,19 @@ VOC vocative
 
             if c == 2:
                 # Label
-                if annotation_model.is_matrixembed_locked(self.blocks[bidx][ridx].get('token'), nv):
+                valid = annotation_model.validate_label_edit(self.blocks[bidx][ridx].get('token'), nv)
+                if valid is None:
                     ov = self.blocks[bidx][ridx].get('label', '')
                     sheet.set_cell_data(r, 2, ov)
                     if hasattr(sheet, "refresh"):
                         sheet.refresh()
                     self.bell()
                     return
+                if valid != nv:
+                    nv = valid
+                    sheet.set_cell_data(r, 2, nv)
+                    if hasattr(sheet, "refresh"):
+                        sheet.refresh()
                 self.blocks[bidx][ridx]['label'] = nv
             elif c == 1:
                 # Item

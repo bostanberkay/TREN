@@ -34,6 +34,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def shown_messages(monkeypatch):
+    """Record info/warning/error boxes instead of opening real modal dialogs,
+    which would block a headless (xvfb) CI run."""
+    shown = []
+    for name in ("showinfo", "showwarning", "showerror"):
+        monkeypatch.setattr(caa.messagebox, name,
+                            lambda *a, _n=name, **k: shown.append((_n, a)))
+    return shown
+
+
 # --- shared helpers ------------------------------------------------------
 
 def real_click(widget, xy=None):
@@ -510,7 +521,7 @@ def test_undo_with_empty_stack_is_safe_noop():
         app.destroy()
 
 
-def test_apply_correction_without_a_loaded_row_shows_message():
+def test_apply_correction_without_a_loaded_row_shows_message(shown_messages):
     app = make_app(two_sentence_blocks())
     try:
         app.open_tdk_checker_tool()  # standalone, no row loaded
@@ -518,6 +529,7 @@ def test_apply_correction_without_a_loaded_row_shows_message():
         app._tdk_token_var.set("kitap")
         app._tdk_apply_correction()  # must not raise; shows an info message
         app.update()
+        assert [n for n, _ in shown_messages] == ["showinfo"]
     finally:
         app.destroy()
 
@@ -604,7 +616,7 @@ def test_find_all_occurrences_apply_to_selected_only_affects_active_dataset():
         app.destroy()
 
 
-def test_find_all_occurrences_no_query_shows_message():
+def test_find_all_occurrences_no_query_shows_message(shown_messages):
     app = make_app(two_sentence_blocks())
     try:
         app.open_tdk_checker_tool()
@@ -612,6 +624,7 @@ def test_find_all_occurrences_no_query_shows_message():
         app._tdk_token_var.set('')
         app.open_tdk_find_occurrences()  # must not raise
         app.update()
+        assert [n for n, _ in shown_messages] == ["showinfo"]
     finally:
         app.destroy()
 

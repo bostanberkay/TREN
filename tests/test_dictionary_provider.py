@@ -339,10 +339,8 @@ def test_unavailable_provider_specifically():
 
 
 # ---------------------------------------------------------------------------
-# Timeout / "no GUI freeze" support: MockDictionaryProvider's delay lets
-# callers (the GUI layer) verify a slow lookup doesn't block anything it
-# shouldn't -- exercised here at the provider level via real threads, with
-# no Tk dependency at all.
+# Slow-lookup support: MockDictionaryProvider's delay, exercised with real
+# threads and no Tk.
 # ---------------------------------------------------------------------------
 
 def test_mock_provider_delay_does_not_block_other_threads():
@@ -367,9 +365,7 @@ def test_mock_provider_delay_does_not_block_other_threads():
 
 
 # ---------------------------------------------------------------------------
-# Rich DictionaryEntry extraction: headword, POS, definitions/senses,
-# origin, pronunciation, usage labels, compounds, idioms, proverbs,
-# examples -- all defensively mapped, missing fields never guessed.
+# Rich DictionaryEntry extraction; missing fields are never guessed.
 # ---------------------------------------------------------------------------
 
 def _tdk_sample_response():
@@ -459,13 +455,8 @@ def test_mark_stale_is_a_valid_mock_provider_status():
 
 
 def test_stale_response_ordering_is_caller_responsibility_last_write_wins_in_queue():
-    """tdk.py's provider abstraction (formerly dictionary_provider.py) itself
-    has no notion of "generation"/staleness -- that is the GUI layer's
-    responsibility (see
-    tests/test_tdk_checker_gui.py's stale-response tests). This test only
-    confirms the provider's cache is safe under concurrent/out-of-order
-    access from multiple threads (no corruption, no crash, deterministic
-    per-key result)."""
+    """Staleness is the GUI's job; this only checks that the provider cache is safe
+    under concurrent, out-of-order access."""
     provider = dp.MockDictionaryProvider(responses={"a": "FOUND", "b": "NOT_FOUND"}, delay_seconds=0.05)
     results = []
 

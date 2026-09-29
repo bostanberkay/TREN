@@ -67,10 +67,8 @@ ALL_POLICIES = (POLICY_UNRESTRICTED, POLICY_BLOCK_NE, POLICY_NE_THRESHOLD, POLIC
 
 
 def stem_evidence(structured_features: dict) -> bool:
-    """Same definition as reranking.is_non_turkish_stem_evidence,
-    applied to the ALREADY-COMPUTED stem features stored on the row (no
-    Annotator/fastText call needed here -- build_reranker_dataset.py
-    already ran it once per row)."""
+    """reranking.is_non_turkish_stem_evidence, applied to the stem features
+    already stored on the row."""
     if structured_features.get("stem_length", 0) == 0:
         return False  # no candidate analysis at all -> no stem to have evidence about
     if structured_features.get("stem_in_english_freq"):
@@ -153,9 +151,7 @@ def overall_mixed_f1(sim_rows):
 
 
 def selection_key(sim_rows):
-    """(fewer harmful is better, more genuine-retained is better, higher F1 is better)
-    -- negate the "more/higher is better" terms so a plain min() finds the winner,
-    matching the 3-tier criterion documented in the module docstring."""
+    """min()-sortable key for the module docstring's 3-tier criterion."""
     ns = ne_stats(sim_rows)
     return (ns["n_harmful_ne_changes"], -ns["n_genuine_ne_retained"], -overall_mixed_f1(sim_rows))
 

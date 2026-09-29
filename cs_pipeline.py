@@ -30,21 +30,14 @@ EMOJI_RE   = re.compile(r"[\U00010000-\U0010ffff]", flags=re.UNICODE)
 CODE_RE    = re.compile(r"^(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)"
                          r"[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)+$")
 
-# Tokenizer alternation, longest/most-specific pattern first so a URL,
-# mention, hashtag, emoji run, separator-joined number, or hyphen/
-# underscore-joined code is captured whole instead of being fragmented by
-# the generic \w+ alternatives that follow. \w never matches '@', '#', or
-# astral-plane emoji codepoints, so without these explicit alternatives
-# those characters (and anything built out of them) are silently dropped
-# from the token stream rather than surviving as a single OTHER token.
+# Most specific alternatives first, so URLs, mentions, hashtags, emoji and
+# joined numbers/codes stay whole; \w alone would drop '@', '#' and emoji.
 _TOKEN_RE = re.compile(
     r"https?://\S+|www\.\S+"
     r"|@\w+"
     r"|#\w+"
     r"|[\U00010000-\U0010ffff]+"
-    # requires at least one separator+digit GROUP ('+', not '*') -- a bare
-    # digit run like "20" in "20li" must NOT match here, or it would win
-    # over \w+['’]?\w* below and wrongly split "20li" into "20" + "li".
+    # '+' not '*': a bare digit run would split "20li" into "20" + "li".
     r"|\d+(?:[.,:/-]\d+)+"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)+"
     r"|\w+['’]?\w*"
@@ -55,13 +48,9 @@ _TOKEN_RE = re.compile(
 
 EN_CONTRACTIONS = {"s", "re", "ve", "m", "ll", "d", "t"}
 
-# NE arbitration (Policies C/D), validated offline against the real corpus
-# and synthetic benchmark before production integration -- see CHANGELOG.
-# Policy C: Stanza entity subtypes that must NOT keep a token classified
-# NE. Evidence-scoped to TIME only -- MONEY was evaluated and rejected
-# (two real-corpus tokens, "dolar"/"dolarlık", are genuine gold-NE MONEY
-# matches; excluding MONEY would misclassify them). PERSON/LOCATION/
-# ORGANIZATION are never suppressed.
+# NE Policies C/D (evidence in CHANGELOG). Policy C: subtypes that do not keep
+# a token NE. TIME only; MONEY was rejected because "dolar"/"dolarlık" are
+# gold NE in the real corpus.
 POLICY_C_EXCLUDED_NE_SUBTYPES = {"TIME"}
 POLICY_D_REDACTED_LITERAL = "REDACTED"
 
@@ -145,6 +134,10 @@ def is_other_token(tok: str) -> bool:
 
 def clean_token(token: str) -> str:
     return re.sub(r"[^\w’']+", "", token)
+
+class NERUnavailableError(RuntimeError):
+    """NER was requested but the Stanza pipeline could not be created."""
+
 
 def tokenize(text: str):
     return _TOKEN_RE.findall(text)
@@ -277,10 +270,8 @@ class Annotator:
         return None, None
 
     def _has_valid_turkish_nominal_analysis(self, tok_l: str) -> bool:
-        """Whether any closed-class Turkish nominal suffix fully consumes the tail
-        of tok_l, regardless of the stem's language; Policy D uses it to decline
-        overriding NE when a plausible Turkish reading exists. Reuses
-        _parse_tr_suffixes_full read-only."""
+        """Whether a closed-class Turkish nominal suffix fully consumes the tail
+        of tok_l; Policy D keeps NE when such a Turkish reading exists."""
         all_suffixes = (set(CASE_ENDINGS.keys()) | set(PLUR.keys()) |
                         set(POSS_LONG.keys()) | set(POSS_SHORT.keys()) |
                         set(DERIV_SUFFIXES.keys()) | set(BUFFER_N_ACC.keys()) | set(BUFFER_N_DAT.keys()))
@@ -295,10 +286,8 @@ class Annotator:
         return False
 
     def _qualifies_for_policy_d(self, tok: str) -> bool:
-        """Policy D: a token backed only by an NE match may be excluded from ne_map,
-        falling through to _choose_label/MIXED logic (which resolves it to EN via
-        the English lexicon). All conditions below must hold; see CHANGELOG for
-        the offline evidence."""
+        """Policy D: an NE-only token may leave ne_map and fall through to normal
+        labeling when all conditions below hold (evidence in CHANGELOG)."""
         if "'" in tok or "’" in tok:
             return False  # 1: bare token only
         tok_l = tok.lower()
@@ -320,19 +309,12 @@ class Annotator:
         ne_map = {}
         if not getattr(doc, "ents", None): return ne_map
 
-        # Policy C: a piece backed ONLY by excluded-subtype (TIME) entities
-        # is not NE at all -- omitted from `surviving_pieces` so it falls
-        # through to the existing non-NE labeling logic below, exactly like
-        # any token that was never entity-matched (no new "recompute" path).
-        # A piece backed by at least one non-excluded-subtype entity keeps
-        # its NE candidacy even if it also matches an excluded-subtype span.
+        # Policy C: a piece backed only by excluded-subtype entities is dropped
+        # and labeled as if never entity-matched; any other entity keeps it.
         surviving_pieces = set()
-        # Policy D guard: a piece backed by PERSON/LOCATION evidence, or by
-        # a genuine multi-word ORGANIZATION compound (another piece of the
-        # same span is itself a bare, alphabetic, capitalized word -- e.g.
-        # "Comic Plus"/"After Effect" -- as opposed to NER span-boundary
-        # noise like "Achievement examın"/"3 detachment"), is never a
-        # Policy D candidate.
+        # Policy D never applies to PERSON/LOCATION pieces or to real multi-word
+        # ORGANIZATION compounds ("Comic Plus"), only to span-boundary noise
+        # like "Achievement examın".
         policy_d_blocked = set()
 
         for ent in doc.ents:
@@ -362,7 +344,21 @@ class Annotator:
 
     def _ensure_ner(self, enabled=True):
         if enabled and self.ner is None:
-            self.ner = stanza.Pipeline("tr", processors="tokenize,ner", use_gpu=False)
+            # The default re-downloads resources.json on every start, which fails
+            # offline; REUSE_RESOURCES uses the cache and downloads only what is missing.
+            try:
+                self.ner = stanza.Pipeline("tr", processors="tokenize,ner", use_gpu=False,
+                                           download_method=stanza.DownloadMethod.REUSE_RESOURCES)
+            except Exception as e:
+                raise NERUnavailableError(
+                    "Named Entity Recognition (NER) could not be started: the Stanza "
+                    "Turkish models are missing or could not be loaded. They are "
+                    "downloaded automatically the first time NER runs, which needs an "
+                    "internet connection.\n\n"
+                    "Connect to the internet and run again, or turn off the NER option "
+                    "in the toolbar to annotate without NER.\n\n"
+                    f"Details: {e}"
+                ) from e
 
     def _decide_matrix_embed(self, labels, cfg):
         """Deterministic rule. Matrix: TR/EN vote, MIXED weighted by cfg. Embed: if
@@ -374,7 +370,7 @@ class Annotator:
         score_tr += cfg["MIXED_TR_WEIGHT"] * mixed_cnt
         score_en += cfg["MIXED_EN_WEIGHT"] * mixed_cnt
 
-        # Ties prefer TR (matches earlier behavior)
+        # Ties prefer TR
         matrix = "TR" if score_tr >= score_en else "EN"
 
         if matrix == "TR":

@@ -15,14 +15,9 @@ import annotation_model
 # ---------------------------------------------------------------------------
 # MIXED-candidate generation and feature engineering
 #
-# Reuses Annotator._parse_tr_suffixes_full and Annotator._ft_predict read-only.
-# Candidates come from every right-to-left split of a token whose tail parses
-# as a suffix chain: the nominal parser first, then the experimental verbal
-# tables below (`verbal_level`, default DEFAULT_VERBAL_MORPHOLOGY_LEVEL).
-# cs_pipeline.py does not import this module. build_structured_feature_dict()
-# exposes opt-in feature groups ("batches"); the frozen model uses Batch A +
-# Batch C + pruned Batch G, and B and D are off by default. See README
-# "MIXED-Token Reranker" for the batch inventory.
+# Candidates are right-to-left splits whose tail parses as a suffix chain
+# (nominal parser first, then the experimental verbal tables). The frozen model
+# uses feature Batches A + C + pruned G; B and D are off (see README).
 # ---------------------------------------------------------------------------
 
 
@@ -82,10 +77,8 @@ class CandidateAnalysis:
 
 
 # Experimental verbal-suffix tables; nominal parsing in cs_pipeline is untouched.
-# The `level` argument (VERBAL_MORPHOLOGY_*) picks the active stages: PHASE_4A =
-# infinitive, verbalizer, passive/inchoative (always active); PHASE_4B adds
-# past/evidential/progressive/future and 2nd person; PHASE_4C1 adds 1st person
-# singular (bare and fused with past) instead of 4B's stages; PHASE_4E = union.
+# Stage sets per VERBAL_MORPHOLOGY_* level are listed in
+# _parse_experimental_verbal_suffix.
 VERBAL_INFINITIVE = {"mak": "Verbal=Infinitive", "mek": "Verbal=Infinitive"}
 VERBAL_VERBALIZER = {"la": "Verbal=Verbalizer", "le": "Verbal=Verbalizer"}
 VERBAL_PASSIVE_INCHOATIVE = {"lan": "Verbal=PassiveInchoative", "len": "Verbal=PassiveInchoative"}
@@ -184,22 +177,14 @@ def _match_verbal_table(s: str, table: dict, allow_informal_orthography: bool):
 def _parse_experimental_verbal_suffix(suffix: str, level: str = DEFAULT_VERBAL_MORPHOLOGY_LEVEL,
                                        allow_informal_orthography: bool = False
                                        ) -> Tuple[List[str], FrozenSet[str], bool, bool]:
-    """Experimental verbal-suffix parser (candidate generation only).
+    """Experimental verbal-suffix parser (candidate generation only). Peels
+    right to left: agreement (1/1b), tense/aspect/mood (2), infinitive (3, only
+    if no finite stage matched), passive/inchoative else verbalizer (4).
 
-    `level` selects the active stages: 4A = infinitive (3) and
-    verbalizer/passive-inchoative (4); 4B adds 2nd person agreement (1) and
-    tense/aspect/mood (2); 4C1 adds only 1st person singular agreement (1b),
-    as an alternative at the finite/non-finite branch, not 4B's stages;
-    4E = union of 4B and 4C1. `allow_informal_orthography` retries a failed
-    stage against informal spellings, independent of `level`.
-
-    Peels right to left: agreement (1/1b), tense/aspect/mood (2), infinitive
-    -mak/-mek (3, only if no finite stage matched), passive/inchoative
-    -lan/-len else verbalizer -la/-le (4).
-
-    Returns (segments, tags, fully_consumed, used_informal_orthography).
-    A partial match returns fully_consumed=False so _analysis_from_suffix
-    rejects it.
+    Levels: 4A = stages 3-4; 4B adds 1 (2nd person) and 2; 4C1 adds only 1b
+    (1st person singular); 4E = 4B + 4C1. Returns (segments, tags,
+    fully_consumed, used_informal_orthography); partial matches are rejected
+    by the caller.
     """
     if level not in VERBAL_MORPHOLOGY_LEVELS:
         raise ValueError(f"unknown verbal morphology level: {level!r} (valid: {VERBAL_MORPHOLOGY_LEVELS})")
@@ -313,15 +298,11 @@ def _analysis_from_suffix(stem: str, suffix: str, split_position: int, annotator
 def enumerate_candidate_analyses(token: str, annotator, min_stem_len: int = MIN_STEM_LEN,
                                   verbal_level: str = DEFAULT_VERBAL_MORPHOLOGY_LEVEL,
                                   allow_informal_orthography: bool = False) -> List[CandidateAnalysis]:
-    """Plausible stem/suffix splits of `token`: stem length >= min_stem_len,
-    non-empty suffix, at least one feature or segment, and no
-    "Unparsed=Leftover".
+    """Plausible stem/suffix splits of `token`.
 
-    Tokens with an apostrophe are not enumerated per character position (that
-    kept the apostrophe in every stem, breaking lexicon lookups and fastText
-    confidence); they use Annotator._split_mixed_apostrophe, the same split
-    cs_pipeline uses. If it declines (English contraction, several
-    apostrophes) there are no candidates, deliberately with no naive fallback.
+    Apostrophe tokens use only Annotator._split_mixed_apostrophe (per-position
+    splits kept the apostrophe in every stem and broke lexicon lookups); if it
+    declines there are deliberately no candidates.
     """
     candidates: List[CandidateAnalysis] = []
     if not token:
@@ -445,22 +426,11 @@ def classify_candidate(pred_label: str, pred_item: str, annotator, cfg, min_stem
                         allow_informal_orthography: bool = False,
                         allow_stem_orthographic_recovery: bool = False,
                         return_candidates: bool = False):
-    """Decide whether a token is a reranker candidate from predicted
-    information only (never the gold label).
-
-    Returns (is_candidate, reason, analysis), plus the full enumerated
-    candidate list as a 4th element when `return_candidates=True` (empty for
-    NON_CANDIDATE_LABELS, which are not enumerated) so callers can reuse it.
-
-    Buckets: predicted UID -> always a candidate; NE with a plausible Turkish
-    suffix analysis -> candidate; TR with a plausible analysis AND evidence of
-    a non-Turkish stem (or, with allow_stem_orthographic_recovery, a
-    duplicated-consonant-recovered lexicon match) -> candidate;
-    EN/OTHER/MIXED/LANG3 -> never.
-
-    `analysis` is returned whenever one was found, even for non-candidates, so
-    feature extraction still sees the morphology. `strategy` only changes which
-    analysis is picked, not the candidacy rule.
+    """(is_candidate, reason, analysis[, candidates]) from predicted
+    information only, never the gold label. UID is always a candidate; NE needs
+    a plausible Turkish suffix analysis; TR also needs non-Turkish stem
+    evidence; EN/OTHER/MIXED/LANG3 never. `analysis` is returned even for
+    non-candidates so features still see the morphology.
     """
     def _result(is_cand, reason, analysis, candidates):
         if return_candidates:
@@ -488,12 +458,8 @@ def classify_candidate(pred_label: str, pred_item: str, annotator, cfg, min_stem
         if analysis is not None and is_non_turkish_stem_evidence(annotator, analysis.stem, cfg):
             return _result(True, CANDIDATE_REASON_TR_SUSPECT_STEM, analysis, candidates)
 
-        # Typo-tolerant fallback: only when a fully-consumed analysis exists that
-        # was reachable only via the informal-orthography fallback, ordinary
-        # lexicon/fastText evidence just failed, and the recovery helper's own
-        # preconditions hold (stem length >= 5, duplicated-consonant lexicon
-        # match). `analysis.stem` is unmodified; the recovered form is stored on
-        # a replaced analysis object that is not in `candidates`.
+        # Only for informal-orthography analyses whose ordinary stem evidence
+        # failed; the recovered form goes on a copy, never on `analysis.stem`.
         if (allow_stem_orthographic_recovery and analysis is not None
                 and analysis.informal_suffix_normalization):
             recovered = recover_english_stem_via_duplicated_consonant(analysis.stem, annotator)
@@ -520,28 +486,13 @@ def build_structured_feature_dict(pred_item: str, pred_label: str, analysis: Opt
                                    candidate_analyses: Optional[List[CandidateAnalysis]] = None,
                                    candidate_strategy: str = DEFAULT_CANDIDATE_STRATEGY,
                                    include_batch_d: bool = False) -> dict:
-    """Structured (non-n-gram) feature dict for one token row, derived only
-    from the predicted (machine) item/label.
+    """Structured feature dict for one row, from predicted item/label only.
 
-    String entries (pred_label, fastText languages) stay raw for
-    DictVectorizer one-hot encoding. Opt-in groups (`include_batch_*`):
-      C (default on): ft_prob_delta, ft_lang_agreement, stem_evidence_strength.
-      A (default off): analysis_source, candidate_reason, is_candidate,
-        split_position_ratio; is_candidate/candidate_reason come from the
-        caller (classify_candidate), never recomputed here.
-      B (default off): morphological complexity counts read off
-        analysis.ud_feats/deriv/amb.
-      G (default off): analysis_candidate_count, selection_is_unique,
-        has_nominal_verbal_competition; needs the full enumeration via
-        `candidate_analyses` (classify_candidate(return_candidates=True)).
-        None or [] gives count 0, no competition, unique.
-      D (default off): stem_english_confidence, stem_turkish_confidence,
-        stem_lexicon_contrast, derived from fields computed above.
-
-    Deliberately omitted as duplicates or arbitrary: distinct_stem_count (always
-    equals analysis_candidate_count, since every split yields a different stem
-    length), stem_length_ratio (equals split_position_ratio), and stem_is_short
-    (would need an invented length threshold).
+    Opt-in batches: C (default on) evidence deltas; A parser metadata (its
+    is_candidate/candidate_reason come from the caller); B morphological
+    counts; G candidate ambiguity (needs `candidate_analyses`); D stem-language
+    confidence. distinct_stem_count and stem_length_ratio are omitted because
+    they duplicate analysis_candidate_count and split_position_ratio.
     """
     token_l = pred_item.lower()
     ft_lang, ft_prob = fasttext_predict_raw(annotator, pred_item)
@@ -863,18 +814,12 @@ def evaluate_residual_verbal_promotion(token: str, annotator, cfg, strict_lexico
 # Production integration of the frozen Phase 5F reranker
 # (Baseline + Batch A + Batch C + pruned Batch G, threshold 0.85)
 #
-# cs_annotator_app._run_annotation_pipeline() runs, per annotation request:
-#   Annotator.annotate() -> apply_reranker() -> _ensure_matrix_embed_consistency()
-# apply_reranker() runs three stages in order, each acting only on tokens the
-# earlier ones left unpromoted:
+# apply_reranker() runs three stages, each only on tokens still unpromoted:
 #   1. frozen reranker: UID/NE/TR -> MIXED when probability >= threshold
 #   2. residual verbal detector (strict English-lexicon evidence): UID/TR -> MIXED
 #   3. UID->TR resolver, gated by UID_TR_RESOLVER_ENABLED: UID -> TR
-# TR/EN/MIXED/OTHER/LANG3 labels are never demoted. Model artifacts in
-# resources/models/ are frozen and never regenerated here. Loading is lazy and
-# never raises: on any failure load_reranker_bundle() returns None and
-# apply_reranker() returns its input unchanged. The text format in and out is
-# Annotator.annotate()'s own, so .trenproj and TXT/CSV formats are unaffected.
+# Other labels are never demoted. Loading never raises: on failure the bundle is
+# None and the input text is returned unchanged.
 # ---------------------------------------------------------------------------
 
 
@@ -913,11 +858,21 @@ class ReRankerBundle(NamedTuple):
 
 
 def _warn(message: str) -> None:
-    """Best-effort stderr note; never raises."""
+    """Best-effort stderr note; never raises. Also kept as the failure reason
+    reported by the in-progress load_reranker_bundle() call."""
+    global _last_warning
+    _last_warning = message
     try:
         print(f"[reranker_integration] {message}", file=sys.stderr)
     except Exception:
         pass
+
+
+_last_warning: Optional[str] = None
+
+# Why the last load returned None (None after success); shown in the GUI so
+# users can tell MIXED detection is running rule-based only.
+last_load_failure: Optional[str] = None
 
 
 def validate_metadata(metadata: dict) -> Tuple[bool, List[str]]:
@@ -1012,12 +967,20 @@ def _load_joblib_file(joblib_module, path: str):
 
 
 def load_reranker_bundle(model_dir: str = DEFAULT_MODEL_DIR) -> Optional[ReRankerBundle]:
-    """Lazily load and validate the reranker bundle from `model_dir`. Never
-    raises; returns None if joblib/scikit-learn are missing, files are missing
-    or unreadable, metadata fails validate_metadata(), the vectorizer bundle
-    lacks 'tfidf'/'dictvec', or joblib.load fails. Called once per session by
-    cs_annotator_app._ensure_annotator_ready(), which caches the result.
-    """
+    """Load and validate the bundle from `model_dir`, or return None (never
+    raises) and set last_load_failure. Called once per session by the GUI."""
+    global _last_warning, last_load_failure
+    _last_warning = None
+    try:
+        bundle = _load_reranker_bundle(model_dir)
+    except Exception as e:
+        _warn(f"unexpected error while loading the reranker: {e}")
+        bundle = None
+    last_load_failure = None if bundle is not None else (_last_warning or "unknown error")
+    return bundle
+
+
+def _load_reranker_bundle(model_dir: str) -> Optional[ReRankerBundle]:
     try:
         import joblib  # local import: no reranker dependency at module load time
     except ImportError as e:
@@ -1055,6 +1018,20 @@ def load_reranker_bundle(model_dir: str = DEFAULT_MODEL_DIR) -> Optional[ReRanke
     dictvec = vectorizer_bundle.get("dictvec")
     if tfidf is None or dictvec is None:
         _warn("vectorizer bundle missing 'tfidf' or 'dictvec'")
+        return None
+
+    # Under scikit-learn <= 1.7 the model unpickles but every prediction raises
+    # ('multi_class'), which would silently disable the reranker per token.
+    try:
+        probe = sp.hstack([tfidf.transform([""]), dictvec.transform([{}])]).tocsr()
+        model.predict_proba(probe)
+    except Exception as e:
+        try:
+            import sklearn
+            version = sklearn.__version__
+        except Exception:
+            version = "unknown"
+        _warn(f"model cannot run with the installed scikit-learn {version}: {e}")
         return None
 
     return ReRankerBundle(model=model, tfidf=tfidf, dictvec=dictvec, threshold=threshold, metadata=metadata)
@@ -1161,13 +1138,10 @@ def _apply_uid_to_tr_resolver_stage(item: str, label: str, annotator, cfg: dict,
 
 
 def apply_reranker(annotated_text: str, annotator, cfg: dict, bundle: Optional[ReRankerBundle]) -> str:
-    """Post-process Annotator.annotate()'s text with the three stages described
-    above; input and output share the same tab-separated format.
-
-    Rewrites token Labels and, only in blocks where a label changed,
-    recomputes MatrixLang/EmbedLang via Annotator._decide_matrix_embed.
-    Unchanged blocks are returned byte-for-byte. If `bundle` is None all three
-    stages are skipped and `annotated_text` is returned unchanged. Never raises.
+    """Apply the three stages to annotate() text (same format in and out).
+    MatrixLang/EmbedLang are recomputed only in changed blocks; unchanged
+    blocks, or everything when `bundle` is None, come back byte-for-byte.
+    Never raises.
     """
     if bundle is None:
         return annotated_text
@@ -1236,18 +1210,10 @@ def apply_reranker(annotated_text: str, annotator, cfg: dict, bundle: Optional[R
 # ---------------------------------------------------------------------------
 # UID->TR resolver
 #
-# apply_reranker() calls decide() per token as its third stage. Only tokens
-# currently labeled UID are considered, and only UID -> TR is proposed (there
-# is no UID->EN path). check_eligibility() applies hard exclusion gates:
-# other-tokens (URLs, numbers, ...), emails, apostrophes, acronyms,
-# alphanumeric identifiers, capitalized tokens (proper-name heuristic), direct
-# English-lexicon hits, and any token with an English-root-plus-Turkish-suffix
-# analysis, so genuine MIXED candidates are never contested. Eligible tokens
-# are scored additively (extract_evidence/score_evidence); see PROMOTION_THRESHOLD.
-#
-# Functions are pure except apply_uid_to_tr_resolver(), an offline-evaluation
-# convenience over the annotate() text format. cs_pipeline is imported lazily
-# so importing this module does not pull in stanza.
+# Third stage of apply_reranker(): UID -> TR only, never UID -> EN.
+# check_eligibility() excludes any token with an English-root-plus-Turkish-suffix
+# analysis, so genuine MIXED candidates are never contested. cs_pipeline is
+# imported lazily so importing this module does not pull in stanza.
 # ---------------------------------------------------------------------------
 
 
@@ -1471,13 +1437,8 @@ _RESOLVER_ELIGIBLE_LABELS = frozenset({"UID"})
 
 
 def apply_uid_to_tr_resolver(annotated_text: str, annotator, cfg: dict) -> Tuple[str, List[ResolverDecision]]:
-    """Offline-only: promote eligible UID rows to TR (see decide()) in text
-    from annotate() -> apply_reranker(). Same format in and out;
-    MatrixLang/EmbedLang are recomputed only for blocks with a promotion.
-    Never raises: a per-token failure means no promotion.
-
-    Returns (new_text, decisions), one ResolverDecision per UID token
-    inspected. apply_reranker() calls decide() directly, never this function.
+    """Offline evaluation only (production calls decide() directly):
+    (new_text, decisions) with eligible UID rows promoted to TR. Never raises.
     """
     labels_counted_for_matrix_embed = _LABELS_COUNTED_FOR_MATRIX_EMBED
 

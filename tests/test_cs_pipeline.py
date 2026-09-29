@@ -138,13 +138,8 @@ def test_split_mixed_apostrophe_contraction_check_is_case_insensitive():
 
 
 def test_split_mixed_apostrophe_nt_branch_is_unreachable():
-    # Documents a confirmed dead branch: `sfx.endswith("n't")` can never be
-    # True, because re.split(r"[’']", token) splits on every apostrophe,
-    # so the suffix half can never itself contain an apostrophe when exactly
-    # 2 parts result (the precondition to reach this check at all). Real
-    # contractions like "don't" split to suffix "t", already caught by the
-    # EN_CONTRACTIONS set membership check. Not a bug to fix here -- locking
-    # in the current, verified behavior.
+    # Locks in a dead branch: re.split on every apostrophe means the suffix can
+    # never contain "n't"; real contractions hit EN_CONTRACTIONS instead.
     obj = _make_annotator()
     assert obj._split_mixed_apostrophe("don't")[1] != "n't"
 
@@ -184,12 +179,8 @@ def test_parse_tr_suffixes_full_multistage_chain():
     "ambiguous_ii_im", "ambiguous_i_im", "ambiguous_u_um", "ambiguous_u_umlaut_m",
 ])
 def test_parse_tr_suffixes_full_ambiguous_vowel_branch_is_reachable(suffix):
-    # Confirms the Amb=P3sg_or_Acc branch is reachable (verified by brute
-    # force search), contrary to what a static read might suggest: stage 1's
-    # CASE_ENDINGS already includes bare i/i/u/u-umlaut, but stage 2 can
-    # strip a POSS_SHORT suffix (e.g. "ım") and expose a *new* trailing
-    # vowel that stage 1 never had the chance to see, since stage 1 already
-    # finished running before stage 2 started.
+    # Reachable despite appearances: stage 2 can strip a POSS_SHORT suffix and
+    # expose a trailing vowel that stage 1 already ran past.
     obj = _make_annotator()
     segments, ud, deriv, amb = obj._parse_tr_suffixes_full(suffix)
     assert amb == {"Amb=P3sg_or_Acc"}
@@ -232,21 +223,14 @@ def test_detect_mixed_no_apostrophe_no_valid_split():
 
 
 def test_detect_mixed_no_apostrophe_longest_suffix_candidate_wins():
-    # "lilanın" ends in both "nın" (3 chars, a real CASE_ENDINGS key) and
-    # "ın" (2 chars, also a real CASE_ENDINGS key) -- both bases are valid
-    # English words here, so only trial order decides the result. Candidates
-    # are tried longest-first, so "nın" (base "lila") must win over "ın"
-    # (base "lilan").
+    # Both "nın" and "ın" splits have English bases; longest-first must pick "nın".
     obj = _make_annotator(english_words={"lila", "lilan"})
     assert obj._detect_mixed_no_apostrophe("lilanın", DEFAULTS) == ("lila", "nın")
 
 
 def test_detect_mixed_no_apostrophe_first_valid_candidate_wins_after_longest_fails():
-    # Same "nın"/"ın" overlap as above, but this time only the SHORTER
-    # split's base ("lilan") is a known English word -- the longer split's
-    # base ("lila") is not, and is mocked to clearly fail the fastText
-    # fallback too. The loop must continue past the failed longest candidate
-    # to the next-shorter one, not stop at the first (longest) attempt.
+    # Only the shorter split's base is English: the loop must continue past the
+    # failed longest candidate.
     obj = _make_annotator(english_words={"lilan"})
     with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.1)):
         assert obj._detect_mixed_no_apostrophe("lilanın", DEFAULTS) == ("lilan", "ın")
@@ -282,11 +266,8 @@ def test_detect_mixed_no_apostrophe_yn_initial_suffix_consonant_final_base_rejec
 
 
 def test_detect_mixed_no_apostrophe_suffix_must_produce_a_feature():
-    # Every real suffix dictionary key (len >= 2) always parses into at
-    # least one UD/deriv/ambiguity feature via _parse_tr_suffixes_full, so
-    # this guard never actually rejects a real candidate in practice. To
-    # exercise the guard itself (not fix or reinterpret it), force a
-    # no-feature parse via mocking and confirm the candidate is rejected.
+    # Real suffixes always yield a feature, so force a no-feature parse to
+    # exercise the guard itself.
     obj = _make_annotator(english_words={"boss"})
     with mock.patch.object(obj, "_parse_tr_suffixes_full", return_value=([], set(), set(), set())):
         assert obj._detect_mixed_no_apostrophe("bossum", DEFAULTS) == (None, None)
@@ -312,19 +293,12 @@ def test_detect_mixed_no_apostrophe_ft_predict_not_called_when_base_in_lexicon()
 
 
 # --- _build_ne_map -----------------------------------------------------
-# Touches no `self.*` state at all -- Annotator.__new__() with zero
-# attributes set is sufficient. Only doc.ents (a list) and each entity's
-# .text (a string) are ever read; nothing about Stanza's real API surface
-# (spans, offsets, per-token objects) matters to this function.
+# Reads only doc.ents and each entity's .text; no Annotator state needed.
 
 class _FakeEnt:
     def __init__(self, text, type="PERSON"):
-        # Default type is PERSON: unconditionally survives Policy C (not
-        # TIME) and unconditionally blocks Policy D (see _build_ne_map),
-        # so pre-existing tests that only exercise exact/piece matching
-        # keep their original "always NE" behavior without needing to know
-        # about Policy C/D at all. Tests that specifically exercise C/D
-        # pass an explicit type.
+        # PERSON survives Policy C and blocks Policy D, so non-C/D tests keep
+        # "always NE"; C/D tests pass an explicit type.
         self.text = text
         self.type = type
 
@@ -388,12 +362,8 @@ def test_build_ne_map_case_sensitive_matching():
 
 
 def test_build_ne_map_duplicate_token_text_limitation():
-    # Documents a real, current alignment limitation: matching is by literal
-    # token TEXT, not by span/position. A token string that legitimately
-    # appears once as part of an entity and once elsewhere in the same line
-    # cannot be distinguished here -- both would be treated as NE when this
-    # map is consumed by annotate()'s per-token loop. Not a bug to fix in
-    # this step -- locking in the current behavior.
+    # Known limitation, locked in: matching is by token text, not position, so
+    # the same string elsewhere in the line is also treated as NE.
     obj = _make_annotator()
     tokens = tokenize("Paris loves Paris")
     ne_map = obj._build_ne_map(_FakeDoc([_FakeEnt("Paris")]), tokens)
@@ -435,11 +405,8 @@ def test_build_ne_map_apostrophe_containing_entity_name():
 
 
 def test_build_ne_map_lone_apostrophe_entity_text_regex_gap():
-    # Documents a confirmed inconsistency: tokenize()'s regex includes a
-    # lone-apostrophe alternative (`|['’]`), but _build_ne_map's own
-    # inline regex (r"\w+['’]?\w*|\w+") does not. A standalone
-    # apostrophe token from tokenize() can never be matched via this path.
-    # Narrow practical impact; not a bug to fix in this step.
+    # Known inconsistency, locked in: tokenize() emits lone apostrophes but this
+    # regex cannot match them.
     obj = _make_annotator()
     assert tokenize("'") == ["'"]
     assert obj._build_ne_map(_FakeDoc([_FakeEnt("'")]), ["'", "x"]) == {}
@@ -501,11 +468,8 @@ def test_build_ne_map_policy_d_retains_genuine_multiword_compounds():
 
 
 def test_build_ne_map_policy_d_still_fixes_ner_boundary_noise():
-    # The OTHER piece being NER span-boundary noise (lowercase/suffixed/
-    # numeric), not a genuine second proper-noun word, must not BLOCK the
-    # override on the piece that does qualify -- "examın"/"Quality'de"/"3"
-    # separately stay NE on their own merits (no English-lexicon match of
-    # their own), which is correct and distinct from being "blocked".
+    # Span-boundary noise in the other piece must not block the override on the
+    # piece that qualifies.
     obj = _make_annotator(english_words={"achievement", "research", "detachment"})
     assert obj._build_ne_map(_FakeDoc([_FakeEnt("Achievement examın", type="ORGANIZATION")]),
                               ["Achievement", "examın"]) == {"examın": "NE"}
@@ -549,11 +513,8 @@ def test_build_ne_map_retains_genuine_entities_of_all_three_types(entity_type):
 
 
 def test_annotate_ai_siz_remains_mixed_despite_ai_entity_in_sentence():
-    # Regression: "AI" recognized as its own entity elsewhere must not
-    # pull the derivational MIXED form "AI'sız" into NE -- the whole token
-    # "AI'sız" is never itself an entity-piece match (only bare "AI" is),
-    # so it falls through to the pre-existing apostrophe-MIXED path,
-    # completely unaffected by Policy C/D.
+    # Regression: an entity "AI" must not pull "AI'sız" into NE; it stays on the
+    # apostrophe-MIXED path.
     obj = _make_annotator(english_words={"ai"})
     obj.ner = lambda line: _FakeDoc([_FakeEnt("AI", type="ORGANIZATION")])
     with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
@@ -605,8 +566,44 @@ def test_ensure_ner_enabled_lazily_constructs_pipeline_when_none():
         obj._ensure_ner(enabled=True)
     assert obj.ner == "fake_pipeline_instance"
     mocked_stanza.Pipeline.assert_called_once_with(
-        "tr", processors="tokenize,ner", use_gpu=False
+        "tr", processors="tokenize,ner", use_gpu=False,
+        download_method=mocked_stanza.DownloadMethod.REUSE_RESOURCES,
     )
+
+
+def test_ensure_ner_reuses_cached_resources_instead_of_checking_online():
+    # Regression: the default DOWNLOAD_RESOURCES re-fetched resources.json on
+    # every start, so annotation with NER on failed offline even with every
+    # model already cached.
+    obj = _make_annotator()
+    obj.ner = None
+    with mock.patch.object(cs_pipeline, "stanza") as mocked_stanza:
+        obj._ensure_ner(enabled=True)
+    kwargs = mocked_stanza.Pipeline.call_args.kwargs
+    assert kwargs["download_method"] is mocked_stanza.DownloadMethod.REUSE_RESOURCES
+
+
+def test_ensure_ner_failure_raises_clear_error_and_keeps_ner_unset():
+    obj = _make_annotator()
+    obj.ner = None
+    with mock.patch.object(cs_pipeline, "stanza") as mocked_stanza:
+        mocked_stanza.Pipeline.side_effect = ConnectionError("no network")
+        with pytest.raises(cs_pipeline.NERUnavailableError) as excinfo:
+            obj._ensure_ner(enabled=True)
+    msg = str(excinfo.value)
+    assert "internet connection" in msg
+    assert "turn off the NER option" in msg
+    assert "no network" in msg
+    assert obj.ner is None
+
+
+def test_annotate_with_ner_enabled_does_not_silently_skip_ner_when_unavailable():
+    obj = _make_annotator()
+    obj.ner = None
+    with mock.patch.object(cs_pipeline, "stanza") as mocked_stanza:
+        mocked_stanza.Pipeline.side_effect = OSError("models missing")
+        with pytest.raises(cs_pipeline.NERUnavailableError):
+            obj.annotate("Ahmet geldi", {"NER_ENABLED": True})
 
 
 # --- _decide_matrix_embed ----------------------------------------------
@@ -638,11 +635,7 @@ def test_decide_matrix_embed(labels, expected):
 
 
 def test_decide_matrix_embed_weighted_tie_via_mixed():
-    # 1 EN + 5 MIXED, at default weights (0.6/0.4), produces an EXACT
-    # floating-point tie: score_tr = 0.6*5 = 3.0, score_en = 1 + 0.4*5 = 3.0
-    # (confirmed no float-precision surprise). Ties resolve to TR, same as
-    # the plain exact_tr_en_tie case above but reached via MIXED weighting
-    # rather than raw TR/EN counts.
+    # Exact float tie via MIXED weighting (3.0 vs 3.0) resolves to TR.
     obj = _make_annotator()
     labels = ["EN"] + ["MIXED"] * 5
     assert obj._decide_matrix_embed(labels, DEFAULTS) == ("TR", "EN")
@@ -689,14 +682,8 @@ def test_decide_matrix_embed_dash_sentinel_both_directions(labels, expected_embe
 
 
 # --- annotate() control-flow skeleton ---------------------------------
-# First-time integration-level tests: exercise the real annotate() method
-# end-to-end. Lower-level helper internals (choose_label priority order,
-# apostrophe/non-apostrophe MIXED detection, suffix parsing, NE-map
-# matching, matrix/embed voting) are already covered by dedicated unit
-# tests above and are NOT re-verified here. Detailed MIXED/UID/suffix
-# branch coverage through annotate() is deliberately out of scope for this
-# commit -- these tests only prove the control-flow skeleton: ordering,
-# branching, and output construction.
+# Proves ordering, branching and output construction only; helper internals
+# have their own unit tests above.
 
 def test_annotate_empty_input():
     obj = _make_annotator()
@@ -779,13 +766,8 @@ def test_annotate_ner_enabled_called_once_per_nonblank_line():
 
 
 def test_annotate_other_precedence_over_ne():
-    # Patches _build_ne_map directly (already unit-tested on its own) so
-    # this test proves annotate()'s branch ORDERING -- is_other_token is
-    # checked before ne_map membership -- rather than re-testing NE-match
-    # logic. Deliberately does NOT mock _ft_predict: if OTHER precedence
-    # ever broke and this token reached the language-choice path instead,
-    # the test would fail loudly (AttributeError) rather than silently
-    # passing via a mock.
+    # Proves is_other_token is checked before ne_map. _ft_predict is deliberately
+    # not mocked, so a precedence regression fails loudly.
     obj = _make_annotator()
     obj.ner = lambda line: _FakeDoc([])
     with mock.patch.object(obj, "_build_ne_map", return_value={"42": "NE"}):
@@ -848,12 +830,7 @@ def test_annotate_matrix_embed_flag_combinations(
 
 
 # --- annotate() detailed integration branches --------------------------
-# NER_ENABLED=False throughout (no test here needs NE at all -- self.ner is
-# never touched by annotate() when this flag is False, so no fake doc/ner
-# stub is required). Lower-level helper internals already covered by their
-# own dedicated unit tests are patched out where useful, per the same
-# "prove wiring, not helper internals" approach used for the precedence
-# tests in the previous commit.
+# NER_ENABLED=False throughout; already-tested helpers are patched out.
 
 _CFG_NO_NER = dict(DEFAULTS, NER_ENABLED=False)
 
@@ -875,12 +852,8 @@ def test_annotate_apostrophe_mixed_curly_apostrophe_variant():
 
 
 def test_annotate_apostrophe_mixed_requires_parsed_features():
-    # Any real, non-empty suffix from a genuine apostrophe split always
-    # parses to at least Unparsed=Leftover (verified separately), so this
-    # gate is effectively always true in practice. To exercise the gate
-    # itself -- not re-derive that finding -- force _parse_tr_suffixes_full
-    # to return no features and confirm the MIXED branch is correctly
-    # skipped, falling through to ordinary (UID) labeling instead.
+    # The gate is always true in practice; force a no-feature parse to check that
+    # MIXED is skipped and labeling falls through to UID.
     obj = _make_annotator(english_words={"meeting"})
     with mock.patch.object(obj, "_ft_predict", return_value=("UID", 0.0)):
         with mock.patch.object(obj, "_parse_tr_suffixes_full", return_value=([], set(), set(), set())):
@@ -900,12 +873,8 @@ def test_annotate_apostrophe_split_turkish_base_follows_tr_branch():
 
 
 def test_annotate_apostrophe_split_non_qualifying_falls_through():
-    # base_label is neither EN nor TR (UID here) -- the apostrophe branch
-    # must fall through entirely to ordinary labeling (whole-token
-    # _choose_label result), consulting _detect_mixed_no_apostrophe next.
-    # _split_mixed_apostrophe, _choose_label, and _detect_mixed_no_apostrophe
-    # are patched directly so this test isolates annotate()'s own fallthrough
-    # wiring from those already-tested helpers' internal logic.
+    # base_label UID: the apostrophe branch must fall through to ordinary labeling
+    # (helpers patched to isolate the wiring).
     obj = _make_annotator()
     with mock.patch.object(obj, "_split_mixed_apostrophe", return_value=("weird", "zzz")):
         with mock.patch.object(obj, "_choose_label", return_value="UID") as mocked_choose:
@@ -1031,10 +1000,7 @@ def test_annotate_representative_tr_en_mixed_sentence_exact_output():
 
 
 # --- tokenize() ----------------------------------------------------------
-# Module-level, pure regex function (_TOKEN_RE). No Annotator instance
-# needed at all. Only current, verified regex behavior is tested here --
-# several findings below are non-obvious and are documented as-is, not
-# normalized or "fixed".
+# Current regex behavior is locked in as-is, including non-obvious findings.
 
 @pytest.mark.parametrize("text, expected", [
     ("hello world", ["hello", "world"]),
@@ -1069,11 +1035,8 @@ def test_tokenize_punctuation_is_dropped_not_returned_as_tokens():
     assert tokenize("hello , world !") == ["hello", "world"]
 
 
-# --- regression: @mentions, #hashtags, URLs, emoji, and hyphen/underscore-
-# joined codes must survive tokenize() as single tokens instead of being
-# silently dropped (mentions/hashtags/emoji) or fragmented (URLs/codes) --
-# \w never matches '@', '#', or astral-plane emoji codepoints, so without
-# an explicit alternative for each, is_other_token() never even sees them.
+# --- regression: @mentions, #hashtags, URLs, emoji and joined codes must
+# survive tokenize() whole (\w never matches '@', '#' or emoji).
 
 def test_tokenize_preserves_mention():
     assert tokenize("hey @berkay check this") == ["hey", "@berkay", "check", "this"]
@@ -1111,11 +1074,8 @@ def test_tokenize_preserves_numeric_with_separators():
 
 
 def test_tokenize_digit_prefixed_word_not_split_by_numeric_alternative():
-    # Regression: the numeric-with-separators alternative must require at
-    # least one separator+digit group, or it wins (first-match, not
-    # longest-match) over \w+['’]?\w* on a bare leading digit run and
-    # wrongly splits ordinary digit-prefixed words like "20li"/"3d" into
-    # two tokens. Found via a real-corpus diff against the pre-fix build.
+    # Regression (found in a real-corpus diff): the separator-number alternative
+    # must not split "20li"/"3d" into two tokens.
     assert tokenize("kod 20li ve 3d ve 6da") == ["kod", "20li", "ve", "3d", "ve", "6da"]
 
 
@@ -1168,12 +1128,8 @@ def test_tokenize_standalone_apostrophe(text, expected):
 
 
 def test_tokenize_leading_vs_trailing_apostrophe_are_asymmetric():
-    # A trailing apostrophe is absorbed into the preceding word (\w+['']?\w*
-    # matches greedily, with \w* allowed to match zero trailing chars). A
-    # leading apostrophe cannot be absorbed the same way -- \w+ requires a
-    # word char FIRST, so it fails at the apostrophe and the ['’] alternative
-    # catches it as its own separate token instead. Current, verified,
-    # asymmetric behavior -- not normalized here.
+    # Asymmetric, locked in: a trailing apostrophe joins the word, a leading one
+    # becomes its own token.
     assert tokenize("hello'") == ["hello'"]
     assert tokenize("'hello") == ["'", "hello"]
 
@@ -1200,13 +1156,7 @@ def test_tokenize_returns_a_list_of_strings():
 
 
 # --- end-to-end smoke test -----------------------------------------------
-# Minimal, deterministic smoke coverage for the real, fully integrated
-# pipeline. Unlike every other annotate() test above, NOTHING is patched
-# except _ft_predict (to avoid loading a real fastText model) -- real
-# tokenize(), real _choose_label, real apostrophe-based MIXED detection,
-# real suffix parsing, and real _decide_matrix_embed all run unmodified.
-# This closes Stage 3.1: every individual piece exercised here already has
-# its own dedicated, more detailed unit tests elsewhere in this file.
+# Only _ft_predict is patched; every other pipeline step runs for real.
 
 def test_annotate_end_to_end_smoke_tr_en_mixed_sentence():
     obj = Annotator.__new__(Annotator)

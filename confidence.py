@@ -1,31 +1,16 @@
-"""Read-only confidence/uncertainty layer computed after the full pipeline
-(Annotator.annotate() -> reranking.apply_reranker() -> Matrix/Embedded Language
-consistency) has decided each token's final label.
-
-Guarantees: never mutates a label, never retrains or rethresholds the frozen
-reranker, never adds an NER model (the only NER call, gated behind
-`compute_entity_types`, reuses `annotator.ner`), and never learns from user
-corrections; output is a pure function of the token, its rule-based and final
-labels, and the annotator/cfg/bundle passed in.
+"""Read-only confidence/uncertainty layer, computed after the full pipeline has
+decided each token's final label. Never mutates a label, never touches the
+frozen reranker, and never learns from user corrections.
 
 NOT a statistical/calibrated confidence: `confidence_score` is an additive,
-rule-based point score and must not be reported as a probability of
-correctness. Every serialized record carries `CALIBRATION_NOTE` for this reason.
+rule-based point score, not a probability of correctness; every record carries
+`CALIBRATION_NOTE` for this reason.
 
-Evidence, all recomputed read-only via existing code: the rule-based label
-(recovered by the caller by diffing pre-reranker annotate() output against the
-final output; see `attach_confidence_to_blocks`), Turkish/English lexicons,
-fastText, Turkish suffix analysis, best-effort Stanza entity type, the frozen
-reranker's probability/margin (as `reranking._rerank_token_label` computes it),
-the residual verbal detector and UID->TR resolver verdicts, Matrix/Embed
-consistency, and token-shape exclusions (`cs_pipeline.is_other_token`, imported
-lazily to avoid pulling in stanza).
-
-Persistence: `row["confidence"]` (JSON dict) and `row["reviewed"]` (bool,
-default False, set by the review tool's Apply) are ordinary row keys that
-`.trenproj` already round-trips; rows without them (legacy projects) are
-treated as "not yet computed" by `get_confidence`/`is_reviewed`. No schema
-bump or export change.
+Evidence is recomputed read-only from existing code: rule-based vs. final
+label, lexicons, fastText, suffix analysis, optional Stanza entity type, the
+reranker probability, and the residual-verbal/UID->TR verdicts.
+`row["confidence"]` and `row["reviewed"]` are ordinary row keys that
+`.trenproj` already round-trips; rows without them count as not computed.
 """
 
 import re
@@ -129,10 +114,8 @@ def _gather_common_evidence(token: str, annotator, cfg) -> _CommonEvidence:
 
 
 def _reranker_probability(token: str, rule_label: str, annotator, cfg, bundle) -> Optional[float]:
-    """The frozen reranker's probability for `token` at its rule-based label,
-    recomputed read-only as reranking._rerank_token_label does. None if
-    `bundle` is unavailable, `rule_label` was never candidate-eligible, or any
-    step fails."""
+    """Frozen reranker probability, recomputed as reranking._rerank_token_label
+    does; None if unavailable, not a candidate, or on any failure."""
     if bundle is None or rule_label not in _RERANKER_ELIGIBLE_LABELS:
         return None
     try:
@@ -152,9 +135,8 @@ def _reranker_probability(token: str, rule_label: str, annotator, cfg, bundle) -
 
 
 def _residual_verbal_evidence(token: str, rule_label: str, annotator, cfg) -> Optional[Tuple[bool, str]]:
-    """Verdict of reranking.evaluate_residual_verbal_promotion, only when
-    `rule_label` was eligible for that stage. Returns (promote, reason), or
-    None if not eligible / evaluation failed."""
+    """(promote, reason) from the residual verbal detector, or None if not
+    eligible or on failure."""
     if rule_label not in _RESIDUAL_VERBAL_ELIGIBLE_LABELS:
         return None
     try:
@@ -165,9 +147,8 @@ def _residual_verbal_evidence(token: str, rule_label: str, annotator, cfg) -> Op
 
 
 def _uid_resolver_evidence(token: str, rule_label: str, annotator, cfg, matrix_lang):
-    """Full decision of reranking.decide(), only when `rule_label` was eligible
-    in production. Returns a ResolverDecision, or None if not eligible /
-    evaluation failed."""
+    """reranking.decide()'s ResolverDecision, or None if not eligible or on
+    failure."""
     if rule_label not in _UID_TR_RESOLVER_ELIGIBLE_LABELS:
         return None
     try:
@@ -177,11 +158,8 @@ def _uid_resolver_evidence(token: str, rule_label: str, annotator, cfg, matrix_l
 
 
 def _detect_entity_type(annotator, sentence_text: str, token: str) -> Optional[str]:
-    """Best-effort Stanza entity type of `token` within `sentence_text`,
-    reusing the already-loaded `annotator.ner`. Re-runs NER on the sentence,
-    hence off by default in the interactive app (`compute_entity_types=False`).
-    None on failure, when NER is disabled, or when nothing matches; never
-    raises."""
+    """Best-effort Stanza entity type via the loaded `annotator.ner`, or None.
+    Re-runs NER on the sentence, hence off by default in the app."""
     try:
         if getattr(annotator, "ner", None) is None:
             return None
@@ -197,10 +175,8 @@ def _detect_entity_type(annotator, sentence_text: str, token: str) -> Optional[s
 
 def _promoted_by(rule_label: str, final_label: str, reranker_prob: Optional[float],
                   bundle, residual, uid_decision) -> Optional[str]:
-    """Which production stage (if any) changed `token` from `rule_label` to
-    `final_label`, found by re-checking each stage's condition in production
-    order (reranker -> residual verbal -> UID->TR). None when the label is
-    unchanged."""
+    """Which stage changed `rule_label` to `final_label`, re-checked in
+    production order; None when unchanged."""
     if rule_label == final_label:
         return None
     if final_label == "MIXED":
@@ -417,11 +393,8 @@ def compute_token_confidence(token: str, rule_label: Optional[str], final_label:
                               *, matrix_lang: Optional[str] = None, embed_lang: Optional[str] = None,
                               bundle=None, ne_entity_type: Optional[str] = None,
                               thresholds: Optional[Dict[str, float]] = None) -> ConfidenceRecord:
-    """Entry point for one token: gather evidence, score per label, band.
-    Deterministic; never raises (a failing evidence sub-step just omits that
-    evidence). `rule_label` is what Annotator.annotate() produced before
-    apply_reranker(); None (unknown, e.g. a manually inserted row) means no
-    promotion detected."""
+    """Confidence record for one token; deterministic and never raises (failed
+    evidence is omitted). `rule_label` None means unknown, e.g. a manual row."""
     rule_label_eff = rule_label if rule_label is not None else final_label
     try:
         ev = _gather_common_evidence(token, annotator, cfg)
@@ -493,11 +466,8 @@ def _non_meta_rows(rows):
 def compute_block_confidence(rows, rule_rows, annotator, cfg, bundle=None,
                               compute_entity_types: bool = False,
                               thresholds: Optional[Dict[str, float]] = None) -> None:
-    """Set `row["confidence"]` and `row.setdefault("reviewed", False)` in place
-    on every non-meta token row of one block. `rule_rows` is the same sentence
-    parsed from the pre-reranker output, used to recover each token's rule label
-    by position among non-meta rows; a length mismatch gives rule_label=None
-    for the unmatched tail instead of raising."""
+    """Attach confidence records in place to one block's token rows. Rule
+    labels come from `rule_rows` by position; an unmatched tail gets None."""
     matrix_lang, embed_lang = _block_matrix_embed(rows)
     rule_non_meta = _non_meta_rows(rule_rows) if rule_rows else []
 
@@ -539,18 +509,16 @@ def compute_block_confidence(rows, rule_rows, annotator, cfg, bundle=None,
 def attach_confidence_to_blocks(blocks, rule_blocks, annotator, cfg, bundle=None,
                                  compute_entity_types: bool = False,
                                  thresholds: Optional[Dict[str, float]] = None) -> None:
-    """Run compute_block_confidence for every block in place. `rule_blocks` must
-    be the pre-reranker parse of the same run; a block-count mismatch gives
-    extra blocks rule_label=None instead of raising."""
+    """compute_block_confidence for every block; `rule_blocks` is the
+    pre-reranker parse of the same run."""
     for bidx, rows in enumerate(blocks):
         rule_rows = rule_blocks[bidx] if rule_blocks and bidx < len(rule_blocks) else []
         compute_block_confidence(rows, rule_rows, annotator, cfg, bundle=bundle,
                                   compute_entity_types=compute_entity_types, thresholds=thresholds)
 
 
-# Read-only accessors for the review tool and tests; defensive against legacy
-# rows with no "confidence" key (never raise, never fabricate a high-confidence
-# result).
+# Accessors must tolerate legacy rows with no "confidence" key and never
+# fabricate a high-confidence result.
 
 def get_confidence(row: dict) -> Optional[dict]:
     val = row.get("confidence")
@@ -566,11 +534,8 @@ def mark_reviewed(row: dict) -> None:
 
 
 def note_manual_edit(row: dict) -> None:
-    """Call when a row's label is changed manually (e.g. the review tool's
-    Apply). The existing confidence record describes the previous label, so it
-    is replaced with a minimal marker rather than left stale or deleted; real
-    evidence is only recomputed by re-annotating. Also marks the row
-    reviewed=True. Deterministic, no I/O."""
+    """After a manual label change: replace the now-stale confidence record
+    with a manual-edit marker and mark the row reviewed."""
     row["confidence"] = {
         "token": row.get("token", ""),
         "rule_based_label": None,
@@ -592,8 +557,7 @@ def band_of(row: dict) -> Optional[str]:
 
 
 def is_review_required(row: dict) -> bool:
-    """Whether `row` belongs in the "all uncertain" view: the confidence
-    record's own `review_recommended` flag, for any label. Rows without a
-    record (legacy or never re-annotated) are excluded, not assumed uncertain."""
+    """The record's own `review_recommended` flag, for any label; rows without
+    a record are excluded, not assumed uncertain."""
     conf = get_confidence(row)
     return bool(conf) and bool(conf.get("review_recommended"))

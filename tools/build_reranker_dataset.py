@@ -158,16 +158,9 @@ def load_exclusions(path):
 
 
 def load_segmentation_mismatches(path):
-    """Returns (excluded_token_ids: set[int], events: list[dict],
-    orphan_block_indices: set[int]).
-
-    block_index in this report is 1-based (matches the existing
-    eval_results/evaluate.py convention); converted to 0-based here to
-    match this script's internal block_index.
-
-    An event with an empty gold_parent_token_id means the existing report
-    could not safely identify the parent side of the span -- per Decision
-    2, that event's whole block must be excluded instead of just its rows.
+    """(excluded_token_ids, events, orphan_block_indices). The report's
+    block_index is 1-based and converted to 0-based here. An event without a
+    gold_parent_token_id excludes its whole block (Decision 2).
     """
     excluded_ids = set()
     events = []
@@ -274,17 +267,10 @@ def mixed_bucket(mixed_count):
 
 
 def grouped_stratified_split(blocks, scoreable_rows, seed, train_frac, dev_frac, test_frac):
-    """Deterministic, group-level (block) split, stratified by each block's
-    count of gold-MIXED scoreable rows (bucketed: none / one / multi), so
-    MIXED representation is preserved in every split. Never splits a block
-    across two partitions.
-
-    Allocation within each stratum: seeded shuffle of that stratum's block
-    indices, then a proportional round-robin cut at train_frac/dev_frac
-    boundaries. For strata too small to hit all three splits (e.g. a single
-    block), blocks fall through to train first, then dev, then test, and
-    this is recorded in the returned diagnostics so it's visible rather
-    than silently invisible.
+    """Deterministic block-level split, stratified by gold-MIXED count per
+    block (none / one / multi); a block is never split across partitions.
+    Strata too small for all three splits fill train, then dev, then test,
+    and this is reported in the returned diagnostics.
     """
     mixed_count_by_block = defaultdict(int)
     for r in scoreable_rows:

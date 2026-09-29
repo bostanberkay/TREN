@@ -66,12 +66,8 @@ def test_enumerate_candidate_analyses_empty_token():
 
 def test_select_best_analysis_prefers_longest_stem():
     obj = _make_annotator()
-    # "hypeda" -> could split as "hype"+"da" (Case=Loc) or "hyped"+"a" (Case=Dat);
-    # longest-stem policy must pick "hyped"+"a" over "hype"+"da" if both are plausible.
-    # Strategy passed explicitly (Phase 3A changed the module default to
-    # highest_suffix_segments) -- this test is specifically about the
-    # longest_stem policy, so it must not depend on whatever the current
-    # default happens to be.
+    # longest_stem must pick "hyped"+"a" over "hype"+"da"; the strategy is passed
+    # explicitly because the module default is different.
     candidates = mr.enumerate_candidate_analyses("hypeda", obj)
     best = mr.select_best_analysis(candidates, strategy=mr.STRATEGY_LONGEST_STEM)
     assert best is not None
@@ -753,11 +749,8 @@ def test_simulate_with_ne_policy_stem_evidence_allows_with_lexicon_evidence():
                           stem_evidence_feats={'stem_length': 5, 'stem_in_english_freq': True,
                                                 'stem_ft_lang': 'EN', 'stem_ft_prob': 0.69})
     result = nep.simulate_with_ne_policy([row], [0.99], threshold=0.5, policy=nep.POLICY_NE_STEM_EVIDENCE)
-    # honest test of a real limitation found during Phase 3A: lexicon-based
-    # evidence alone cannot distinguish a real English common noun used as
-    # part of an NE ("Store'da") from a genuine MIXED token -- this policy
-    # does NOT block this case, which is exactly the finding reported to
-    # the user, not a bug in the test.
+    # Known limitation: lexicon evidence cannot tell an English noun inside an NE
+    # ("Store'da") from real MIXED, so this policy does not block it.
     assert result[0]['simulated_label'] == 'MIXED'
 
 
@@ -848,20 +841,9 @@ def test_enumerate_candidate_analyses_nominal_source_unaffected():
 
 
 def test_enumerate_candidate_analyses_trigerlanmissin_no_clean_full_decomposition():
-    # "trigerlanmıssın" (gloss trigger-PASS-EVID-2SG) is spelled in the real
-    # corpus with plain "s" rather than the standard Turkish "ş" ("mıssın",
-    # not "mışsın") -- so the evidential table ("mış"/"miş"/"muş"/"müş",
-    # proper spelling only, per the Phase 4B suffix list as given) does not
-    # match, and the CLEAN full decomposition stem="triger" +
-    # suffix="lanmıssın" is correctly NOT fully consumed.
-    #
-    # Phase 4B's new 2nd-person-agreement stage DOES, however, find one
-    # narrow, coincidental match: stem="trigerlanmıs" + suffix="sın" (just
-    # the bare agreement marker, tense stage failing to match "mıs" for the
-    # same ş/s reason). That is a real, reportable side effect -- not a
-    # bug -- but it is not the intended "triger" + full verbal tail
-    # decomposition, so it must not be the analysis selected by the real
-    # benchmark's tie-break strategy.
+    # The corpus spells "mıssın" with plain "s", so the evidential table cannot
+    # consume the full tail. Phase 4B's agreement stage coincidentally matches the
+    # bare "sın"; that side-effect split must not be the one selected.
     obj = _make_annotator()
     candidates = mr.enumerate_candidate_analyses("trigerlanmıssın", obj)
     assert all(c.stem != "triger" for c in candidates)
@@ -870,9 +852,8 @@ def test_enumerate_candidate_analyses_trigerlanmissin_no_clean_full_decompositio
 
 
 # ---------------------------------------------------------------------------
-# Phase 4B: past, evidential, present progressive, future, 2nd person
-# agreement -- new EXPERIMENTAL verbal-suffix categories, candidate
-# generator only. One test per newly supported suffix group, per instruction.
+# Phase 4B: past, evidential, progressive, future, 2nd person agreement
+# (experimental verbal categories, candidate generator only).
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("suffix", ["dı", "di", "du", "dü", "tı", "ti", "tu", "tü"])
@@ -1039,11 +1020,8 @@ def test_parse_experimental_verbal_suffix_phase_4c1_infinitive_still_works():
 
 
 def test_enumerate_candidate_analyses_comeoutladim_phase_4c1():
-    # "Comeoutladim" (gloss: come-out-VBLZ-PST.1SG) -- Phase 4C-1 should find
-    # a fully-consumed analysis via the "dim" (past+1sg) suffix, at minimum
-    # as stem="Comeoutla"+suffix="dim"; a better split (stem="Comeout"+
-    # suffix="ladim", peeling verbalizer "la" separately) may also be found
-    # since the passive/verbalizer stage runs after 1st-person consumption.
+    # Phase 4C-1 must fully consume "Comeoutladim" via past+1sg "dim"; a split
+    # peeling the verbalizer "la" separately may also be found.
     obj = _make_annotator()
     candidates = mr.enumerate_candidate_analyses("Comeoutladim", obj, verbal_level=mr.VERBAL_MORPHOLOGY_PHASE_4C1)
     verbal = [c for c in candidates if c.source == "verbal"]
@@ -1670,11 +1648,8 @@ def test_batch_a_does_not_change_candidate_counts_or_decisions(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Phase 5D, Batch B: morphological complexity features (morph_tag_count,
-# has_case, has_plural, has_possessive, has_derivational_suffix,
-# has_verbal_morphology, morph_complexity). Every value is read directly off
-# analysis.ud_feats/deriv/amb -- no new parser call, no change to candidate
-# generation.
+# Phase 5D, Batch B: morphological complexity features, read directly off
+# analysis.ud_feats/deriv/amb.
 # ---------------------------------------------------------------------------
 
 def test_batch_b_excluded_by_default():
@@ -1854,17 +1829,8 @@ def test_batch_b_does_not_change_candidate_counts_or_decisions():
 
 
 # ---------------------------------------------------------------------------
-# Phase 5E, Batch G: candidate-analysis ambiguity / selection-process
-# metadata. Computed purely from a caller-supplied `candidate_analyses` list
-# -- no new parsing, no change to enumerate_candidate_analyses/
-# select_best_analysis.
-#
-# Phase 5F: pruned to exactly analysis_candidate_count, selection_is_unique,
-# has_nominal_verbal_competition -- distinct_stem_count removed (structurally
-# identical to analysis_candidate_count under the current enumeration
-# algorithm; see build_structured_feature_dict's docstring) -- and the
-# dataset-builder's second enumerate_candidate_analyses call eliminated in
-# favour of classify_candidate(return_candidates=True).
+# Phase 5E/5F, Batch G: candidate-ambiguity features from a caller-supplied
+# `candidate_analyses` list (pruned in 5F: no distinct_stem_count).
 # ---------------------------------------------------------------------------
 
 def _ca(stem, suffix, split_position, segments, ud_feats=frozenset(), deriv=frozenset(),
@@ -2034,10 +2000,8 @@ def test_batch_g_does_not_disturb_batch_a_or_c_when_all_enabled():
 
 
 # ---------------------------------------------------------------------------
-# Phase 5F: Batch G integrity cleanup -- prune distinct_stem_count, and
-# reuse classify_candidate's own internal enumeration (via
-# return_candidates=True) instead of a second enumerate_candidate_analyses
-# call. These tests cover the cleanup itself, not new feature behaviour.
+# Phase 5F cleanup: distinct_stem_count pruned; classify_candidate's own
+# enumeration reused via return_candidates=True.
 # ---------------------------------------------------------------------------
 
 def test_classify_candidate_default_still_returns_3_tuple():
@@ -2158,10 +2122,7 @@ def test_batch_b_excluded_from_pruned_batch_g_benchmark_config():
 
 
 # ---------------------------------------------------------------------------
-# Phase 5G, Batch D: English-stem quality (stem_english_confidence,
-# stem_turkish_confidence, stem_lexicon_contrast). Every value is a
-# deterministic function of already-computed baseline fields -- no new
-# fastText or lexicon call.
+# Phase 5G, Batch D: English-stem quality, derived from baseline fields only.
 # ---------------------------------------------------------------------------
 
 def test_batch_d_excluded_by_default():
@@ -2334,12 +2295,8 @@ def test_batch_d_does_not_disturb_a_c_g_gating_when_all_enabled():
 
 
 # ---------------------------------------------------------------------------
-# Residual verbal MIXED detector -- production integration (strict evidence
-# only). Reuses the real, unmodified PHASE_4E level (DEFAULT_VERBAL_MORPHOLOGY_
-# LEVEL, PHASE_4C1, is never referenced by this stage) and the existing
-# _make_annotator bypass-__init__ convention above. TARGETS/NATIVE_CONTROLS
-# mirror the offline Phase 4 validation exactly -- see CHANGELOG for the
-# authorized production brief this stage implements.
+# Residual verbal MIXED detector (strict evidence only, PHASE_4E).
+# TARGETS/NATIVE_CONTROLS mirror the offline Phase 4 validation (see CHANGELOG).
 # ---------------------------------------------------------------------------
 
 RESIDUAL_TARGETS = [
@@ -2461,11 +2418,8 @@ def test_residual_strict_mode_rejects_fasttext_only_evidence():
 
 
 def test_residual_broad_mode_available_but_not_default():
-    # The broad (fastText-inclusive) evidence path remains selectable for
-    # offline experimentation only -- exercising it here proves it still
-    # exists and works, without implying it is wired into any production
-    # call site (reranking.py's production integration section, formerly
-    # reranker_integration.py, never passes strict_lexicon_only).
+    # The fastText-inclusive path is offline-only; production never passes
+    # strict_lexicon_only.
     obj = _make_annotator()
     with mock.patch.object(obj, "_ft_predict", return_value=("EN", 0.99)):
         promote, cand, reason = mr.evaluate_residual_verbal_promotion(
@@ -2505,11 +2459,8 @@ def test_residual_competing_lexicon_confirmed_nominal_stem_blocks_promotion():
     # leaves a Turkish-lexicon-confirmed stem must be rejected even though a
     # verbal analysis also qualifies -- condition 8.
     obj = _make_annotator(turkish_all={"masa"}, english_words={"upload"})
-    # "uploadlamışım" itself has no competing lexicon-confirmed nominal stem
-    # (its only short nominal split leaves "uploadlamış", not lexicon-
-    # confirmed) -- the promotion must succeed there (see target-list test
-    # below). This test isolates the OPPOSITE case: a stem that genuinely
-    # does have a lexicon-confirmed nominal competitor.
+    # Isolates a stem that does have a lexicon-confirmed nominal competitor
+    # (unlike "uploadlamışım", which must still promote).
     assert mr._residual_verbal_has_lexicon_confirmed_competing_nominal_stem("masaya", obj) is True
 
 

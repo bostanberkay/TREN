@@ -11,7 +11,7 @@ Thank you for your interest in contributing to TREN.
    cd TREN
    ```
 
-2. Create and activate a virtual environment:
+2. Create and activate a virtual environment (Python 3.11 or newer, with Tk support):
 
    ```bash
    python -m venv .venv
@@ -46,6 +46,8 @@ python examples/quickstart.py
 ```
 
 These are the same commands run automatically by the project's CI workflow on every push and pull request.
+
+The GUI tests (`tests/test_*_gui.py`, and part of `tests/test_confidence_integration.py`) need a display and skip themselves when Tk cannot open one; run `python -m pytest -rs` to see any skip reasons. On a headless Linux machine, run them under a virtual display as CI does: `xvfb-run -a python -m pytest -rs`. GUI tests must never open a real modal dialog or post a real popup menu: patch `messagebox`/`filedialog`/`simpledialog` calls and `Menu.tk_popup`, or the run will hang (a posted menu blocks on macOS until it is dismissed).
 
 ## Pull requests
 
