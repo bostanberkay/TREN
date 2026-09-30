@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- **Documentation**: shortened the README to installation, usage, labels, project files, and export. Technical material (pipeline stages, the MIXED-token reranker and its benchmarks, real-corpus and synthetic metrics, the UID→TR resolver, detailed file formats, tool internals, and the formalization) moved to the new [TECHNICAL.md](TECHNICAL.md); older entries below that mention README sections refer to this content. Added License and Citation sections to the README.
+
 ## [1.4.0] - 2026-09-30
 
 Highlights: Confidence Review Tool, TDK Checker, Merge Cells, multiple datasets per project (`.trenproj` schema version 2), TREN CoNLL-style and JSONL export, the UID→TR resolver pipeline stage, and fixes that prevent unsaved work from being lost (File ▸ Exit, macOS Quit, Run over existing annotations). The frozen MIXED-token reranker (model and 0.85 threshold) is unchanged. The macOS package is built for Apple silicon (arm64) only and is not notarized; it is now reproducible from `packaging/` (see below). Running from source requires Python 3.11+.
