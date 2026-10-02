@@ -3,7 +3,7 @@
 
 TREN is a semi-automatic desktop application for annotating and analyzing Turkish–English code-switching data in corpus-based linguistic research. You load raw text, TREN proposes token-level language labels and glosses, and you review and correct them in a spreadsheet-like grid before exporting the annotated corpus.
 
-It is intended for researchers working on bilingual and multilingual data who need fine-grained, transparent annotation of code-switching, including intra-word switches such as `meeting'e` (English stem + Turkish suffix).
+It is intended for researchers working on bilingual and multilingual data who need transparent annotation of code-switching, including intra-word switches such as `meeting'e` (English stem + Turkish suffix).
 
 TREN’s features include, for instance:
 
@@ -350,7 +350,7 @@ TREN combines lexicon lookups, a fastText language-ID model, rule-based Turkish 
 
 ## Acknowledgement
 
-TREN was developed within an ongoing research project on Turkish–English intra-word code-switching, to build and annotate an original intra-word code-switching corpus. The current fully annotated corpus was created using TREN as its primary annotation environment: [Turkish–English Intra-Word Code-Switching Corpus](https://bostanberkay.github.io/turkish-english-intraword-code-switching-corpus/).
+TREN was developed within an ongoing TÜBİTAK research project on Turkish–English intra-word code-switching. The current fully annotated corpus was created using TREN as its primary annotation environment: [Turkish–English Intra-Word Code-Switching Corpus](https://bostanberkay.github.io/turkish-english-intraword-code-switching-corpus/).
 
 ## License
 
