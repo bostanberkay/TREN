@@ -10,12 +10,11 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import tkinter as tk  # noqa: E402
 
-import cs_annotator_app as caa  # noqa: E402
-import annotation_model  # noqa: E402
+from tren import cs_annotator_app as caa  # noqa: E402
+from tren import annotation_model  # noqa: E402
 import tk_probe  # noqa: E402
 
 

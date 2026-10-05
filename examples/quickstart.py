@@ -12,10 +12,10 @@ import os
 import sys
 from unittest.mock import patch
 
-# Running the script puts examples/, not the repo root, on sys.path; add the root so `import cs_pipeline` resolves.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Running the script puts examples/, not src/, on sys.path; add src/ so `import tren` resolves without installing.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from cs_pipeline import Annotator, DEFAULTS
+from tren.cs_pipeline import Annotator, DEFAULTS
 
 INPUT_TEXT = "kitap amazing boss'um"
 

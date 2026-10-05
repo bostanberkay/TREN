@@ -66,16 +66,18 @@ The build is **not code-signed**, so Windows SmartScreen may warn on first launc
 ```bash
 git clone https://github.com/bostanberkay/TREN.git
 cd TREN
-pip install -r requirements.txt
-python cs_annotator_app.py
+pip install .
+python -m tren
 ```
+
+`pip install .` installs the dependencies in `requirements.txt` and the `tren` package (code in `src/tren/`) with its language-ID model, word lists, and reranker model. Without installing it, `python cs_annotator_app.py` in the repository folder starts the same app after `pip install -r requirements.txt`.
 
 ### Requirements
 
 - **Python 3.11 or higher**, with Tk support.
 - The packages in `requirements.txt`: `fasttext`, `numpy<2`, `stanza`, `tksheet`, `joblib`, `scipy`, `scikit-learn>=1.8`.
 - **Internet on first NER run.** Named Entity Recognition (on by default) uses Stanza's Turkish models (about 200 MB), which are not bundled. The first time NER runs, TREN asks before downloading them into Stanza's user cache folder (on Windows under `%LOCALAPPDATA%\StanfordNLP\stanza`; set `STANZA_RESOURCES_DIR` to use another folder). After that TREN works offline. If the models cannot be downloaded, Run shows an error; untick **NER** in the toolbar to annotate without it.
-- **Windows:** `fasttext==0.9.3` has no Windows wheel, and its published source does not compile with MSVC on Python 3.10+ (two lines use `ssize_t`, which Windows does not define). Instead of `pip install -r requirements.txt`, run `powershell -ExecutionPolicy Bypass -File packaging\install_windows_deps.ps1`. It builds fasttext 0.9.3 from the PyPI source (checked against its published SHA-256) with that two-line fix, installs `requirements.txt`, and checks the language-ID model. It needs the Microsoft C++ Build Tools.
+- **Windows:** `fasttext==0.9.3` has no Windows wheel, and its published source does not compile with MSVC on Python 3.10+ (two lines use `ssize_t`, which Windows does not define). Instead of `pip install .`, run `powershell -ExecutionPolicy Bypass -File packaging\install_windows_deps.ps1` and then `pip install --no-deps .`. The script builds fasttext 0.9.3 from the PyPI source (checked against its published SHA-256) with that two-line fix, installs `requirements.txt`, and checks the language-ID model. It needs the Microsoft C++ Build Tools.
 
 The bundled MIXED-token reranker needs `scikit-learn>=1.8`. If it cannot be used, TREN still annotates with rule-based MIXED detection and the toolbar shows **MIXED reranker: unavailable** (hover for the reason).
 
@@ -118,15 +120,15 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for developmen
 
 ## Architecture and Tests
 
-TREN is a Tkinter GUI (`cs_annotator_app.py`) on top of a rule-based annotation pipeline (`cs_pipeline.py`). After the rule-based pass, a frozen statistical MIXED-token reranker and a conservative UID→TR resolver (`reranking.py`) can refine some labels; `confidence.py` computes read-only confidence scores for review. An automated test suite (`python -m pytest`) runs in GitHub Actions CI.
+TREN is a Tkinter GUI (`cs_annotator_app.py`, in the `tren` package under `src/tren/`) on top of a rule-based annotation pipeline (`cs_pipeline.py`). After the rule-based pass, a frozen statistical MIXED-token reranker and a conservative UID→TR resolver (`reranking.py`) can refine some labels; `confidence.py` computes read-only confidence scores for review. An automated test suite (`python -m pytest`) runs in GitHub Actions CI.
 
 **Known limitation:** the reranker can relabel a proper name with a Turkish case suffix (e.g. `İstanbul'a`, `Ankara'da`) as `MIXED` instead of `NE`. Review suffixed proper names in the Confidence Review Tool or the grid.
 
-The pipeline stages, reranker design and benchmarks, evaluation metrics, file-format specifications, and the formal description of the labeling logic are in **[TECHNICAL.md](TECHNICAL.md)**.
+The pipeline stages, reranker design and benchmarks, evaluation metrics, file-format specifications, and the formal description of the labeling logic are in **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.
 
 # Documentation of TREN
 
-This section describes the TREN interface and workflow. For technical details, see [TECHNICAL.md](TECHNICAL.md).
+This section describes the TREN interface and workflow. For technical details, see [docs/TECHNICAL.md](docs/TECHNICAL.md).
 
 ---
 
@@ -298,7 +300,7 @@ MatrixLang	TR
 EmbedLang	EN
 ```
 
-Full format specifications: [TECHNICAL.md › Export Formats](TECHNICAL.md#export-formats).
+Full format specifications: [docs/TECHNICAL.md › Export Formats](docs/TECHNICAL.md#export-formats).
 
 ## Auto-Glossing Tool
 
@@ -360,7 +362,7 @@ Counts tokens in the current annotation (lowercased, punctuation stripped, meta 
 
 ## Computational Design & Formalization
 
-TREN combines lexicon lookups, a fastText language-ID model, rule-based Turkish morphology, and Stanza NER in a staged, rule-ordered pipeline, followed by the post-processing stages described in [Architecture and Tests](#architecture-and-tests). The formal model, pipeline order, and evaluation results are in [TECHNICAL.md](TECHNICAL.md#computational-design--formalization).
+TREN combines lexicon lookups, a fastText language-ID model, rule-based Turkish morphology, and Stanza NER in a staged, rule-ordered pipeline, followed by the post-processing stages described in [Architecture and Tests](#architecture-and-tests). The formal model, pipeline order, and evaluation results are in [TECHNICAL.md](docs/TECHNICAL.md#computational-design--formalization).
 
 ## Acknowledgement
 

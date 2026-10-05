@@ -7,9 +7,8 @@ import time
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import tdk as dp
+from tren import tdk as dp
 
 
 # ---------------------------------------------------------------------------

@@ -10,10 +10,9 @@ from unittest import mock
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cs_pipeline import Annotator, DEFAULTS
-import reranking as ur
+from tren.cs_pipeline import Annotator, DEFAULTS
+from tren import reranking as ur
 
 
 def _make_annotator(turkish_top=(), turkish_all=(), english_words=()):
@@ -391,7 +390,7 @@ def test_apply_resolver_never_raises_on_evaluation_failure():
 def test_uid_resolver_not_referenced_by_cs_pipeline_or_gui():
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    path = os.path.join(repo_root, "cs_pipeline.py")
+    path = os.path.join(repo_root, "src", "tren", "cs_pipeline.py")
     with open(path, "r", encoding="utf-8") as f:
         source = f.read()
     assert "reranking" not in source, (
@@ -399,7 +398,7 @@ def test_uid_resolver_not_referenced_by_cs_pipeline_or_gui():
         "the UID->TR resolver) -- the single production integration point is "
         "reranking.apply_reranker(), called from cs_annotator_app.py only")
 
-    path = os.path.join(repo_root, "cs_annotator_app.py")
+    path = os.path.join(repo_root, "src", "tren", "cs_annotator_app.py")
     with open(path, "r", encoding="utf-8") as f:
         source = f.read()
     assert "reranking.decide(" not in source, (
@@ -410,7 +409,7 @@ def test_uid_resolver_not_referenced_by_cs_pipeline_or_gui():
 
 def test_uid_resolver_is_the_single_integration_point_in_reranking():
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    path = os.path.join(repo_root, "reranking.py")
+    path = os.path.join(repo_root, "src", "tren", "reranking.py")
     with open(path, "r", encoding="utf-8") as f:
         source = f.read()
     assert "def decide(" in source

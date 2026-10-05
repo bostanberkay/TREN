@@ -1,6 +1,6 @@
 """Check that the installed fasttext works with TREN's language-ID model.
 
-Importing fasttext is not enough: this loads resources/lid.176.ftz and runs
+Importing fasttext is not enough: this loads src/tren/resources/lid.176.ftz and runs
 predict() the way cs_pipeline.Annotator does (k=1), which is also where an
 incompatible numpy fails. The top label must equal, and the probability be
 within 1e-4 of, the reference values below, recorded with fasttext 0.9.3 and
@@ -13,7 +13,7 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL = os.path.join(ROOT, "resources", "lid.176.ftz")
+MODEL = os.path.join(ROOT, "src", "tren", "resources", "lid.176.ftz")
 EXPECTED_VERSION = "0.9.3"
 TOLERANCE = 1e-4
 REFERENCE = [

@@ -7,12 +7,11 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cs_pipeline import Annotator
-import tdk as tp
+from tren.cs_pipeline import Annotator
+from tren import tdk as tp
 
-_RESOURCES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources")
+_RESOURCES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src", "tren", "resources")
 
 
 def _annotator():

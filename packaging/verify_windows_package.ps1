@@ -63,8 +63,8 @@ if (-not (Test-Path $Exe)) { throw "TREN.exe not found after extracting $Zip" }
 $SizeMB = [math]::Round(((Get-ChildItem -Recurse -File (Join-Path $InstallDir "TREN") | Measure-Object Length -Sum).Sum) / 1MB)
 Write-Host "Extracted to $InstallDir ($SizeMB MB unpacked)"
 
-foreach ($f in @("resources\lid.176.ftz", "resources\frequent_tr_words.txt", "resources\frequent_en_words.txt",
-                 "resources\models\model.joblib", "resources\models\vectorizer.joblib", "resources\models\metadata.json")) {
+foreach ($f in @("tren\resources\lid.176.ftz", "tren\resources\frequent_tr_words.txt", "tren\resources\frequent_en_words.txt",
+                 "tren\resources\models\model.joblib", "tren\resources\models\vectorizer.joblib", "tren\resources\models\metadata.json")) {
     if (Test-Path (Join-Path $InstallDir "TREN\_internal\$f")) { Pass "bundled $f" } else { Fail "missing bundled $f" }
 }
 $Leaked = Get-ChildItem -Recurse -Directory (Join-Path $InstallDir "TREN\_internal") |

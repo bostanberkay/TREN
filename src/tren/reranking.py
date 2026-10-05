@@ -9,7 +9,7 @@ from typing import Dict, FrozenSet, List, NamedTuple, Optional, Tuple
 
 import scipy.sparse as sp
 
-import annotation_model
+from . import annotation_model
 
 
 # ---------------------------------------------------------------------------
@@ -729,7 +729,7 @@ def _residual_verbal_looks_like_proper_name_or_noise(token: str) -> bool:
     """Condition 10: probable proper names, acronyms, codes, URLs, mentions,
     hashtags and other non-lexical noise. Local import keeps cs_pipeline (and
     its stanza import) out of module load."""
-    from cs_pipeline import is_other_token
+    from .cs_pipeline import is_other_token
     if is_other_token(token):
         return True
     if token.isupper() and len(token) > 1:
@@ -1268,7 +1268,7 @@ def check_eligibility(token: str, label: str, annotator, cfg) -> Tuple[bool, str
     if not token or len(token) < MIN_TOKEN_LEN:
         return False, "too_short"
 
-    from cs_pipeline import is_other_token  # local import: avoids stanza at module load
+    from .cs_pipeline import is_other_token  # local import: avoids stanza at module load
     if is_other_token(token):
         return False, "other_token (url/mention/hashtag/number/punctuation/code/emoji)"
     if _looks_like_email(token):

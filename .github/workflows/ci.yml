@@ -24,7 +24,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Syntax check
-        run: python -m py_compile annotation_model.py cs_pipeline.py cs_annotator_app.py
+        run: python -m py_compile src/tren/annotation_model.py src/tren/cs_pipeline.py src/tren/cs_annotator_app.py
 
       - name: Run quickstart
         run: python examples/quickstart.py
@@ -40,6 +40,13 @@ jobs:
 
       - name: Run tests
         run: xvfb-run -a python -m pytest -rs
+
+      # As users install it (pip install .): the resources must come with the package.
+      - name: Check the installed package
+        run: |
+          pip install --no-deps .
+          cd "$RUNNER_TEMP"
+          python -c "import os, tren, tren.reranking as r; d = os.path.join(os.path.dirname(tren.__file__), 'resources'); missing = [f for f in ('lid.176.ftz', 'frequent_tr_words.txt', 'frequent_en_words.txt') if not os.path.isfile(os.path.join(d, f))]; assert not missing, missing; assert r.load_reranker_bundle() is not None, r.last_load_failure; print('installed tren OK:', d)"
 
   test-windows:
     runs-on: windows-latest
@@ -62,7 +69,7 @@ jobs:
         run: ./packaging/install_windows_deps.ps1 -Dev -ExpectPython 3.11.9 -ExpectTclTk 8.6.12
 
       - name: Syntax check
-        run: python -m py_compile annotation_model.py cs_pipeline.py cs_annotator_app.py
+        run: python -m py_compile src/tren/annotation_model.py src/tren/cs_pipeline.py src/tren/cs_annotator_app.py
 
       - name: Run quickstart
         run: python examples/quickstart.py
@@ -79,7 +86,7 @@ jobs:
         run: python -m pytest -rs --junitxml=pytest-windows.xml
 
       # The dataset GUI tests on their own as well: in a separate process they
-      # have failed with an intermittent Tk start-up error (see pytest.ini).
+      # have failed with an intermittent Tk start-up error (see pyproject.toml).
       - name: Run test_dataset_tabs_gui.py on its own
         if: ${{ !cancelled() }}
         env:
@@ -97,3 +104,11 @@ jobs:
           $x.SelectNodes('//testcase/skipped') | Group-Object { $_.GetAttribute('message') } |
             ForEach-Object { Write-Host "[$($_.Count)] $($_.Name)" }
           if ($skipped -gt 0) { exit 1 }
+
+      # As users install it (pip install --no-deps . after install_windows_deps.ps1).
+      - name: Check the installed package
+        run: |
+          pip install --no-deps .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location $env:RUNNER_TEMP
+          python -c "import os, tren, tren.reranking as r; d = os.path.join(os.path.dirname(tren.__file__), 'resources'); missing = [f for f in ('lid.176.ftz', 'frequent_tr_words.txt', 'frequent_en_words.txt') if not os.path.isfile(os.path.join(d, f))]; assert not missing, missing; assert r.load_reranker_bundle() is not None, r.last_load_failure; print('installed tren OK:', d)"

@@ -56,8 +56,8 @@ import numpy as np
 import scipy.sparse as sp
 from sklearn.metrics import accuracy_score, f1_score, precision_recall_fscore_support
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from cs_pipeline import DEFAULTS
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+from tren.cs_pipeline import DEFAULTS
 
 POLICY_UNRESTRICTED = "unrestricted"
 POLICY_BLOCK_NE = "block_ne"

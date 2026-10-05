@@ -45,10 +45,10 @@ import random
 import sys
 from collections import defaultdict
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from cs_pipeline import Annotator, DEFAULTS
-import reranking as mr
+from tren.cs_pipeline import Annotator, DEFAULTS
+from tren import reranking as mr
 
 HEADER = ['Token', 'Item', 'Label', 'Gloss']
 META_ITEMS = {'SentenceID', 'MatrixLang', 'EmbedLang'}
@@ -335,7 +335,7 @@ def main():
     ap.add_argument('--segmentation-mismatches', required=True, help='Path to existing segmentation_mismatches.csv')
     ap.add_argument('--resources-dir', required=True,
                      help='Path to a directory containing frequent_tr_words.txt, frequent_en_words.txt, lid.176.ftz '
-                          '(normally the repo\'s resources/ directory)')
+                          '(normally the repo\'s src/tren/resources/ directory)')
     ap.add_argument('--out-dir', required=True, help='Output directory for dataset.json, split_manifest.json, '
                                                        'excluded_blocks.csv (created if missing)')
     ap.add_argument('--seed', type=int, default=42)

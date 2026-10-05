@@ -7,14 +7,15 @@ from PyInstaller.utils.hooks import collect_data_files
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 
 a = Analysis(
-    [os.path.join(ROOT, "cs_annotator_app.py")],
+    [os.path.join(ROOT, "src", "tren", "__main__.py")],
     # packaging/ holds tren_selftest.py, which `TREN.exe --self-test` imports.
-    pathex=[ROOT, os.path.join(ROOT, "packaging")],
-    datas=[(os.path.join(ROOT, "resources"), "resources")]
+    pathex=[os.path.join(ROOT, "src"), os.path.join(ROOT, "packaging")],
+    # Bundled at tren/resources, next to the package's modules, as in the source tree.
+    datas=[(os.path.join(ROOT, "src", "tren", "resources"), os.path.join("tren", "resources"))]
     + collect_data_files("stanza")
     + collect_data_files("emoji"),
     # scikit-learn is never imported by TREN's code; it is needed only to
-    # unpickle resources/models/*.joblib, so analysis cannot find it.
+    # unpickle tren/resources/models/*.joblib, so analysis cannot find it.
     hiddenimports=[
         "sklearn.linear_model._logistic",
         "sklearn.feature_extraction.text",

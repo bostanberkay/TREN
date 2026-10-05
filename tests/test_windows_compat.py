@@ -15,11 +15,11 @@ import types
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+SRC = os.path.join(ROOT, "src")
 
-import cs_annotator_app as caa  # noqa: E402
-import cs_pipeline  # noqa: E402
-import annotation_model  # noqa: E402
+from tren import cs_annotator_app as caa  # noqa: E402
+from tren import cs_pipeline  # noqa: E402
+from tren import annotation_model  # noqa: E402
 
 TURKISH_DIR = "Kullanıcı Şükrü Çağlar ğüöı"
 
@@ -53,8 +53,8 @@ def test_lock_held_by_another_process_refuses(tmp_path):
             import sys, types
             from unittest.mock import MagicMock
             sys.modules["stanza"] = MagicMock()
-            sys.path.insert(0, {ROOT!r})
-            import cs_annotator_app as caa
+            sys.path.insert(0, {SRC!r})
+            from tren import cs_annotator_app as caa
             print("refused" if caa.acquire_single_instance_lock({lock_dir!r}) is None else "acquired")
         """)
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
@@ -65,8 +65,8 @@ def test_lock_held_by_another_process_refuses(tmp_path):
 
 
 def test_entry_point_no_longer_requires_fcntl():
-    src = open(os.path.join(ROOT, "cs_annotator_app.py"), encoding="utf-8").read()
-    main = src[src.index('if __name__ == "__main__":'):]
+    src = open(os.path.join(SRC, "tren", "cs_annotator_app.py"), encoding="utf-8").read()
+    main = src[src.index("def main():"):]
     assert "import fcntl" not in main
     assert "acquire_single_instance_lock(APP_DIR)" in main
 
@@ -253,8 +253,8 @@ def test_import_without_console_redirects_output_to_log(tmp_path):
         sys.modules["stanza"] = MagicMock()
         sys.stdout = None
         sys.stderr = None
-        sys.path.insert(0, {ROOT!r})
-        import cs_annotator_app
+        sys.path.insert(0, {SRC!r})
+        from tren import cs_annotator_app
         print("stderr-marker", file=sys.stderr)
         print("stdout-marker")
         sys.stderr.flush()
@@ -305,8 +305,8 @@ def test_installer_builds_fasttext_first_stops_on_failure_and_checks_model():
 # --- Windows Tk start-up: sys-level capture, one pinned Python/Tcl/Tk --------
 
 def test_pytest_captures_at_sys_level():
-    """pytest.ini explains why: fd capture makes Windows Tk start-up fail intermittently."""
-    assert "addopts = --capture=sys" in _read("pytest.ini")
+    """pyproject.toml explains why: fd capture makes Windows Tk start-up fail intermittently."""
+    assert 'addopts = "--capture=sys"' in _read("pyproject.toml")
 
 
 def test_windows_ci_and_packaging_pin_the_same_python_and_tcl_tk():

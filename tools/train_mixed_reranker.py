@@ -37,8 +37,8 @@ from sklearn.metrics import (accuracy_score, average_precision_score, confusion_
                               f1_score, precision_recall_fscore_support,
                               roc_auc_score)
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import reranking as mr
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+from tren import reranking as mr
 
 SCHEMA_LABELS = list(mr.SCHEMA_LABELS)
 RANDOM_STATE = 42

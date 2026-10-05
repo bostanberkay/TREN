@@ -11,10 +11,9 @@ from unittest import mock
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import annotation_model
-import confidence as cf
+from tren import annotation_model
+from tren import confidence as cf
 import tk_probe
 
 
@@ -109,7 +108,7 @@ def test_legacy_project_without_version_key_defaults_to_v1_and_loads():
 # ---------------------------------------------------------------------------
 
 def test_attach_confidence_over_full_label_set_never_mutates_rows():
-    from cs_pipeline import Annotator, DEFAULTS
+    from tren.cs_pipeline import Annotator, DEFAULTS
     obj = Annotator.__new__(Annotator)
     obj.turkish_freq_top = {"kitap"}
     obj.turkish_freq_all = {"kitap", "mey"}
@@ -146,7 +145,7 @@ def test_attach_confidence_over_full_label_set_never_mutates_rows():
 pytestmark_gui = pytest.mark.skipif(_SKIP_GUI, reason=_SKIP_REASON)
 
 if not _SKIP_GUI:
-    import cs_annotator_app as caa
+    from tren import cs_annotator_app as caa
 
 
 def _confidence_dict(band, score, reviewed_reasons=None):
@@ -493,7 +492,7 @@ def test_run_pipeline_attaches_confidence_without_changing_labels():
     _attach_confidence() must produce confidence data for every token row
     without altering the labels the (stubbed) production pipeline produced.
     """
-    from cs_pipeline import Annotator, DEFAULTS
+    from tren.cs_pipeline import Annotator, DEFAULTS
 
     app = caa.App()
     try:

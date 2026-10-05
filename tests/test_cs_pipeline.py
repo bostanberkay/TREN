@@ -2,8 +2,8 @@ from unittest import mock
 
 import pytest
 
-import cs_pipeline
-from cs_pipeline import Annotator, DEFAULTS, is_other_token, tokenize
+from tren import cs_pipeline
+from tren.cs_pipeline import Annotator, DEFAULTS, is_other_token, tokenize
 
 
 def _make_annotator(turkish_top=(), turkish_all=(), english_words=()):

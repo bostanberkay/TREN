@@ -285,12 +285,12 @@ def _run_all(report, out_dir, expect_ner_cached):
     except Exception as e:
         report.info["tcl_tk"] = f"unavailable: {e!r}"
 
-    import cs_annotator_app as caa
-    import cs_pipeline
-    import reranking
-    import confidence
-    import annotation_model
-    import tdk
+    from tren import cs_annotator_app as caa
+    from tren import cs_pipeline
+    from tren import reranking
+    from tren import confidence
+    from tren import annotation_model
+    from tren import tdk
 
     app_home = os.path.join(out_dir, APP_HOME_NAME)
     os.makedirs(app_home, exist_ok=True)
@@ -609,5 +609,5 @@ def _run_gui_checks(report, caa, annotation_model, confidence, tdk, export_dir):
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
     sys.exit(main(sys.argv[1:]))

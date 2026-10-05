@@ -19,9 +19,9 @@ from typing import Dict, List, Optional, Tuple
 
 import scipy.sparse as sp
 
-import annotation_model
-import reranking as mr
-import reranking as ur
+from . import annotation_model
+from . import reranking as mr
+from . import reranking as ur
 
 CALIBRATION_NOTE = (
     "Deterministic, rule-based confidence estimate. NOT statistically "
@@ -97,7 +97,7 @@ class _CommonEvidence:
 
 
 def _gather_common_evidence(token: str, annotator, cfg) -> _CommonEvidence:
-    from cs_pipeline import is_other_token  # local import, see module docstring
+    from .cs_pipeline import is_other_token  # local import, see module docstring
     token_l = token.lower()
     ft_lang, ft_prob = mr.fasttext_predict_raw(annotator, token)
     return _CommonEvidence(

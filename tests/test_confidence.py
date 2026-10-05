@@ -1,5 +1,5 @@
 """Tests for confidence.py. Uses the bypass-__init__ Annotator convention from
-tests/test_cs_pipeline.py, plus the real resources/models/ bundle where genuine
+tests/test_cs_pipeline.py, plus the real src/tren/resources/models/ bundle where genuine
 frozen-reranker probabilities are needed."""
 
 import json
@@ -9,14 +9,13 @@ from unittest import mock
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cs_pipeline import Annotator, DEFAULTS
-import annotation_model
-import confidence as cf
-import reranking as ri
+from tren.cs_pipeline import Annotator, DEFAULTS
+from tren import annotation_model
+from tren import confidence as cf
+from tren import reranking as ri
 
-REAL_MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "models")
+REAL_MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src", "tren", "resources", "models")
 
 
 def _make_annotator(turkish_top=(), turkish_all=(), english_words=()):

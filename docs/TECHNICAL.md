@@ -1,6 +1,6 @@
 # TREN Technical Documentation
 
-This file collects the detailed technical material for TREN: the annotation pipeline, the MIXED-token reranker and its evaluation, file-format specifications, tool internals, and the formal description of the labeling logic. For installation and everyday use, see the [README](README.md).
+This file collects the detailed technical material for TREN: the annotation pipeline, the MIXED-token reranker and its evaluation, file-format specifications, tool internals, and the formal description of the labeling logic. For installation and everyday use, see the [README](../README.md).
 
 ## Contents
 
@@ -19,18 +19,18 @@ This file collects the detailed technical material for TREN: the annotation pipe
 
 ## Architecture
 
-TREN is a set of Python modules without package structure:
+TREN's code is the `tren` package in `src/tren/` (started with `python -m tren`; `src/tren/__main__.py` is also the PyInstaller entry script):
 
 | Module | Role |
 |---|---|
-| `cs_annotator_app.py` | Tkinter GUI (`App`), entry point `python cs_annotator_app.py`: UI, project save/load, grid editing, tools, export |
+| `cs_annotator_app.py` | Tkinter GUI (`App`) and its `main()`: UI, project save/load, grid editing, tools, export |
 | `cs_pipeline.py` | `Annotator`: rule-based language ID (fastText + frequency lexicons), MIXED detection, Turkish suffix segmentation, NER (Stanza), Matrix/Embedded Language. No GUI imports |
 | `reranking.py` | Post-processing stages run after `Annotator.annotate()`: the frozen MIXED-token reranker, the residual verbal MIXED detector, and the UID→TR resolver (single entry point `apply_reranker()`) |
 | `confidence.py` | Read-only confidence/uncertainty scores used by the Confidence Review Tool; never changes a label |
 | `annotation_model.py` | GUI-independent annotation-state helpers and the TXT/CoNLL/JSONL serializers |
 | `tdk.py` | TDK dictionary lookup provider and the morphological parser used only by the TDK Checker |
 
-Resources (`resources/frequent_tr_words.txt`, `resources/frequent_en_words.txt`, `resources/lid.176.ftz`, `resources/models/`) are loaded at runtime. Scripts for rebuilding the reranker dataset and retraining it are in `tools/`.
+Resources (`src/tren/resources/frequent_tr_words.txt`, `frequent_en_words.txt`, `lid.176.ftz`, `models/`) are package data, loaded at runtime from the `resources/` folder next to the modules, in a source checkout, an installed package, and the packaged apps alike. Scripts for rebuilding the reranker dataset and retraining it are in `tools/`.
 
 ## Production Status (v1.4.0)
 
@@ -116,7 +116,7 @@ The structured features are organized into independently-gated, opt-in **batches
 
 ### Loading and fallback behavior
 
-The trained model (`resources/models/model.joblib`, `vectorizer.joblib`, `metadata.json` — a byte-for-byte copy of the frozen Phase 5F experiment artifacts) is loaded lazily: nothing is loaded at application startup, only on the first annotation request, and the result is cached for the rest of the session. If `joblib`/`scikit-learn` aren't installed, the model files are missing or corrupted, or the metadata fails validation against the frozen Phase 5F configuration, loading fails safely and annotation falls back to exactly the original rule-based output — no crash, no dialog, no interruption. The same applies when the installed scikit-learn can load the model file but not run it (scikit-learn 1.7 and older): the loader runs one probe prediction and rejects the model if it fails. After the first annotation request, the toolbar shows **MIXED reranker: active** or **MIXED reranker: unavailable (rule-based only)**; hovering over the unavailable status shows the reason. Saved projects (`.trenproj`) and the TXT/CSV export formats are unaffected either way: the reranker's output uses the identical text format `Annotator.annotate()` itself produces.
+The trained model (`src/tren/resources/models/model.joblib`, `vectorizer.joblib`, `metadata.json` — a byte-for-byte copy of the frozen Phase 5F experiment artifacts) is loaded lazily: nothing is loaded at application startup, only on the first annotation request, and the result is cached for the rest of the session. If `joblib`/`scikit-learn` aren't installed, the model files are missing or corrupted, or the metadata fails validation against the frozen Phase 5F configuration, loading fails safely and annotation falls back to exactly the original rule-based output — no crash, no dialog, no interruption. The same applies when the installed scikit-learn can load the model file but not run it (scikit-learn 1.7 and older): the loader runs one probe prediction and rejects the model if it fails. After the first annotation request, the toolbar shows **MIXED reranker: active** or **MIXED reranker: unavailable (rule-based only)**; hovering over the unavailable status shows the reason. Saved projects (`.trenproj`) and the TXT/CSV export formats are unaffected either way: the reranker's output uses the identical text format `Annotator.annotate()` itself produces.
 
 ### Frozen production configuration: Phase 5F
 
@@ -157,7 +157,7 @@ The reranker's own automated tests (`tests/test_mixed_reranker.py`, `tests/test_
 ```bash
 python tools/build_reranker_dataset.py --gold <gold.csv> --pred <pred.csv> \
   --exclusions <exclusions.csv> --segmentation-mismatches <segmentation_mismatches.csv> \
-  --resources-dir resources --out-dir <out-dir> \
+  --resources-dir src/tren/resources --out-dir <out-dir> \
   --include-batch-a-features --include-batch-g-features
 
 python tools/train_mixed_reranker.py --dataset <out-dir>/dataset.json \
@@ -561,4 +561,4 @@ An automated test suite in `tests/` covers `annotation_model.py`, `cs_pipeline.p
 python -m pytest
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for development setup.

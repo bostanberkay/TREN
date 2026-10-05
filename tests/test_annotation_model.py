@@ -4,7 +4,7 @@ import pytest
 
 import json
 
-from annotation_model import (
+from tren.annotation_model import (
     is_meta_row_token,
     freq_normalize_token,
     compute_word_frequencies,

@@ -9,8 +9,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
-import cs_pipeline as cp
-import reranking as mr
+from . import cs_pipeline as cp
+from . import reranking as mr
 
 
 # ---------------------------------------------------------------------------
@@ -835,7 +835,7 @@ def segments_from_text(token: str, root: str, segments_text: str) -> ParseResult
 
 def load_lexicon_annotator(freq_tr: str = "frequent_tr_words.txt",
                             freq_en: str = "frequent_en_words.txt"):
-    from cs_pipeline import Annotator
+    from .cs_pipeline import Annotator
     obj = Annotator.__new__(Annotator)
     obj.turkish_freq_top = set()
     obj.turkish_freq_all = set()

@@ -14,7 +14,7 @@
 # (used by the workflows) stop the install unless `python` and its Tcl/Tk are
 # exactly those versions, so CI and packaging test and bundle the same ones.
 # Stops at the first failing command, and finishes by loading
-# resources/lid.176.ftz and checking real predictions (packaging/check_fasttext.py).
+# src/tren/resources/lid.176.ftz and checking real predictions (packaging/check_fasttext.py).
 param(
     [switch]$Dev,
     [switch]$Build,
@@ -52,7 +52,7 @@ try {
             python -m pip install -r (Join-Path $Root "packaging\requirements-build.txt")
         }
     }
-    Invoke-Step "Check fasttext with resources/lid.176.ftz" { python (Join-Path $Root "packaging\check_fasttext.py") }
+    Invoke-Step "Check fasttext with src/tren/resources/lid.176.ftz" { python (Join-Path $Root "packaging\check_fasttext.py") }
 } finally {
     Remove-Item -Recurse -Force $WheelDir -ErrorAction SilentlyContinue
 }

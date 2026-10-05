@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tren"
+version = "1.4.0"
+description = "Semi-automatic annotation tool for Turkish–English code-switching corpora"
+requires-python = ">=3.11"
+license-files = ["LICENSE"]
+# requirements.txt stays the one dependency list (it explains its pins).
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false
+
+# The fastText model, word lists and reranker model, read from the installed package.
+[tool.setuptools.package-data]
+tren = ["resources/*.txt", "resources/*.ftz", "resources/models/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+# Capture sys.stdout/sys.stderr only, not file descriptors 1/2. Fd-level capture
+# (pytest's default) swaps those fds with dup2 around every test phase; on
+# Windows that closes handles Tcl cached for its standard channels, and a later
+# tkinter.Tk() intermittently fails with 'invalid command name "tcl_findLibrary"'
+# (https://github.com/jamesabel/balsa/pull/27; see CHANGELOG, Unreleased).
+# No test uses capfd. On the Windows CI runner 1 of 1000 Tk roots failed with fd
+# capture and 0 of 1000 with sys capture (CHANGELOG, Unreleased).
+addopts = "--capture=sys"

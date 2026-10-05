@@ -6,11 +6,10 @@ from unittest import mock
 import numpy as np
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
 
-import reranking as mr
-from cs_pipeline import Annotator, DEFAULTS
+from tren import reranking as mr
+from tren.cs_pipeline import Annotator, DEFAULTS
 import build_reranker_dataset as bld
 import train_mixed_reranker as trn
 
