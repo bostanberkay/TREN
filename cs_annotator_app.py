@@ -11,7 +11,26 @@ import copy
 import queue
 import threading
 
-from cs_pipeline import Annotator, DEFAULTS
+# A windowed Windows build (PyInstaller console=False, or pythonw) has no
+# console, so sys.stdout/sys.stderr are None and any write to them (print,
+# Stanza's tqdm download progress) raises. Send them to a log file instead;
+# this must run before cs_pipeline imports stanza.
+if sys.stdout is None or sys.stderr is None:
+    try:
+        _log_dir = os.path.join(os.path.expanduser("~"), ".cs_annotator")
+        os.makedirs(_log_dir, exist_ok=True)
+        _log_path = os.path.join(_log_dir, "tren.log")
+        # Append, so a second (refused) launch does not wipe the running one's log.
+        _log_mode = "a" if os.path.isfile(_log_path) and os.path.getsize(_log_path) < 1_000_000 else "w"
+        _log_fh = open(_log_path, _log_mode, encoding="utf-8", buffering=1)
+    except Exception:
+        _log_fh = open(os.devnull, "w", encoding="utf-8")
+    if sys.stdout is None:
+        sys.stdout = _log_fh
+    if sys.stderr is None:
+        sys.stderr = _log_fh
+
+from cs_pipeline import Annotator, DEFAULTS, ner_models_cached
 import annotation_model
 import reranking
 import confidence
@@ -26,6 +45,11 @@ DARK_BG = "#222222"
 DARK_FG = "#e6e6e6"
 
 ACCENT  = "#3a7bd5"
+
+IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
+# Menlo exists only on macOS.
+MONO_FONT = "Consolas" if IS_WINDOWS else "Menlo"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".cs_annotator")
 LAST_PROJECT_PTR = os.path.join(APP_DIR, "last_project.json")
@@ -306,7 +330,7 @@ VOC vocative
         txt = ScrolledText(frm, wrap='none', bg='#1b1b1b', fg=DARK_FG, insertbackground='white')
         txt.pack(fill='both', expand=True)
         try:
-            txt.configure(font=('Menlo', 12))
+            txt.configure(font=(MONO_FONT, 12))
         except Exception:
             pass
 
@@ -2431,10 +2455,32 @@ VOC vocative
             self._reranker_load_attempted = True
             self._update_reranker_status()
 
+    def _confirm_ner_model_download(self):
+        """Before NER's first start downloads Stanza's Turkish models, say so and
+        let the user cancel the run. Raises on cancel; NER is never turned off."""
+        if not self.cfg.get("NER_ENABLED", True) or self.annotator.ner is not None:
+            return
+        if ner_models_cached():
+            return
+        if not messagebox.askokcancel(
+            "Download NER models",
+            "Named Entity Recognition (NER) needs the Stanza Turkish models, which "
+            "are not on this computer yet. They will be downloaded now (about 200 MB, "
+            "internet connection required); TREN may not respond until the download "
+            "finishes. After that, NER works offline.\n\n"
+            "Cancel to stop this run. To annotate without NER, turn off the NER "
+            "option in the toolbar.",
+        ):
+            raise RuntimeError(
+                "Annotation cancelled: the NER models were not downloaded. "
+                "Turn off the NER option in the toolbar to annotate without NER."
+            )
+
     def _run_annotation_pipeline(self, text):
         """Run annotate -> apply_reranker -> matrix/embed consistency on `text`;
         shared by run_pipeline and Add New Data."""
         self._ensure_annotator_ready()
+        self._confirm_ner_model_download()
         out = self.annotator.annotate(text, self.cfg)
         # Side channel for _attach_confidence, which diffs it against the final
         # output to recover each token's pre-reranker label. Not shown or persisted.
@@ -2455,9 +2501,11 @@ VOC vocative
             print(f"[confidence] failed to attach confidence data, continuing without it: {e}", file=sys.stderr)
 
     def _read_utf8_text_file(self, path):
-        """Read `path` as strict UTF-8; raises UnicodeDecodeError/OSError, which
-        callers must handle (no silent fallback encoding)."""
-        with open(path, "r", encoding="utf-8") as f:
+        """Read `path` as strict UTF-8, dropping a leading byte-order mark (as
+        written by older Windows Notepad) so it does not become part of the first
+        token; raises UnicodeDecodeError/OSError, which callers must handle (no
+        silent fallback encoding)."""
+        with open(path, "r", encoding="utf-8-sig") as f:
             return f.read()
 
     def _create_dataset_from_text(self, name, source_text, source_filename=None):
@@ -2641,6 +2689,11 @@ VOC vocative
         name = simpledialog.askstring("Save Project", "Name your project save:")
         if not name:
             return False
+        if IS_WINDOWS:
+            err = annotation_model.windows_save_name_error(name)
+            if err:
+                messagebox.showerror("Save Project", err)
+                return False
 
         try:
             os.makedirs(APP_DIR, exist_ok=True)
@@ -2676,7 +2729,7 @@ VOC vocative
         payload.update(annotation_model.datasets_to_payload(self.datasets, self._active_dataset_index))
 
         try:
-            with open(path, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
         except Exception as e:
             messagebox.showerror("Save error", str(e))
@@ -2882,7 +2935,7 @@ VOC vocative
         # INPUT editor
         self.txt_input = ScrolledText(left, wrap="word", bg="#1b1b1b", fg=DARK_FG, insertbackground="white")
         self.txt_input.pack(fill="both", expand=True)
-        self.txt_input.configure(font=("Menlo", 13))
+        self.txt_input.configure(font=(MONO_FONT, 13))
         try:
             self.txt_input.tag_configure("KWIC_HIT", background="#3a3a3a")
         except Exception:
@@ -3005,7 +3058,9 @@ VOC vocative
             try:
                 # Right-click events across platforms
                 self.sheet.bind("<Button-3>", _popup_grid_menu)
-                self.sheet.bind("<Button-2>", _popup_grid_menu)  # some mac setups
+                if IS_MACOS:
+                    # Right-click is Button-2 under Aqua Tk; elsewhere Button-2 is the middle button.
+                    self.sheet.bind("<Button-2>", _popup_grid_menu)
             except Exception:
                 pass
 
@@ -3023,7 +3078,8 @@ VOC vocative
                    style='Dark.TButton', width=16).pack(padx=6, pady=2, anchor="w")
 
         tk.Label(pnl, text="Shortcuts:", bg=DARK_BG, fg="#a0a0a0").pack(anchor="w", padx=6, pady=(8,2))
-        tk.Label(pnl, text="Enter: edit  •  Esc: cancel edit  •  ↑/↓/←/→ move  •  ⌘ (Command): multi-select", bg=DARK_BG, fg="#808080").pack(anchor="w", padx=6)
+        tk.Label(pnl, text="Enter: edit  •  Esc: cancel edit  •  ↑/↓/←/→ move  •  "
+                 + ("⌘ (Command)" if IS_MACOS else "Ctrl") + ": multi-select", bg=DARK_BG, fg="#808080").pack(anchor="w", padx=6)
 
     def _bind_keys(self):
         """Keyboard bindings. Global Command/Ctrl shortcuts are avoided on
@@ -3709,7 +3765,7 @@ VOC vocative
 
             txt = ScrolledText(frm, wrap="word", bg="#1b1b1b", fg=DARK_FG, insertbackground="white")
             txt.pack(fill="both", expand=True)
-            txt.configure(font=("Menlo", 13))
+            txt.configure(font=(MONO_FONT, 13))
 
             def _on_close():
                 try:
@@ -4303,7 +4359,7 @@ VOC vocative
                 text = self._sheet_rows_to_txt(sheet_rows)
             else:
                 text = annotation_model.reconstruct_text_from_blocks(copy.deepcopy(blocks), extra_headers)
-            with open(path, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
             return
 
@@ -4324,13 +4380,13 @@ VOC vocative
 
         if fmt == "CoNLL":
             text = annotation_model.blocks_to_conll(blocks)
-            with open(path, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
             return
 
         if fmt == "JSONL":
             text = annotation_model.blocks_to_jsonl(blocks, ds.get('name', ''))
-            with open(path, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
             return
 
@@ -5134,6 +5190,29 @@ VOC vocative
         return None
 
 
+def acquire_single_instance_lock(lock_dir):
+    """Lock `lock_dir`/tren.lock for this process. Returns the open handle (keep
+    it alive; the OS releases the lock when the process exits), or None if
+    another TREN instance holds it. Errors other than lock contention raise."""
+    os.makedirs(lock_dir, exist_ok=True)
+    fh = open(os.path.join(lock_dir, "tren.lock"), "a")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    except Exception:
+        fh.close()
+        raise
+    return fh
+
+
 if __name__ == "__main__":
     try:
         import multiprocessing
@@ -5144,22 +5223,21 @@ if __name__ == "__main__":
     except Exception:
         pass
 
+    # Packaging verification only (see packaging/tren_selftest.py); the module is
+    # bundled into the Windows build, not shipped as a user feature.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--self-test":
+        import tren_selftest
+        raise SystemExit(tren_selftest.main(sys.argv[2:]))
+
     # Single-instance lock (prevents double-launch and "reopen" effects)
     try:
-        lock_dir = os.path.expanduser("~/.cs_annotator")
-        os.makedirs(lock_dir, exist_ok=True)
-        lock_path = os.path.join(lock_dir, "tren.lock")
-        _lock_fh = open(lock_path, "w")
-        try:
-            import fcntl
-            fcntl.flock(_lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except Exception:
-            raise SystemExit(0)
-    except SystemExit:
-        raise
+        _lock_fh = acquire_single_instance_lock(APP_DIR)
     except Exception:
         # If locking is not available for some reason, continue rather than crash
         _lock_fh = None
+    else:
+        if _lock_fh is None:
+            raise SystemExit(0)
 
     app = App()
     app.mainloop()

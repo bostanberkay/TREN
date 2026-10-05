@@ -415,6 +415,23 @@ def sanitize_dataset_filename(name):
     return s or "dataset"
 
 
+_WINDOWS_RESERVED_FILE_STEMS = {"CON", "PRN", "AUX", "NUL"} | {f"{p}{i}" for p in ("COM", "LPT") for i in range(1, 10)}
+
+
+def windows_save_name_error(name):
+    """Why `name` cannot be a file name on Windows, or None if it can. A ":" would
+    otherwise write to an NTFS alternate data stream and look like a saved file."""
+    s = str(name or "")
+    bad = sorted(set(c for c in s if c in '<>:"/\\|?*' or ord(c) < 32))
+    if bad:
+        return "These characters are not allowed in a file name on Windows: " + " ".join(repr(c) for c in bad)
+    if s != s.rstrip(" ."):
+        return "A file name on Windows cannot end with a space or a dot."
+    if s.split(".")[0].strip().upper() in _WINDOWS_RESERVED_FILE_STEMS:
+        return f"'{s}' is a reserved device name on Windows."
+    return None
+
+
 # `.trenproj` schema versions:
 #   1 -- single implicit dataset: top-level "blocks"/"input_text"/"extra_headers".
 #        A "datasets" key alongside "version": 1 is rejected as malformed.

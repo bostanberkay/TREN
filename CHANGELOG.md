@@ -4,7 +4,24 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- **Windows port (Windows 10/11 x64, not yet released)**: a portable, unsigned Windows build (`TREN_v<version>_windows_x64.zip`, a `TREN` folder with `TREN.exe` and the bundled resources, fastText model and MIXED reranker; no Python installation needed) built with PyInstaller by `packaging/TREN_windows.spec` and `packaging/build_windows.ps1`. The new manually triggered GitHub Actions workflow `.github/workflows/windows-package.yml` builds it, verifies the packaged app apart from the source tree (`packaging/verify_windows_package.ps1`) and uploads the ZIP as a workflow artifact; it publishes no release. The verification runs `TREN.exe --self-test` (`packaging/tren_selftest.py`, a packaging check bundled only into the Windows build) from a folder with spaces and Turkish characters, with the runner's Python hidden, first online with an empty NER model cache and then with the network blocked, compares the output with the same self-test run from source, and launches the app normally. ARM64 Windows is not supported or tested. Stanza's NER models are not bundled (see Changed).
+- **Windows CI**: `.github/workflows/ci.yml` now also runs the syntax check, quickstart and full test suite on `windows-latest`, and that job fails if any test is skipped. The existing Ubuntu job is unchanged.
+- `tests/test_windows_compat.py`: regression tests for the changes below.
+
+### Fixed
+
+- **TREN never started on Windows**: the single-instance lock imported the Unix-only `fcntl` module, and any failure there made the app exit silently. The lock now uses `msvcrt` on Windows and `fcntl` elsewhere (`acquire_single_instance_lock`); only genuine lock contention (a second TREN) exits.
+- **No console in the packaged Windows app**: with `sys.stdout`/`sys.stderr` set to `None`, any print or Stanza's download progress bar would raise. Output now goes to `~/.cs_annotator/tren.log` when there is no console.
+- **Project saves named with `:` on Windows**: such a name would have written to an NTFS alternate data stream and looked saved. On Windows, Save Project now rejects names Windows cannot use as file names (`< > : " / \ | ? *`, control characters, a trailing space or dot, reserved names such as `CON`) with a message. macOS behavior is unchanged.
+
 ### Changed
+
+- **Line endings**: TXT, CoNLL and JSONL exports and `.trenproj` saves are now always written with `\n` line endings, so a file exported on Windows is byte-identical to one exported on macOS (Python would otherwise write `\r\n` on Windows). CSV keeps the `csv` module's `\r\n` row terminator on every platform, as before. Output on macOS is unchanged.
+- **Input files with a UTF-8 byte-order mark** (as saved by older Windows Notepad): Open and Add New Data ▸ Open New File now drop the BOM instead of making it part of the first token. Decoding is still strict UTF-8.
+- **First NER use asks before downloading**: when NER is on and Stanza's Turkish models are not cached yet, Run (and Add New Data) first explains that about 200 MB will be downloaded and that NER works offline afterwards. Cancel stops the run with a message; NER is never turned off automatically. Download and load failures still show the existing error.
+- **Windows UI details**: the monospaced text areas use Consolas on Windows (Menlo is macOS-only); the grid's context menu opens on right-click only (Button-2 is the middle button outside macOS); the shortcut hint says Ctrl instead of ⌘ on Windows. tksheet already uses Ctrl for multi-select and its own mouse-wheel scrolling on Windows.
 
 - **Documentation**: shortened the README to installation, usage, labels, project files, and export. Technical material (pipeline stages, the MIXED-token reranker and its benchmarks, real-corpus and synthetic metrics, the UID→TR resolver, detailed file formats, tool internals, and the formalization) moved to the new [TECHNICAL.md](TECHNICAL.md); older entries below that mention README sections refer to this content. Added License and Citation sections to the README.
 

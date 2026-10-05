@@ -1,3 +1,4 @@
+import os
 import re
 import fasttext
 import stanza
@@ -134,6 +135,20 @@ def is_other_token(tok: str) -> bool:
 
 def clean_token(token: str) -> str:
     return re.sub(r"[^\w’']+", "", token)
+
+def ner_models_cached(lang="tr"):
+    """Best-effort check that Stanza's model directory already holds the
+    tokenize and NER models for `lang`, i.e. starting NER will not download
+    them. True when the check itself fails, so it never blocks NER."""
+    try:
+        from stanza.resources.common import DEFAULT_MODEL_DIR
+        lang_dir = os.path.join(DEFAULT_MODEL_DIR, lang)
+        return (os.path.isfile(os.path.join(DEFAULT_MODEL_DIR, "resources.json"))
+                and os.path.isdir(os.path.join(lang_dir, "tokenize"))
+                and os.path.isdir(os.path.join(lang_dir, "ner")))
+    except Exception:
+        return True
+
 
 class NERUnavailableError(RuntimeError):
     """NER was requested but the Stanza pipeline could not be created."""

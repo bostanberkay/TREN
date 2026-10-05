@@ -24,7 +24,7 @@ TREN’s features include, for instance:
 
 ## Installation
 
-TREN is available as a packaged application for macOS. On any platform with Python 3.11+ you can run it from source (see below).
+TREN is available as a packaged application for macOS. A portable Windows build is in preparation (see below). On any platform with Python 3.11+ you can run it from source.
 
 ### Release status
 
@@ -50,6 +50,17 @@ The app is not signed or notarized, so macOS blocks it on first launch:
   <li>On earlier macOS versions: right-click (or Ctrl-click) the <strong>TREN</strong> app, select <strong>Open</strong>, and confirm.</li>
 </ul>
 
+### Windows (portable build, in preparation)
+
+There is **no published Windows release yet**. A portable Windows build (`TREN_v<version>_windows_x64.zip`) is produced by the manually run [Windows package workflow](https://github.com/bostanberkay/TREN/actions/workflows/windows-package.yml) as a downloadable workflow artifact for testing. It targets **Windows 10/11, x64**; ARM64 Windows has not been tested.
+
+<ol>
+  <li>Extract the whole ZIP to a folder (do not run TREN from inside the ZIP).</li>
+  <li>Run <code>TREN\TREN.exe</code>. Python does not need to be installed.</li>
+</ol>
+
+The build is **not code-signed**, so Windows SmartScreen may warn on first launch: click <strong>More info ▸ Run anyway</strong>. Shortcuts use <strong>Ctrl</strong> (⌘ on macOS); right-click opens the table's context menu. Project saves and the error log (`tren.log`) are kept in `%USERPROFILE%\.cs_annotator`. `.trenproj` projects and TXT/CSV/CoNLL/JSONL exports are the same on Windows and macOS. The NER models are downloaded on the first run with NER on; TREN asks before starting the download (see Requirements below).
+
 ## Run from Source (Python)
 
 ```bash
@@ -63,7 +74,8 @@ python cs_annotator_app.py
 
 - **Python 3.11 or higher**, with Tk support.
 - The packages in `requirements.txt`: `fasttext`, `numpy<2`, `stanza`, `tksheet`, `joblib`, `scipy`, `scikit-learn>=1.8`.
-- **Internet on first NER run.** Named Entity Recognition (on by default) uses Stanza's Turkish models, downloaded automatically the first time. After that TREN works offline. If the models cannot be downloaded, Run shows an error; untick **NER** in the toolbar to annotate without it.
+- **Internet on first NER run.** Named Entity Recognition (on by default) uses Stanza's Turkish models (about 200 MB), which are not bundled. The first time NER runs, TREN asks before downloading them into Stanza's user cache folder (on Windows under `%LOCALAPPDATA%\StanfordNLP\stanza`; set `STANZA_RESOURCES_DIR` to use another folder). After that TREN works offline. If the models cannot be downloaded, Run shows an error; untick **NER** in the toolbar to annotate without it.
+- **Windows:** `fasttext==0.9.3` has no Windows wheel, so `pip install` compiles it and needs the Microsoft C++ Build Tools (if the build fails on C++17 features, set the environment variable `CL=/std:c++17` and retry).
 
 The bundled MIXED-token reranker needs `scikit-learn>=1.8`. If it cannot be used, TREN still annotates with rule-based MIXED detection and the toolbar shows **MIXED reranker: unavailable** (hover for the reason).
 

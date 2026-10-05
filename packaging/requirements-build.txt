@@ -1,0 +1,5 @@
+# Build-time only (not bundled into the app): PyInstaller for packaging/TREN_windows.spec,
+# Pillow to convert assets/tren_icon.png into the .exe icon.
+pyinstaller==6.21.0
+pyinstaller-hooks-contrib==2026.6
+pillow

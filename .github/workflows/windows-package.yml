@@ -1,0 +1,104 @@
+name: Windows package
+
+# Manual only: builds the portable Windows x64 ZIP, verifies the packaged app
+# apart from the source tree, and uploads the ZIP as a workflow artifact.
+# It never creates a tag or a GitHub release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version written into the ZIP name and VERSION.txt"
+        required: true
+        default: "1.4.0"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      # fasttext 0.9.3 has no Windows wheel and builds from source; its setup.py
+      # passes no C++ standard to MSVC, so request C++17 here.
+      CL: /std:c++17
+      TREN_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install runtime and build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r packaging/requirements-build.txt
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          pip freeze | Out-File -Encoding utf8 out/build-environment.txt
+          python --version | Out-File -Append -Encoding utf8 out/build-environment.txt
+
+      # Reference run from source; the packaged app must produce identical output.
+      - name: Self-test from source
+        env:
+          STANZA_RESOURCES_DIR: ${{ runner.temp }}\stanza-source
+        run: |
+          python packaging/tren_selftest.py "$env:RUNNER_TEMP\source report"
+          $code = $LASTEXITCODE
+          Get-Content -Encoding utf8 "$env:RUNNER_TEMP\source report\selftest_report.txt"
+          exit $code
+
+      - name: Build TREN.exe and ZIP
+        run: ./packaging/build_windows.ps1 -Version "$env:TREN_VERSION" -OutDir out
+
+      # Hide the runner's Python installation so the packaged app cannot fall
+      # back on it, then verify the extracted ZIP.
+      - name: Verify packaged app (no Python available)
+        run: |
+          $py = $env:pythonLocation
+          $hidden = "$py.hidden"
+          Rename-Item -Path $py -NewName (Split-Path $hidden -Leaf)
+          try {
+            & ./packaging/verify_windows_package.ps1 `
+              -Zip "out/TREN_v$($env:TREN_VERSION)_windows_x64.zip" `
+              -WorkRoot "$env:RUNNER_TEMP\pkgtest" `
+              -SourceReport "$env:RUNNER_TEMP\source report"
+            $code = $LASTEXITCODE
+          } finally {
+            Rename-Item -Path $hidden -NewName (Split-Path $py -Leaf)
+          }
+          exit $code
+
+      - name: Collect self-test reports
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Force -Path reports | Out-Null
+          if (Test-Path "$env:RUNNER_TEMP\source report") { Copy-Item -Recurse "$env:RUNNER_TEMP\source report" "reports/source" }
+          Get-ChildItem "$env:RUNNER_TEMP\pkgtest" -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "rapor*" } |
+            ForEach-Object { Copy-Item -Recurse $_.FullName ("reports/packaged-" + $_.Name.Split(' ')[1]) }
+          Get-ChildItem -Recurse -Filter tren.log "$env:RUNNER_TEMP\pkgtest" -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName reports/tren.log }
+          if (Test-Path out/build-environment.txt) { Copy-Item out/build-environment.txt reports/ }
+
+      - name: Upload self-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TREN-windows-selftest-reports
+          path: reports
+          if-no-files-found: warn
+
+      - name: Upload Windows ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: TREN_v${{ inputs.version }}_windows_x64
+          path: out/TREN_v${{ inputs.version }}_windows_x64.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

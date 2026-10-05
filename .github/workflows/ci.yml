@@ -40,3 +40,50 @@ jobs:
 
       - name: Run tests
         run: xvfb-run -a python -m pytest -rs
+
+  test-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      # fasttext 0.9.3 has no Windows wheel and builds from source; its setup.py
+      # passes no C++ standard to MSVC, so request C++17 here.
+      CL: /std:c++17
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Syntax check
+        run: python -m py_compile annotation_model.py cs_pipeline.py cs_annotator_app.py
+
+      - name: Run quickstart
+        run: python examples/quickstart.py
+
+      # Fail here rather than silently skipping the GUI tests if Tk is unusable.
+      - name: Check Tk can open a window
+        run: python -c "import tkinter; tkinter.Tk().destroy()"
+
+      - name: Run tests
+        run: python -m pytest -rs --junitxml=pytest-windows.xml
+
+      # Skipped tests are not passes: fail the job if any test was skipped.
+      - name: Fail on skipped tests
+        run: |
+          [xml]$x = Get-Content pytest-windows.xml
+          $skipped = 0
+          foreach ($s in $x.SelectNodes('//testsuite')) { $skipped += [int]$s.skipped }
+          Write-Host "skipped tests: $skipped"
+          if ($skipped -gt 0) { exit 1 }
