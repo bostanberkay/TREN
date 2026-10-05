@@ -1,5 +1,7 @@
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 ## TREN: A Corpus Annotation Tool for Code-Switching Data
+
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/bostanberkay/TREN/blob/main/LICENSE)
+[![Tests](https://github.com/bostanberkay/TREN/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/bostanberkay/TREN/actions/workflows/ci.yml?query=branch%3Amain)
 
 TREN is a semi-automatic desktop application for annotating and analyzing Turkish–English code-switching data in corpus-based linguistic research. You load raw text, TREN proposes token-level language labels and glosses, and you review and correct them in a spreadsheet-like grid before exporting the annotated corpus.
 
