@@ -14,12 +14,14 @@ every check passed. This does not replace a person using the GUI: windows are
 driven programmatically, not by real mouse/keyboard input.
 """
 import csv
+import importlib.util
 import json
 import os
 import platform
 import sys
 import time
 import traceback
+import types
 
 SAMPLE_TEXT = (
     "Yarın sabah meeting'e geç kalacağım çünkü Ahmet Ankara'dan geliyor.\n"
@@ -96,7 +98,134 @@ class Dialogs:
         return [args for n, args in self.calls if n == "showerror"]
 
 
-def check_frozen_isolation():
+def _carchive_module_code(executable):
+    """{name: code object} of the Python modules stored in a PyInstaller executable's
+    own archive (CArchive layout as read by PyInstaller.archive.readers.CArchiveReader):
+    the bootstrap modules the bootloader executes before any import system exists."""
+    import marshal
+    import struct
+    import zlib
+
+    magic = b"MEI\014\013\012\013\016"
+    with open(executable, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        end, cookie = f.tell(), -1
+        while end >= len(magic) and cookie < 0:  # the cookie closes the archive; scan back
+            start = max(end - 65536, 0)
+            f.seek(start)
+            pos = f.read(end - start).rfind(magic)
+            cookie = start + pos if pos >= 0 else -1
+            end = start + len(magic) - 1 if start else 0
+        _check(cookie >= 0, f"no PyInstaller archive in {executable}")
+        f.seek(cookie)
+        _, archive_length, toc_offset, toc_length, _, _ = struct.unpack("!8sIIII64s", f.read(88))
+        archive_start = cookie + 88 - archive_length
+        f.seek(archive_start + toc_offset)
+        toc, pos, modules = f.read(toc_length), 0, {}
+        while pos < len(toc):
+            entry_length, offset, length, _, compressed, typecode = struct.unpack("!IIIIBc", toc[pos:pos + 18])
+            name = toc[pos + 18:pos + entry_length].rstrip(b"\0").decode("utf-8")
+            pos += entry_length
+            if typecode in (b"m", b"M"):  # Python module / package
+                f.seek(archive_start + offset)
+                data = f.read(length)
+                modules[name] = marshal.loads(zlib.decompress(data) if compressed else data)
+    return modules
+
+
+def _code_tree(code):
+    yield code
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            yield from _code_tree(const)
+
+
+def _outside_bundle_reason(name, mod, inside, archive, depth=0):
+    """None if module `mod` demonstrably comes from the bundle, else why not.
+    An absolute __file__ must lie inside it. A relative __file__ is accepted in
+    two cases only, each checked against what the module really is:
+    * a module object built by code (e.g. torch.ops, an instance of a ModuleType
+      subclass declaring __file__ = "_ops.py"): no spec and no __file__ of its
+      own, so it was never loaded from a file; the module defining its type must
+      come from the bundle;
+    * a module the bootloader executed from the executable's archive: the archive
+      holds code for this name with this file name, nothing exists at the origin
+      its spec reports (a file there would be what was loaded), and every
+      function the module defines carries code from that archive entry."""
+    file = getattr(mod, "__file__", None)
+    if not file:
+        return None
+    if os.path.isabs(file):
+        return None if inside(file) else f"{name}: {file}"
+    if "__file__" not in vars(mod) and getattr(mod, "__spec__", None) is None:
+        owner_name = type(mod).__module__
+        owner = sys.modules.get(owner_name)
+        if owner is None or owner is mod or depth >= 3:
+            return f"{name}: {file} (module object of {owner_name}.{type(mod).__qualname__}, defining module not found)"
+        reason = _outside_bundle_reason(owner_name, owner, inside, archive, depth + 1)
+        return None if reason is None else f"{name}: {file} (module object defined by {reason})"
+    code = archive.get(name)
+    if code is not None and code.co_filename == file:
+        origin = getattr(getattr(mod, "__spec__", None), "origin", None)
+        archived = set(_code_tree(code))
+        own_functions = [v for v in vars(mod).values()
+                         if isinstance(v, types.FunctionType) and v.__module__ == name]
+        if not (origin and os.path.exists(origin)) and all(fn.__code__ in archived for fn in own_functions):
+            return None
+    return f"{name}: {file} (relative path; not code from the executable's archive)"
+
+
+def _isolation_negative_controls(inside, archive, scratch):
+    """Modules that really come from outside the bundle must be rejected, also
+    when they imitate the relative __file__ of the cases accepted above."""
+    os.makedirs(scratch, exist_ok=True)
+    with open(os.path.join(scratch, "tren_external_probe.py"), "w", encoding="utf-8") as f:
+        f.write("import types\n\ndef probe():\n    return 1\n\n\n"
+                "class Synthetic(types.ModuleType):\n    __file__ = '_synthetic.py'\n")
+    previous_cwd = os.getcwd()
+    os.chdir(scratch)  # relative origins below resolve to these external files
+    try:
+        def load(module_name, file_name):
+            # A relative __file__ and spec, as the bootloader produces for its modules.
+            module = types.ModuleType(module_name)
+            module.__file__ = file_name
+            module.__spec__ = importlib.util.spec_from_file_location(module_name, file_name)
+            with open(file_name, encoding="utf-8") as f:
+                exec(compile(f.read(), file_name, "exec"), module.__dict__)
+            return module
+
+        reasons = {}
+        spec = importlib.util.spec_from_file_location(
+            "tren_external_probe", os.path.join(scratch, "tren_external_probe.py"))
+        external = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(external)
+        reasons["absolute path"] = _outside_bundle_reason("tren_external_probe", external, inside, archive)
+        reasons["relative path"] = _outside_bundle_reason(
+            "tren_external_probe", load("tren_external_probe", "tren_external_probe.py"), inside, archive)
+        if archive:
+            bootstrap = sorted(archive)[0]
+            with open(f"{bootstrap}.py", "w", encoding="utf-8") as f:
+                f.write("def probe():\n    return 1\n")
+            impostor = load(bootstrap, f"{bootstrap}.py")
+            reasons[f"relative path named {bootstrap}, file present"] = _outside_bundle_reason(
+                bootstrap, impostor, inside, archive)
+            os.remove(f"{bootstrap}.py")
+            reasons[f"relative path named {bootstrap}, file removed"] = _outside_bundle_reason(
+                bootstrap, impostor, inside, archive)
+        sys.modules["tren_external_probe"] = external  # only while classifying this case
+        try:
+            reasons["module object typed outside"] = _outside_bundle_reason(
+                "tren_external_probe.ops", external.Synthetic("tren_external_probe.ops"), inside, archive)
+        finally:
+            del sys.modules["tren_external_probe"]
+    finally:
+        os.chdir(previous_cwd)
+    accepted = [label for label, reason in reasons.items() if reason is None]
+    _check(not accepted, f"external modules not detected: {accepted}")
+    return reasons
+
+
+def check_frozen_isolation(scratch):
     """In the packaged app every imported module must come from the bundle,
     never from a Python installation or source checkout on the machine."""
     if not getattr(sys, "frozen", False):
@@ -108,15 +237,20 @@ def check_frozen_isolation():
         p = os.path.normcase(os.path.abspath(p))
         return p.startswith(bundle + os.sep) or p == bundle or p.startswith(app_dir + os.sep)
 
+    archive = _carchive_module_code(sys.executable)
     outside = []
     for name, mod in list(sys.modules.items()):
-        f = getattr(mod, "__file__", None)
-        if f and not inside(f):
-            outside.append(f"{name}: {f}")
+        reason = _outside_bundle_reason(name, mod, inside, archive)
+        if reason:
+            outside.append(reason)
     bad_path = [p for p in sys.path if p and not inside(p)]
     _check(not outside, f"modules loaded from outside the bundle: {outside[:10]}")
     _check(not bad_path, f"sys.path entries outside the bundle: {bad_path}")
-    return f"{len(sys.modules)} modules, all inside {bundle}"
+    relative = sorted(n for n, m in sys.modules.items()
+                      if getattr(m, "__file__", None) and not os.path.isabs(m.__file__))
+    return {"modules": len(sys.modules), "bundle": bundle, "relative __file__ verified": relative,
+            "executable archive modules": sorted(archive),
+            "negative controls rejected": _isolation_negative_controls(inside, archive, scratch)}
 
 
 def main(argv):
@@ -165,7 +299,8 @@ def _run_all(report, out_dir, expect_ner_cached):
     export_dir = os.path.join(out_dir, EXPORT_DIR_NAME)
     os.makedirs(export_dir, exist_ok=True)
 
-    report.run("bundle isolation", check_frozen_isolation)
+    report.run("bundle isolation",
+               lambda: check_frozen_isolation(os.path.join(out_dir, "isolation negative controls")))
 
     def lock():
         lock_dir = os.path.join(out_dir, "kilit dizini ş")
