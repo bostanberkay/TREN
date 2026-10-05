@@ -2,6 +2,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/bostanberkay/TREN/blob/main/LICENSE)
 [![Tests](https://github.com/bostanberkay/TREN/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/bostanberkay/TREN/actions/workflows/ci.yml?query=branch%3Amain)
+[![Build](https://github.com/bostanberkay/TREN/actions/workflows/windows-package.yml/badge.svg?branch=main)](https://github.com/bostanberkay/TREN/actions/workflows/windows-package.yml?query=branch%3Amain)
 
 TREN is a semi-automatic desktop application for annotating and analyzing Turkish–English code-switching data in corpus-based linguistic research. You load raw text, TREN proposes token-level language labels and glosses, and you review and correct them in a spreadsheet-like grid before exporting the annotated corpus.
 
@@ -24,7 +25,7 @@ TREN’s features include, for instance:
 
 ## Installation
 
-TREN is available as a packaged application for macOS. A portable Windows build is in preparation (see below). On any platform with Python 3.11+ you can run it from source.
+TREN is available as a packaged application for macOS. A portable Windows build is available as a GitHub Actions artifact but not yet as a release (see below). On any platform with Python 3.11+ you can run it from source.
 
 ### Release status
 
@@ -50,9 +51,9 @@ The app is not signed or notarized, so macOS blocks it on first launch:
   <li>On earlier macOS versions: right-click (or Ctrl-click) the <strong>TREN</strong> app, select <strong>Open</strong>, and confirm.</li>
 </ul>
 
-### Windows (portable build, in preparation)
+### Windows (portable build, not yet released)
 
-There is **no published Windows release yet**. A portable Windows build (`TREN_v<version>_windows_x64.zip`) is produced by the manually run [Windows package workflow](https://github.com/bostanberkay/TREN/actions/workflows/windows-package.yml) as a downloadable workflow artifact for testing. It targets **Windows 10/11, x64**; ARM64 Windows has not been tested.
+The Windows build is **not yet published as a GitHub Release**. A portable build (`TREN_v<version>_windows_x64.zip`) is available as a workflow artifact: open a successful run of the [Windows package workflow](https://github.com/bostanberkay/TREN/actions/workflows/windows-package.yml?query=branch%3Amain) and download `TREN_v<version>_windows_x64` under **Artifacts** (requires a GitHub account; artifacts expire 30 days after the run). The download contains the ZIP. Before uploading it, the workflow runs automated checks on GitHub's Windows Server runner: it starts the packaged app, and a scripted self-test exercises annotation, editing, project files, and export, with NER both online and offline. These are not manual tests by a person on Windows 10/11. The build targets **Windows 10/11, x64**; ARM64 Windows has not been tested.
 
 <ol>
   <li>Extract the whole ZIP to a folder (do not run TREN from inside the ZIP).</li>
