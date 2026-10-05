@@ -46,10 +46,6 @@ jobs:
     defaults:
       run:
         shell: pwsh
-    env:
-      # fasttext 0.9.3 has no Windows wheel and builds from source; its setup.py
-      # passes no C++ standard to MSVC, so request C++17 here.
-      CL: /std:c++17
     steps:
       - uses: actions/checkout@v4
 
@@ -58,13 +54,10 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
-
+      # Same installer as the Windows package workflow: builds fasttext 0.9.3
+      # for MSVC, stops at the first failure, and ends with a real model check.
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+        run: ./packaging/install_windows_deps.ps1 -Dev
 
       - name: Syntax check
         run: python -m py_compile annotation_model.py cs_pipeline.py cs_annotator_app.py

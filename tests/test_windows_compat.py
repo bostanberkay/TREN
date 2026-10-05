@@ -270,3 +270,33 @@ def test_import_without_console_redirects_output_to_log(tmp_path):
 
 def test_monospace_font_is_platform_appropriate():
     assert caa.MONO_FONT == ("Consolas" if sys.platform == "win32" else "Menlo")
+
+
+# --- Windows dependency installation: one fail-fast installer for CI and packaging
+
+def _read(rel):
+    with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
+        return f.read()
+
+
+def test_windows_ci_and_packaging_share_the_installer():
+    ci = _read(".github/workflows/ci.yml")
+    split = ci.index("  test-windows:")
+    linux_job, windows_job = ci[:split], ci[split:]
+    package = _read(".github/workflows/windows-package.yml")
+    for text in (windows_job, package):
+        assert "./packaging/install_windows_deps.ps1" in text
+        assert "pip install -r requirements.txt" not in text
+    # macOS/Linux keep installing the unpatched PyPI release.
+    assert "pip install -r requirements.txt" in linux_job
+    assert "install_windows_deps" not in linux_job
+
+
+def test_installer_builds_fasttext_first_stops_on_failure_and_checks_model():
+    ps = _read("packaging/install_windows_deps.ps1")
+    body = ps[ps.index("try {"):]  # skip the header comment, which names the same files
+    steps = [body.index("build_fasttext_windows.py"), body.index("--no-deps"),
+             body.index('"requirements.txt"'), body.index("check_fasttext.py")]
+    assert steps == sorted(steps)
+    assert '$ErrorActionPreference = "Stop"' in ps
+    assert "if ($LASTEXITCODE -ne 0) { throw" in ps

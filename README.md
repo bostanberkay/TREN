@@ -75,7 +75,7 @@ python cs_annotator_app.py
 - **Python 3.11 or higher**, with Tk support.
 - The packages in `requirements.txt`: `fasttext`, `numpy<2`, `stanza`, `tksheet`, `joblib`, `scipy`, `scikit-learn>=1.8`.
 - **Internet on first NER run.** Named Entity Recognition (on by default) uses Stanza's Turkish models (about 200 MB), which are not bundled. The first time NER runs, TREN asks before downloading them into Stanza's user cache folder (on Windows under `%LOCALAPPDATA%\StanfordNLP\stanza`; set `STANZA_RESOURCES_DIR` to use another folder). After that TREN works offline. If the models cannot be downloaded, Run shows an error; untick **NER** in the toolbar to annotate without it.
-- **Windows:** `fasttext==0.9.3` has no Windows wheel, so `pip install` compiles it and needs the Microsoft C++ Build Tools (if the build fails on C++17 features, set the environment variable `CL=/std:c++17` and retry).
+- **Windows:** `fasttext==0.9.3` has no Windows wheel, and its published source does not compile with MSVC on Python 3.10+ (two lines use `ssize_t`, which Windows does not define). Instead of `pip install -r requirements.txt`, run `powershell -ExecutionPolicy Bypass -File packaging\install_windows_deps.ps1`. It builds fasttext 0.9.3 from the PyPI source (checked against its published SHA-256) with that two-line fix, installs `requirements.txt`, and checks the language-ID model. It needs the Microsoft C++ Build Tools.
 
 The bundled MIXED-token reranker needs `scikit-learn>=1.8`. If it cannot be used, TREN still annotates with rule-based MIXED detection and the toolbar shows **MIXED reranker: unavailable** (hover for the reason).
 
