@@ -67,16 +67,38 @@ jobs:
 
       # Fail here rather than silently skipping the GUI tests if Tk is unusable.
       - name: Check Tk can open a window
-        run: python -c "import tkinter; tkinter.Tk().destroy()"
+        run: python -c "import sys, tkinter; r = tkinter.Tk(); print(sys.version, 'Tcl/Tk', r.tk.call('info', 'patchlevel')); r.destroy()"
 
+      # Diagnostic only: back-to-back Tk create/destroy outside pytest, the way
+      # each GUI test module probes Tk during collection (tests/tk_probe.py).
+      - name: Tk create/destroy cycles (diagnostic)
+        continue-on-error: true
+        run: python tests/tk_probe.py --repeat 20
+
+      # TREN_REQUIRE_TK: a Tk start-up failure fails the run with its traceback
+      # instead of skipping GUI tests; TREN_TK_DIAGNOSTICS: list every probe.
       - name: Run tests
+        env:
+          TREN_REQUIRE_TK: "1"
+          TREN_TK_DIAGNOSTICS: "1"
         run: python -m pytest -rs --junitxml=pytest-windows.xml
+
+      # Comparison for the module whose GUI tests were skipped in the full run.
+      - name: Run test_dataset_tabs_gui.py on its own
+        if: ${{ !cancelled() }}
+        env:
+          TREN_REQUIRE_TK: "1"
+          TREN_TK_DIAGNOSTICS: "1"
+        run: python -m pytest -rs tests/test_dataset_tabs_gui.py tests/test_tk_startup.py
 
       # Skipped tests are not passes: fail the job if any test was skipped.
       - name: Fail on skipped tests
+        if: ${{ !cancelled() }}
         run: |
           [xml]$x = Get-Content pytest-windows.xml
           $skipped = 0
           foreach ($s in $x.SelectNodes('//testsuite')) { $skipped += [int]$s.skipped }
           Write-Host "skipped tests: $skipped"
+          $x.SelectNodes('//testcase/skipped') | Group-Object { $_.GetAttribute('message') } |
+            ForEach-Object { Write-Host "[$($_.Count)] $($_.Name)" }
           if ($skipped -gt 0) { exit 1 }

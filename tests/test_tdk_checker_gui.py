@@ -17,21 +17,12 @@ import tkinter as tk  # noqa: E402
 import cs_annotator_app as caa  # noqa: E402
 import annotation_model  # noqa: E402
 import tdk as dp  # noqa: E402
+import tk_probe  # noqa: E402
 
 
-def _tk_available():
-    try:
-        probe = tk.Tk()
-        probe.destroy()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _tk_available(),
-    reason="No Tk display available in this environment; GUI tests require a real display.",
-)
+# Probed during collection; the real traceback is kept (see tk_probe.py).
+_SKIP_GUI, _SKIP_REASON = tk_probe.gui_skip(__name__)
+pytestmark = pytest.mark.skipif(_SKIP_GUI, reason=_SKIP_REASON)
 
 
 @pytest.fixture(autouse=True)

@@ -47,7 +47,7 @@ python examples/quickstart.py
 
 These are the same commands run automatically by the project's CI workflow on every push and pull request.
 
-The GUI tests (`tests/test_*_gui.py`, and part of `tests/test_confidence_integration.py`) need a display and skip themselves when Tk cannot open one; run `python -m pytest -rs` to see any skip reasons. On a headless Linux machine, run them under a virtual display as CI does: `xvfb-run -a python -m pytest -rs`. GUI tests must never open a real modal dialog or post a real popup menu: patch `messagebox`/`filedialog`/`simpledialog` calls and `Menu.tk_popup`, or the run will hang (a posted menu blocks on macOS until it is dismissed).
+The GUI tests (`tests/test_*_gui.py`, and part of `tests/test_confidence_integration.py`) need a display and skip themselves when Tk cannot open one; run `python -m pytest -rs` to see any skip reasons, which include the actual Tk error (the full traceback is printed under "Tk start-up probes" in the pytest summary; see `tests/tk_probe.py`). With `TREN_REQUIRE_TK=1`, as in the Windows CI job, they are never skipped: a Tk start-up failure fails the run instead. On a headless Linux machine, run them under a virtual display as CI does: `xvfb-run -a python -m pytest -rs`. GUI tests must never open a real modal dialog or post a real popup menu: patch `messagebox`/`filedialog`/`simpledialog` calls and `Menu.tk_popup`, or the run will hang (a posted menu blocks on macOS until it is dismissed).
 
 ## Pull requests
 

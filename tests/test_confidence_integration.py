@@ -15,19 +15,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import annotation_model
 import confidence as cf
+import tk_probe
 
 
-def _tk_available():
-    try:
-        import tkinter as tk
-        probe = tk.Tk()
-        probe.destroy()
-        return True
-    except Exception:
-        return False
-
-
-TK_AVAILABLE = _tk_available()
+# Probed during collection; the real traceback is kept (see tk_probe.py).
+_SKIP_GUI, _SKIP_REASON = tk_probe.gui_skip(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -151,9 +143,9 @@ def test_attach_confidence_over_full_label_set_never_mutates_rows():
 # switching. Skipped without a real Tk display.
 # ---------------------------------------------------------------------------
 
-pytestmark_gui = pytest.mark.skipif(not TK_AVAILABLE, reason="No Tk display available.")
+pytestmark_gui = pytest.mark.skipif(_SKIP_GUI, reason=_SKIP_REASON)
 
-if TK_AVAILABLE:
+if not _SKIP_GUI:
     import cs_annotator_app as caa
 
 
