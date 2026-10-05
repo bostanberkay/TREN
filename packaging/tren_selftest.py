@@ -145,6 +145,11 @@ def _run_all(report, out_dir, expect_ner_cached):
         "machine": platform.machine(),
         "cwd_at_start": os.getcwd(),
     })
+    try:
+        import tkinter
+        report.info["tcl_tk"] = tkinter.Tcl().eval("info patchlevel")
+    except Exception as e:
+        report.info["tcl_tk"] = f"unavailable: {e!r}"
 
     import cs_annotator_app as caa
     import cs_pipeline

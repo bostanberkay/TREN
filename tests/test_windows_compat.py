@@ -300,3 +300,19 @@ def test_installer_builds_fasttext_first_stops_on_failure_and_checks_model():
     assert steps == sorted(steps)
     assert '$ErrorActionPreference = "Stop"' in ps
     assert "if ($LASTEXITCODE -ne 0) { throw" in ps
+
+
+# --- Windows Tk start-up: sys-level capture, one pinned Python/Tcl/Tk --------
+
+def test_pytest_captures_at_sys_level():
+    """pytest.ini explains why: fd capture makes Windows Tk start-up fail intermittently."""
+    assert "addopts = --capture=sys" in _read("pytest.ini")
+
+
+def test_windows_ci_and_packaging_pin_the_same_python_and_tcl_tk():
+    ci = _read(".github/workflows/ci.yml")
+    windows_job = ci[ci.index("  test-windows:"):]
+    for text in (windows_job, _read(".github/workflows/windows-package.yml"),
+                 _read(".github/workflows/windows-tk-check.yml")):
+        assert 'python-version: "3.11.9"' in text
+        assert "-ExpectPython 3.11.9 -ExpectTclTk 8.6.12" in text

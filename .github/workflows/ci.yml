@@ -49,15 +49,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned, and checked by the installer, to the Python/Tcl/Tk the Windows
+      # package is built with (.github/workflows/windows-package.yml).
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.11.9"
           cache: "pip"
 
       # Same installer as the Windows package workflow: builds fasttext 0.9.3
       # for MSVC, stops at the first failure, and ends with a real model check.
       - name: Install dependencies
-        run: ./packaging/install_windows_deps.ps1 -Dev
+        run: ./packaging/install_windows_deps.ps1 -Dev -ExpectPython 3.11.9 -ExpectTclTk 8.6.12
 
       - name: Syntax check
         run: python -m py_compile annotation_model.py cs_pipeline.py cs_annotator_app.py
@@ -69,26 +71,19 @@ jobs:
       - name: Check Tk can open a window
         run: python -c "import sys, tkinter; r = tkinter.Tk(); print(sys.version, 'Tcl/Tk', r.tk.call('info', 'patchlevel')); r.destroy()"
 
-      # Diagnostic only: back-to-back Tk create/destroy outside pytest, the way
-      # each GUI test module probes Tk during collection (tests/tk_probe.py).
-      - name: Tk create/destroy cycles (diagnostic)
-        continue-on-error: true
-        run: python tests/tk_probe.py --repeat 20
-
       # TREN_REQUIRE_TK: a Tk start-up failure fails the run with its traceback
-      # instead of skipping GUI tests; TREN_TK_DIAGNOSTICS: list every probe.
+      # instead of skipping GUI tests (tests/tk_probe.py).
       - name: Run tests
         env:
           TREN_REQUIRE_TK: "1"
-          TREN_TK_DIAGNOSTICS: "1"
         run: python -m pytest -rs --junitxml=pytest-windows.xml
 
-      # Comparison for the module whose GUI tests were skipped in the full run.
+      # The dataset GUI tests on their own as well: in a separate process they
+      # have failed with an intermittent Tk start-up error (see pytest.ini).
       - name: Run test_dataset_tabs_gui.py on its own
         if: ${{ !cancelled() }}
         env:
           TREN_REQUIRE_TK: "1"
-          TREN_TK_DIAGNOSTICS: "1"
         run: python -m pytest -rs tests/test_dataset_tabs_gui.py tests/test_tk_startup.py
 
       # Skipped tests are not passes: fail the job if any test was skipped.

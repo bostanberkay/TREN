@@ -26,14 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Same Python/Tcl/Tk as the Windows CI job (test-windows in ci.yml); the
+      # installer stops if they differ. PyInstaller bundles this Tcl/Tk.
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.11.9"
           cache: "pip"
 
       # Same installer as the Windows CI job (see packaging/install_windows_deps.ps1).
       - name: Install runtime and build dependencies
-        run: ./packaging/install_windows_deps.ps1 -Build
+        run: ./packaging/install_windows_deps.ps1 -Build -ExpectPython 3.11.9 -ExpectTclTk 8.6.12
 
       - name: Record build environment
         run: |
