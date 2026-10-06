@@ -135,7 +135,7 @@ This section describes the TREN interface and workflow. For technical details, s
 
 ## Main Window
 
-![Main window](images/main.png)
+![Main window with the input panel, dataset tab bar, annotation grid, and relabel panel](images/main.png)
 
 The main window has three regions:
 
@@ -183,6 +183,8 @@ A project can hold several independent datasets, shown as tabs above the grid:
 
 Each dataset has its own text, annotations, and Matrix/Embedded Language values. Switching tabs does not re-run the pipeline, and closes open tool windows. Click **+** (**Add New Data**) to create a dataset:
 
+![Add New Data dialog](images/ui-add-data.png)
+
 - **Open New File**: annotate a UTF-8 `.txt` file as a new dataset.
 - **Enter New Text**: paste or type new text.
 - **Re-run Current Text**: annotate the active dataset's text again as a separate dataset, to compare passes.
@@ -225,8 +227,6 @@ The toolbar contains:
 
 ![File menu](images/ui-menu-file.png)
 
-*(This screenshot predates the current menu: the items are now **Open Input...**, **Run**, **Export Table...**, and **Exit**, without keyboard shortcuts.)*
-
 - **Open Input**: load a UTF-8 text file into the input panel.
 - **Run**: annotate the current input.
 - **Export Table**: see [Export Table](#export-table).
@@ -236,7 +236,7 @@ The toolbar contains:
 
 ### Project
 
-![File menu](images/ui-menu-project.png)
+![Project menu](images/ui-menu-project.png)
 
 - **New Project**: start with an empty workspace.
 - **Open Project Save**: open a `.trenproj` file.
@@ -250,7 +250,7 @@ If there are unsaved changes, New Project, Open Project Save, and closing TREN a
 
 ### Annotation
 
-![File menu](images/ui-menu-annotation.png)
+![Annotation menu](images/ui-menu-annotation.png)
 
 - **Add New Column**: add a custom annotation column.
 - **Cut / Copy / Paste / Clear Selected Cell(s)**: edit selected cells.
@@ -262,7 +262,7 @@ If there are unsaved changes, New Project, Open Project Save, and closing TREN a
 
 ### Edit Window
 
-![Tools menu](images/ui-full.png)
+![Full Edit Window](images/ui-full.png)
 
 **View Full Edit Window** opens a larger copy of the annotation grid, kept in sync with the main grid, for editing large datasets.
 
@@ -280,6 +280,8 @@ If there are unsaved changes, New Project, Open Project Save, and closing TREN a
 - [Word Frequency List](#word-frequency-list)
 
 ## Export Table
+
+![Export Table dialog](images/ui-export.png)
 
 **File ▸ Export Table** (or the toolbar's **Export** button) asks for a dataset and a format, then a file name. One dataset is exported per file. Exporting never changes your annotations.
 
@@ -315,6 +317,8 @@ Steps through all tokens labeled **MIXED** so you can review their label and glo
 
 ## Confidence Review Tool
 
+![Confidence Review Tool with the evidence for the selected token](images/ui-confidence.png)
+
 Reviews tokens the pipeline is uncertain about, one by one. Every token gets a confidence band (**HIGH** / **MEDIUM** / **LOW**) and the reasons behind it.
 
 - **View**: **All Uncertain** (default, any label), **UID Only**, or **Custom** (your own label and confidence filters).
@@ -325,6 +329,8 @@ Reviews tokens the pipeline is uncertain about, one by one. Every token gets a c
 The tool works offline. Its score is a rule-based estimate, not a calibrated probability.
 
 ## TDK Checker
+
+![TDK Checker with a parsed token and its dictionary entry](images/ui-tdk.png)
 
 Looks up a token, its root, and each suffix in the online dictionary of the Turkish Language Association (TDK), to help you judge whether a word is lexicalized Turkish.
 
