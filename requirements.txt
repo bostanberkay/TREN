@@ -12,3 +12,5 @@ scipy
 # prediction ('multi_class'), so the reranker is rejected at load time there.
 # scikit-learn>=1.8 itself requires Python>=3.11.
 scikit-learn>=1.8
+# tdk.py adds certifi's CA bundle to the Windows certificate store for TDK HTTPS lookups.
+certifi

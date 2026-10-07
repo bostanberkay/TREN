@@ -2,10 +2,13 @@
 
 import json
 import re
+import ssl
+import sys
 import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+from functools import lru_cache
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -291,6 +294,25 @@ class DictionaryProvider:
 DEFAULT_TDK_URL = "https://sozluk.gov.tr/gts"
 
 
+@lru_cache(maxsize=None)
+def tls_context() -> ssl.SSLContext:
+    """Verifying TLS context for TDK requests. On Windows, Python only sees the
+    roots already in the Windows certificate store, while Windows itself
+    installs missing roots on demand; a fresh machine can therefore lack the
+    ISRG root sozluk.gov.tr's Let's Encrypt chain needs and fail with
+    "unable to get local issuer certificate". certifi's bundle is added on top
+    of the store there (the store stays loaded, so enterprise roots still
+    work). Elsewhere this is Python's default context, unchanged."""
+    ctx = ssl.create_default_context()
+    if sys.platform == "win32":
+        try:
+            import certifi
+            ctx.load_verify_locations(cafile=certifi.where())
+        except (ImportError, OSError, ssl.SSLError) as e:
+            print(f"TDK: certifi CA bundle not loaded, using the Windows store only: {e!r}", file=sys.stderr)
+    return ctx
+
+
 class TDKProvider(DictionaryProvider):
     """Best-effort client for the undocumented sozluk.gov.tr `gts` endpoint.
     Unrecognized responses -> UNAVAILABLE (never a fabricated FOUND);
@@ -309,7 +331,7 @@ class TDKProvider(DictionaryProvider):
     @staticmethod
     def _http_get(url: str, timeout: float) -> bytes:
         req = urllib.request.Request(url, headers={"User-Agent": "TREN-TDK-Checker/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=tls_context()) as resp:
             return resp.read()
 
     def _do_lookup(self, term: str, normalized: str) -> LookupResult:
@@ -321,6 +343,8 @@ class TDKProvider(DictionaryProvider):
             return LookupResult(query=term, normalized_query=normalized, status=STATUS_NETWORK_ERROR,
                                  source=self.name, message=f"HTTP error {e.code}")
         except (urllib.error.URLError, TimeoutError, OSError) as e:
+            # Windowed builds send stderr to ~/.cs_annotator/tren.log; the GUI truncates this message.
+            print(f"TDK lookup failed for {url}: {e!r}", file=sys.stderr)
             return LookupResult(query=term, normalized_query=normalized, status=STATUS_NETWORK_ERROR,
                                  source=self.name, message=f"network error: {e}")
 

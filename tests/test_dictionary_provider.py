@@ -469,3 +469,95 @@ def test_stale_response_ordering_is_caller_responsibility_last_write_wins_in_que
         th.join()
     statuses = {r.normalized_query: r.status for r in results}
     assert statuses == {"a": "FOUND", "b": "NOT_FOUND"}
+
+
+# ---------------------------------------------------------------------------
+# TLS trust sources (no network: only the context and the urlopen call are checked)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def fresh_tls_context():
+    dp.tls_context.cache_clear()
+    yield
+    dp.tls_context.cache_clear()
+
+
+def _ca_count(ctx):
+    return ctx.cert_store_stats()["x509_ca"]
+
+
+def test_tls_context_keeps_verification_on(fresh_tls_context, monkeypatch):
+    import ssl
+    prebuilt = {name: ssl.create_default_context() for name in ("win32", "darwin", "linux")}
+    for platform_name in prebuilt:
+        dp.tls_context.cache_clear()
+        monkeypatch.setattr(dp.ssl, "create_default_context", lambda: prebuilt[platform_name])
+        monkeypatch.setattr(dp.sys, "platform", platform_name)
+        ctx = dp.tls_context()
+        assert ctx.verify_mode == ssl.CERT_REQUIRED
+        assert ctx.check_hostname is True
+
+
+def test_tls_context_on_windows_adds_certifi_to_default_store(fresh_tls_context, monkeypatch):
+    import ssl
+    import certifi
+    empty = lambda: ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    monkeypatch.setattr(dp.ssl, "create_default_context", empty)
+    monkeypatch.setattr(dp.sys, "platform", "win32")
+    with open(certifi.where(), encoding="ascii") as f:
+        bundle_size = f.read().count("BEGIN CERTIFICATE")
+    assert _ca_count(dp.tls_context()) == bundle_size
+
+
+def test_tls_context_elsewhere_is_the_default_context(fresh_tls_context, monkeypatch):
+    import ssl
+    empty = lambda: ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    monkeypatch.setattr(dp.ssl, "create_default_context", empty)
+    monkeypatch.setattr(dp.sys, "platform", "darwin")
+    assert _ca_count(dp.tls_context()) == 0
+
+
+def test_tls_context_on_windows_without_certifi_falls_back_to_store(fresh_tls_context, monkeypatch, capsys):
+    import ssl
+    monkeypatch.setattr(dp.ssl, "create_default_context", lambda: ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT))
+    monkeypatch.setattr(dp.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "certifi", None)
+    ctx = dp.tls_context()
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert "certifi CA bundle not loaded" in capsys.readouterr().err
+
+
+def test_http_get_passes_the_tls_context(fresh_tls_context, monkeypatch):
+    seen = {}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"[]"
+
+    def fake_urlopen(req, timeout=None, context=None):
+        seen.update(url=req.full_url, context=context)
+        return Resp()
+
+    monkeypatch.setattr(dp.urllib.request, "urlopen", fake_urlopen)
+    assert dp.TDKProvider().lookup("abi").status == dp.STATUS_NOT_FOUND
+    assert seen["url"].startswith("https://")
+    assert seen["context"] is dp.tls_context()
+
+
+def test_network_error_detail_is_logged_to_stderr(capsys):
+    import ssl
+    import urllib.error
+
+    def failing(url, timeout):
+        raise urllib.error.URLError(ssl.SSLCertVerificationError(
+            1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate"))
+
+    r = dp.TDKProvider(opener=failing).lookup("abiler")
+    assert r.status == dp.STATUS_NETWORK_ERROR
+    assert "unable to get local issuer certificate" in capsys.readouterr().err

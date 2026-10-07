@@ -3,8 +3,10 @@ without user interaction and writes a report.
 
 Packaged build (bundled by packaging/TREN_windows.spec):
     TREN.exe --self-test REPORT_DIR [--expect-ner-cached]
+    TREN.exe --self-test REPORT_DIR --tdk-https
 Source tree:
     python packaging/tren_selftest.py REPORT_DIR [--expect-ner-cached]
+    python packaging/tren_selftest.py REPORT_DIR --tdk-https
 
 REPORT_DIR receives selftest_report.json, the raw pipeline output and one
 export per format, so a packaged run can be diffed against a source run.
@@ -12,16 +14,25 @@ Dialogs are replaced by recorders; nothing is written outside REPORT_DIR
 except Stanza's model cache (first NER start downloads it). Exit code 0 means
 every check passed. This does not replace a person using the GUI: windows are
 driven programmatically, not by real mouse/keyboard input.
+
+--tdk-https runs only the real sozluk.gov.tr HTTPS check (tdk_https_report.*)
+and nothing else: it needs the network, so it is kept apart from the regular
+self-test, whose TDK check uses a mock dictionary and must pass offline.
 """
 import csv
+import hashlib
 import importlib.util
 import json
 import os
 import platform
+import ssl
 import sys
 import time
 import traceback
 import types
+import urllib.error
+import urllib.parse
+import urllib.request
 
 SAMPLE_TEXT = (
     "Yarın sabah meeting'e geç kalacağım çünkü Ahmet Ankara'dan geliyor.\n"
@@ -34,9 +45,20 @@ EXPORT_DIR_NAME = "dışa aktarım klasörü"
 APP_HOME_NAME = "uygulama evi Ğ"
 
 
+# Self-signed ISRG roots that sozluk.gov.tr's Let's Encrypt chain can end at
+# (SHA-256 of the DER, as in certifi's bundle).
+ISRG_ROOTS = {
+    "ISRG Root X1": "96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bddf08c6",
+    "ISRG Root X2": "69729b8e15a86efc177a57afb7171dfc64add28c2fca8cf1507e34453ccb1470",
+}
+# The terms from the failing manual run: full token, root, segment.
+TDK_HTTPS_TERMS = ("abiler", "abi", "ler")
+
+
 class Report:
-    def __init__(self, out_dir):
+    def __init__(self, out_dir, basename="selftest_report"):
         self.out_dir = out_dir
+        self.basename = basename
         self.checks = []
         self.info = {}
 
@@ -57,11 +79,13 @@ class Report:
 
     def write(self):
         data = {"ok": self.ok(), "info": self.info, "checks": self.checks}
-        with open(os.path.join(self.out_dir, "selftest_report.json"), "w", encoding="utf-8", newline="\n") as f:
+        with open(os.path.join(self.out_dir, self.basename + ".json"), "w", encoding="utf-8", newline="\n") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         lines = [f"[{c['status'].upper()}] {c['name']}: {c['detail']}" for c in self.checks]
+        if "diagnosis" in self.info:
+            lines.append("DIAGNOSIS: " + self.info["diagnosis"])
         lines.append("RESULT: " + ("PASS" if self.ok() else "FAIL"))
-        with open(os.path.join(self.out_dir, "selftest_report.txt"), "w", encoding="utf-8", newline="\n") as f:
+        with open(os.path.join(self.out_dir, self.basename + ".txt"), "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(lines) + "\n")
 
 
@@ -260,12 +284,116 @@ def main(argv):
     out_dir = os.path.abspath(argv[0])
     expect_ner_cached = "--expect-ner-cached" in argv[1:]
     os.makedirs(out_dir, exist_ok=True)
+    if "--tdk-https" in argv[1:]:
+        return run_tdk_https(out_dir)
     report = Report(out_dir)
     try:
         _run_all(report, out_dir, expect_ner_cached)
     except Exception:
         report.checks.append({"name": "self-test harness", "status": "fail",
                               "detail": traceback.format_exc()})
+    report.write()
+    return 0 if report.ok() else 1
+
+
+def _redacted_proxies():
+    out = {}
+    for scheme, url in urllib.request.getproxies().items():
+        parts = urllib.parse.urlsplit(url if "://" in url else "//" + url)
+        out[scheme] = f"{parts.scheme}://{parts.hostname}:{parts.port}" if parts.hostname else "<unparsed>"
+    return out
+
+
+def _windows_store_info():
+    info = {}
+    if not hasattr(ssl, "enum_certificates"):
+        return "not Windows"
+    for store in ("ROOT", "CA"):
+        try:
+            hashes = {hashlib.sha256(c).hexdigest() for c, enc, _trust in ssl.enum_certificates(store)
+                      if enc == "x509_asn"}
+        except OSError as e:
+            info[store] = f"unreadable: {e!r}"
+            continue
+        info[store] = {"certificates": len(hashes),
+                       **{name: fp in hashes for name, fp in ISRG_ROOTS.items()}}
+    return info
+
+
+def _fetch(url, context):
+    req = urllib.request.Request(url, headers={"User-Agent": "TREN-TDK-Checker/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=15, context=context) as resp:
+            return {"result": "ok", "http": resp.status, "bytes": len(resp.read())}
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, ssl.SSLCertVerificationError):
+            return {"result": "cert_verify_failed", "error": repr(e),
+                    "verify_code": e.reason.verify_code, "verify_message": e.reason.verify_message}
+        return {"result": "error", "error": repr(e)}
+    except Exception as e:
+        return {"result": "error", "error": repr(e)}
+
+
+def _tdk_https_diagnosis(info):
+    default = info["diagnostic_default_context"]["result"]
+    only = info.get("diagnostic_certifi_only", {}).get("result")
+    if default == "ok":
+        return "default trust store verifies the TDK chain"
+    if default == "cert_verify_failed" and only == "ok":
+        return "default trust store lacks the root for the TDK chain; certifi verifies it (the chain is genuine)"
+    if default == "cert_verify_failed" and only == "cert_verify_failed":
+        return ("neither the default store nor certifi verifies the chain: traffic re-signed by a "
+                "TLS-inspecting proxy/antivirus, or a broken server chain")
+    return "connection failed before certificate checks: DNS, firewall or proxy"
+
+
+def run_tdk_https(out_dir):
+    """Real lookups against sozluk.gov.tr through tdk.TDKProvider, with
+    certificate verification on. Two diagnostic fetches tell the trust sources
+    apart: Python's default context (the Windows store only, on Windows) and
+    certifi's bundle only. Default fails + certifi succeeds -> the store lacks
+    the root; both fail verification -> something re-signs the traffic
+    (TLS-inspecting proxy/antivirus) or the server chain is broken; non-TLS
+    errors -> DNS/firewall/proxy reachability."""
+    report = Report(out_dir, "tdk_https_report")
+    report.info.update({
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "python": sys.version,
+        "openssl": ssl.OPENSSL_VERSION,
+        "platform": platform.platform(),
+        "proxies": _redacted_proxies(),
+        "ssl_env": {k: os.environ[k] for k in ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE")
+                    if k in os.environ},
+        "windows_store": _windows_store_info(),
+    })
+    try:
+        from tren import tdk
+        try:
+            import certifi
+            report.info["certifi"] = {"path": certifi.where(), "exists": os.path.isfile(certifi.where())}
+        except ImportError as e:
+            report.info["certifi"] = f"not importable: {e!r}"
+            certifi = None
+        report.info["tls_context_ca_count"] = tdk.tls_context().cert_store_stats()["x509_ca"]
+        probe = f"{tdk.DEFAULT_TDK_URL}?ara=abi"
+        report.info["diagnostic_default_context"] = _fetch(probe, ssl.create_default_context())
+        if certifi is not None:
+            report.info["diagnostic_certifi_only"] = _fetch(probe, ssl.create_default_context(cafile=certifi.where()))
+        report.info["diagnostic_tren_context"] = _fetch(probe, tdk.tls_context())
+        report.info["diagnosis"] = _tdk_https_diagnosis(report.info)
+
+        provider = tdk.TDKProvider(timeout=15)
+        for term in TDK_HTTPS_TERMS:
+            def lookup(term=term):
+                r = provider.lookup(term)
+                _check(r.status in (tdk.STATUS_FOUND, tdk.STATUS_NOT_FOUND),
+                       f"{r.status}: {r.message}")
+                if term == "abi":
+                    _check(r.status == tdk.STATUS_FOUND, "'abi' not FOUND: response is not real TDK data")
+                return f"{r.status} ({len(r.entries)} entries)"
+            report.run(f"TDK HTTPS lookup {term!r} (real sozluk.gov.tr, verified TLS)", lookup)
+    except Exception:
+        report.checks.append({"name": "TDK HTTPS harness", "status": "fail", "detail": traceback.format_exc()})
     report.write()
     return 0 if report.ok() else 1
 
@@ -489,6 +617,19 @@ def _run_gui_checks(report, caa, annotation_model, confidence, tdk, export_dir):
         _check(parser_status != "parser unavailable", "TDK parser unavailable")
         return f"token={token!r} lookup={status!r} parser={parser_status!r} segments={segments!r}"
     report.run("TDK Checker (mock dictionary, no network)", tdk_checker)
+
+    def tdk_trust_sources():
+        ctx = tdk.tls_context()
+        _check(ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname, "TDK TLS verification is off")
+        loaded = ctx.cert_store_stats()["x509_ca"]
+        if sys.platform != "win32":
+            return f"{loaded} CA certificates (Python default context)"
+        import certifi
+        with open(certifi.where(), encoding="ascii") as f:
+            bundled = f.read().count("BEGIN CERTIFICATE")
+        _check(loaded >= bundled, f"certifi bundle not loaded: {loaded} CA certificates < {bundled}")
+        return f"{loaded} CA certificates (Windows store + certifi {bundled})"
+    report.run("TDK TLS trust sources (no network)", tdk_trust_sources)
 
     def second_dataset():
         ds = app._create_dataset_from_text("Veri 2", SECOND_TEXT)

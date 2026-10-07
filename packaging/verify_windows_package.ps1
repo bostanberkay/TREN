@@ -9,6 +9,8 @@
 #      use downloads the models through the GUI's download notice);
 #   2. runs it again with the network blocked by a dead proxy and
 #      --expect-ner-cached (NER must start from the cache alone);
+#   2b. runs `TREN.exe --self-test DIR --tdk-https`: real lookups against
+#      sozluk.gov.tr with certificate verification on (needs the network);
 #   3. compares the pipeline output and every export with -SourceReport (the
 #      same self-test run from source), byte for byte;
 #   4. launches TREN.exe normally, checks that its window appears and stays up,
@@ -51,6 +53,7 @@ $StanzaDir = Join-Path $WorkRoot "stanza ${o_UML}nbellek $S_CED"
 $OtherCwd = Join-Path $WorkRoot "ba${s_CED}ka ${C_CED}al${i_DLS}${s_CED}ma dizini"
 $Report1 = Join-Path $WorkRoot "rapor 1 $C_CED"
 $Report2 = Join-Path $WorkRoot "rapor 2 $C_CED"
+$ReportTdk = Join-Path $WorkRoot "rapor tdk $C_CED"
 foreach ($d in @($InstallDir, $UserHome, $StanzaDir, $OtherCwd)) {
     New-Item -ItemType Directory -Force -Path $d | Out-Null
 }
@@ -129,6 +132,17 @@ $r2 = Read-Report $Report2
 if ($null -eq $code) { Fail "self-test 2 (offline) timed out" }
 elseif ($code -ne 0 -or $null -eq $r2 -or -not $r2.ok) { Fail "self-test 2 (offline) failed (exit $code)" }
 else { Pass "self-test 2 (offline, cached NER models)" }
+
+# 2b. Real TDK HTTPS lookups (network required; a failure here is never covered by the mock check).
+Write-Host "== TDK HTTPS: real sozluk.gov.tr, verified TLS"
+$code = Invoke-Tren @("--self-test", $ReportTdk, "--tdk-https") 300
+$tdkTxt = Join-Path $ReportTdk "tdk_https_report.txt"
+if (Test-Path $tdkTxt) { Get-Content -Encoding utf8 $tdkTxt | ForEach-Object { Write-Host "    $_" } }
+$tdkJson = Join-Path $ReportTdk "tdk_https_report.json"
+$rt = if (Test-Path $tdkJson) { Get-Content -Raw -Encoding utf8 $tdkJson | ConvertFrom-Json } else { $null }
+if ($null -eq $code) { Fail "TDK HTTPS check timed out" }
+elseif ($code -ne 0 -or $null -eq $rt -or -not $rt.ok) { Fail "TDK HTTPS check failed (exit $code)" }
+else { Pass "TDK HTTPS check ($($rt.info.diagnosis))" }
 
 # 3. Packaged output must equal the source run's output byte for byte.
 if ($SourceReport) {
