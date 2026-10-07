@@ -25,20 +25,20 @@ TREN’s features include, for instance:
 
 ## Installation
 
-TREN is available as a packaged application for macOS. A portable Windows build is available as a GitHub Actions artifact but not yet as a release (see below). On any platform with Python 3.11+ you can run it from source.
+TREN is available as a packaged application for macOS and Windows. On any platform with Python 3.11+ you can also run it from source.
 
 ### Release status
 
-The latest packaged release is **v1.4.0** (`TREN_v1.4.0.dmg`), built for **Apple silicon Macs (arm64)** only; on an Intel Mac, run TREN from source. See [CHANGELOG.md](CHANGELOG.md) for what changed.
+The latest packaged release is **v1.4.1**, for macOS (`TREN_v1.4.1.dmg`, **Apple silicon Macs (arm64)** only; on an Intel Mac, run TREN from source) and Windows (`TREN_v1.4.1_windows_x64.zip`, **x64**). See [CHANGELOG.md](CHANGELOG.md) for what changed.
 
-### macOS (packaged v1.4.0)
+### macOS (packaged v1.4.1)
 
 <ol>
  <li>
-  Download the <code>.dmg</code> file from the 
-  <a href="https://github.com/bostanberkay/TREN/releases" target="_blank">
-    GitHub Releases page
-  </a>.
+  Download <a href="https://github.com/bostanberkay/TREN/releases/download/v1.4.1/TREN_v1.4.1.dmg"><code>TREN_v1.4.1.dmg</code></a> (also listed on the
+  <a href="https://github.com/bostanberkay/TREN/releases/tag/v1.4.1" target="_blank">
+    v1.4.1 release page
+  </a>).
 </li>
   <li>Open the DMG and drag the <strong>TREN</strong> application into the <strong>Applications</strong> folder.</li>
   <li>Launch the application from the Applications folder.</li>
@@ -51,13 +51,14 @@ The app is not signed or notarized, so macOS blocks it on first launch:
   <li>On earlier macOS versions: right-click (or Ctrl-click) the <strong>TREN</strong> app, select <strong>Open</strong>, and confirm.</li>
 </ul>
 
-### Windows (portable build, not yet released)
+### Windows (packaged v1.4.1)
 
-The Windows build is **not yet published as a GitHub Release**. A portable build (`TREN_v<version>_windows_x64.zip`) is available as a workflow artifact: open a successful run of the [Windows package workflow](https://github.com/bostanberkay/TREN/actions/workflows/windows-package.yml?query=branch%3Amain) and download `TREN_v<version>_windows_x64` under **Artifacts** (requires a GitHub account; artifacts expire 30 days after the run). The download contains the ZIP. Before uploading it, the workflow runs automated checks on GitHub's Windows Server runner: it starts the packaged app, and a scripted self-test exercises annotation, editing, project files, and export, with NER both online and offline. These are not manual tests by a person on Windows 10/11. The build targets **Windows 10/11, x64**; ARM64 Windows has not been tested.
+TREN for Windows is a portable build for **x64**: no installer, and Python does not need to be installed. All features have been tested manually on Windows. ARM64 Windows has not been tested.
 
 <ol>
+  <li>Download <a href="https://github.com/bostanberkay/TREN/releases/download/v1.4.1/TREN_v1.4.1_windows_x64.zip"><code>TREN_v1.4.1_windows_x64.zip</code></a> (also listed on the <a href="https://github.com/bostanberkay/TREN/releases/tag/v1.4.1" target="_blank">v1.4.1 release page</a>).</li>
   <li>Extract the whole ZIP to a folder (do not run TREN from inside the ZIP).</li>
-  <li>Run <code>TREN\TREN.exe</code>. Python does not need to be installed.</li>
+  <li>Run <code>TREN\TREN.exe</code>. Keep the files and folders next to it: TREN needs them to run.</li>
 </ol>
 
 The build is **not code-signed**, so Windows SmartScreen may warn on first launch: click <strong>More info ▸ Run anyway</strong>. Shortcuts use <strong>Ctrl</strong> (⌘ on macOS); right-click opens the table's context menu. Project saves and the error log (`tren.log`) are kept in `%USERPROFILE%\.cs_annotator`. `.trenproj` projects and TXT/CSV/CoNLL/JSONL exports are the same on Windows and macOS. The NER models are downloaded on the first run with NER on; TREN asks before starting the download (see Requirements below).
@@ -76,7 +77,7 @@ python -m tren
 ### Requirements
 
 - **Python 3.11 or higher**, with Tk support.
-- The packages in `requirements.txt`: `fasttext`, `numpy<2`, `stanza`, `tksheet`, `joblib`, `scipy`, `scikit-learn>=1.8`.
+- The packages in `requirements.txt`: `fasttext`, `numpy<2`, `stanza`, `tksheet`, `joblib`, `scipy`, `scikit-learn>=1.8`, `certifi`.
 - **Internet on first NER run.** Named Entity Recognition (on by default) uses Stanza's Turkish models (about 200 MB), which are not bundled. The first time NER runs, TREN asks before downloading them into Stanza's user cache folder (on Windows under `%LOCALAPPDATA%\StanfordNLP\stanza`; set `STANZA_RESOURCES_DIR` to use another folder). After that TREN works offline. If the models cannot be downloaded, Run shows an error; untick **NER** in the toolbar to annotate without it.
 - **Windows:** `fasttext==0.9.3` has no Windows wheel, and its published source does not compile with MSVC on Python 3.10+ (two lines use `ssize_t`, which Windows does not define). Instead of `pip install .`, run `powershell -ExecutionPolicy Bypass -File packaging\install_windows_deps.ps1` and then `pip install --no-deps .`. The script builds fasttext 0.9.3 from the PyPI source (checked against its published SHA-256) with that two-line fix, installs `requirements.txt`, and checks the language-ID model. It needs the Microsoft C++ Build Tools.
 
@@ -383,7 +384,7 @@ TREN is licensed under the [GNU General Public License v3.0](LICENSE).
 
 If you use TREN in your research, please cite the software and the version you used, for example:
 
-> Bostan, B. (2026). *TREN: A corpus annotation tool for code-switching data* (Version 1.4.0) [Computer software]. https://github.com/bostanberkay/TREN
+> Bostan, B. (2026). *TREN: A corpus annotation tool for code-switching data* (Version 1.4.1) [Computer software]. https://github.com/bostanberkay/TREN
 
 ## Disclaimer
 

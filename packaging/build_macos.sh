@@ -10,7 +10,7 @@
 # built for the architecture of the Python in .venv.
 set -euo pipefail
 
-VERSION="${1:-1.4.0}"
+VERSION="${1:-1.4.1}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="${2:-$ROOT/dist}"
 PYTHON="$ROOT/.venv/bin/python"

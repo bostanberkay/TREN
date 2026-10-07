@@ -2,7 +2,7 @@
 import os
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
-VERSION = os.environ.get("TREN_VERSION", "1.4.0")
+VERSION = os.environ.get("TREN_VERSION", "1.4.1")
 
 a = Analysis(
     [os.path.join(ROOT, "src", "tren", "__main__.py")],

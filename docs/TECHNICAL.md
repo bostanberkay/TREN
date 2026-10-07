@@ -5,7 +5,7 @@ This file collects the detailed technical material for TREN: the annotation pipe
 ## Contents
 
 - [Architecture](#architecture)
-- [Production Status (v1.4.0)](#production-status-v140)
+- [Production Status (v1.4.1)](#production-status-v141)
 - [MIXED-Token Reranker](#mixed-token-reranker)
 - [Input and Tokenization](#input-and-tokenization)
 - [Multiple Data Sets](#multiple-data-sets)
@@ -32,7 +32,7 @@ TREN's code is the `tren` package in `src/tren/` (started with `python -m tren`;
 
 Resources (`src/tren/resources/frequent_tr_words.txt`, `frequent_en_words.txt`, `lid.176.ftz`, `models/`) are package data, loaded at runtime from the `resources/` folder next to the modules, in a source checkout, an installed package, and the packaged apps alike. Scripts for rebuilding the reranker dataset and retraining it are in `tools/`.
 
-## Production Status (v1.4.0)
+## Production Status (v1.4.1)
 
 ### Pipeline
 

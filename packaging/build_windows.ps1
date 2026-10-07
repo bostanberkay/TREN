@@ -1,7 +1,7 @@
 # Build the portable Windows x64 TREN folder and TREN_v<version>_windows_x64.zip
 # from the current source tree.
 #
-#   powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1 [-Version 1.4.0] [-OutDir dist]
+#   powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1 [-Version 1.4.1] [-OutDir dist]
 #
 # Uses the `python` on PATH, which must already have requirements.txt and
 # packaging/requirements-build.txt installed (the GitHub Actions workflow
@@ -9,7 +9,7 @@
 # go to a temporary directory that is removed afterwards. The result is not
 # code-signed.
 param(
-    [string]$Version = "1.4.0",
+    [string]$Version = "1.4.1",
     [string]$OutDir = ""
 )
 $ErrorActionPreference = "Stop"

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tren"
-version = "1.4.0"
+version = "1.4.1"
 description = "Semi-automatic annotation tool for Turkish–English code-switching corpora"
 requires-python = ">=3.11"
 license-files = ["LICENSE"]
