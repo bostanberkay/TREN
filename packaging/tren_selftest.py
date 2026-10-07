@@ -25,6 +25,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import ssl
 import sys
 import time
@@ -347,6 +348,41 @@ def _tdk_https_diagnosis(info):
     return "connection failed before certificate checks: DNS, firewall or proxy"
 
 
+def _missing_root_scenario(tdk, certifi, probe, out_dir):
+    """The Windows 365 failure, without touching any system store: a context
+    trusting only certifi's bundle minus the ISRG roots must fail verification
+    on sozluk.gov.tr, and the same context must verify once
+    tdk.add_certifi_bundle (what tls_context does on Windows) has run on it.
+    A network/service error is a failure of the check, never a pass."""
+    with open(certifi.where(), encoding="ascii") as f:
+        blocks = re.findall(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", f.read(), re.S)
+    isrg = set(ISRG_ROOTS.values())
+    kept = [b for b in blocks if hashlib.sha256(ssl.PEM_cert_to_DER_cert(b)).hexdigest() not in isrg]
+    _check(len(blocks) - len(kept) == len(isrg), f"expected {len(isrg)} ISRG roots in certifi, removed {len(blocks) - len(kept)}")
+    ca_file = os.path.join(out_dir, "ca_without_isrg_roots.pem")
+    with open(ca_file, "w", encoding="ascii", newline="\n") as f:
+        f.write("\n".join(kept) + "\n")
+
+    # PROTOCOL_TLS_CLIENT: CERT_REQUIRED and host-name checks on, no system roots loaded.
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.load_verify_locations(cafile=ca_file)
+    _check(ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname, "verification is off")
+    _check(ctx.cert_store_stats()["x509_ca"] == len(kept), "controlled CA list not loaded as written")
+
+    without = _fetch(probe, ctx)
+    if without["result"] == "error":
+        raise AssertionError(f"network/service error, not a certificate result: {without['error']}")
+    _check(without["result"] == "cert_verify_failed",
+           f"CA list without ISRG roots still verified sozluk.gov.tr: {without}")
+    _check(tdk.add_certifi_bundle(ctx), "tdk.add_certifi_bundle could not load certifi")
+    with_certifi = _fetch(probe, ctx)
+    if with_certifi["result"] == "error":
+        raise AssertionError(f"network/service error, not a certificate result: {with_certifi['error']}")
+    _check(with_certifi["result"] == "ok", f"still failing after tdk.add_certifi_bundle: {with_certifi}")
+    return (f"without ISRG roots: {without['verify_message']}; "
+            f"after tdk.add_certifi_bundle: HTTP {with_certifi['http']}")
+
+
 def run_tdk_https(out_dir):
     """Real lookups against sozluk.gov.tr through tdk.TDKProvider, with
     certificate verification on. Two diagnostic fetches tell the trust sources
@@ -382,10 +418,18 @@ def run_tdk_https(out_dir):
         report.info["diagnostic_tren_context"] = _fetch(probe, tdk.tls_context())
         report.info["diagnosis"] = _tdk_https_diagnosis(report.info)
 
+        if certifi is not None:
+            report.run("missing-root scenario (controlled CA list, verified TLS)",
+                       lambda: _missing_root_scenario(tdk, certifi, probe, out_dir))
+
         provider = tdk.TDKProvider(timeout=15)
         for term in TDK_HTTPS_TERMS:
             def lookup(term=term):
                 r = provider.lookup(term)
+                if r.status == tdk.STATUS_NETWORK_ERROR:
+                    kind = ("certificate verification failed" if "CERTIFICATE_VERIFY_FAILED" in r.message
+                            else "network/service error, not a certificate result")
+                    raise AssertionError(f"{kind}: {r.message}")
                 _check(r.status in (tdk.STATUS_FOUND, tdk.STATUS_NOT_FOUND),
                        f"{r.status}: {r.message}")
                 if term == "abi":

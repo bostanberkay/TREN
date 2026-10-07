@@ -561,3 +561,43 @@ def test_network_error_detail_is_logged_to_stderr(capsys):
     r = dp.TDKProvider(opener=failing).lookup("abiler")
     assert r.status == dp.STATUS_NETWORK_ERROR
     assert "unable to get local issuer certificate" in capsys.readouterr().err
+
+
+def test_add_certifi_bundle_adds_roots_and_keeps_verification():
+    import ssl
+    import certifi
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    assert dp.add_certifi_bundle(ctx) is True
+    with open(certifi.where(), encoding="ascii") as f:
+        assert ctx.cert_store_stats()["x509_ca"] == f.read().count("BEGIN CERTIFICATE")
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname is True
+
+
+def test_add_certifi_bundle_restores_isrg_roots_missing_from_a_controlled_list(tmp_path):
+    import hashlib
+    import re
+    import ssl
+    import certifi
+    isrg = {"96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bddf08c6",
+            "69729b8e15a86efc177a57afb7171dfc64add28c2fca8cf1507e34453ccb1470"}
+    with open(certifi.where(), encoding="ascii") as f:
+        blocks = re.findall(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", f.read(), re.S)
+    der_hash = lambda ders: {hashlib.sha256(d).hexdigest() for d in ders}
+    kept = [b for b in blocks if hashlib.sha256(ssl.PEM_cert_to_DER_cert(b)).hexdigest() not in isrg]
+    assert len(blocks) - len(kept) == 2
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text("\n".join(kept) + "\n", encoding="ascii")
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.load_verify_locations(cafile=str(ca_file))
+    assert not isrg & der_hash(ctx.get_ca_certs(binary_form=True))
+    dp.add_certifi_bundle(ctx)
+    assert isrg <= der_hash(ctx.get_ca_certs(binary_form=True))
+
+
+def test_add_certifi_bundle_without_certifi_leaves_context_unchanged(monkeypatch, capsys):
+    import ssl
+    monkeypatch.setitem(sys.modules, "certifi", None)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    assert dp.add_certifi_bundle(ctx) is False
+    assert ctx.cert_store_stats()["x509_ca"] == 0
+    assert "certifi CA bundle not loaded" in capsys.readouterr().err

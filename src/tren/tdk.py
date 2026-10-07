@@ -305,12 +305,20 @@ def tls_context() -> ssl.SSLContext:
     work). Elsewhere this is Python's default context, unchanged."""
     ctx = ssl.create_default_context()
     if sys.platform == "win32":
-        try:
-            import certifi
-            ctx.load_verify_locations(cafile=certifi.where())
-        except (ImportError, OSError, ssl.SSLError) as e:
-            print(f"TDK: certifi CA bundle not loaded, using the Windows store only: {e!r}", file=sys.stderr)
+        add_certifi_bundle(ctx)
     return ctx
+
+
+def add_certifi_bundle(ctx: ssl.SSLContext) -> bool:
+    """Add certifi's CA bundle to `ctx`'s trusted roots; False (and a stderr
+    note) if it cannot be loaded, leaving `ctx` as it was."""
+    try:
+        import certifi
+        ctx.load_verify_locations(cafile=certifi.where())
+        return True
+    except (ImportError, OSError, ssl.SSLError) as e:
+        print(f"TDK: certifi CA bundle not loaded, using the Windows store only: {e!r}", file=sys.stderr)
+        return False
 
 
 class TDKProvider(DictionaryProvider):

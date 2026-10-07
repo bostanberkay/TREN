@@ -75,28 +75,6 @@ jobs:
           }
           exit $code
 
-      # Reproduces the Windows 365 failure on this throwaway runner: with the ISRG
-      # roots removed from every Windows certificate store, Python's default
-      # context must fail on sozluk.gov.tr ("unable to get local issuer
-      # certificate") while TREN's own lookups still verify and succeed.
-      - name: TDK HTTPS with the ISRG roots removed from the Windows store
-        run: |
-          $thumbs = @("CABD2A79A1076A31F21D253635CB039D4329A5E8", "BDB1B93CD5978D45C6261455F8DB95C75AD153AF")
-          Get-ChildItem -Recurse Cert:\ | Where-Object { $_.Thumbprint -in $thumbs } | ForEach-Object {
-            Write-Host "removing $($_.PSParentPath) $($_.Subject)"
-            Remove-Item $_.PSPath
-          }
-          $exe = (Get-ChildItem -Recurse -Filter TREN.exe "$env:RUNNER_TEMP\pkgtest" | Select-Object -First 1).FullName
-          $dir = "$env:RUNNER_TEMP\pkgtest\rapor tdk-noisrg"
-          $p = Start-Process -FilePath $exe -ArgumentList "--self-test `"$dir`" --tdk-https" -PassThru -Wait
-          Get-Content -Encoding utf8 "$dir\tdk_https_report.txt"
-          $r = Get-Content -Raw -Encoding utf8 "$dir\tdk_https_report.json" | ConvertFrom-Json
-          if ($r.info.diagnostic_default_context.result -ne "cert_verify_failed") {
-            Write-Host "::error::the store without ISRG roots still verified sozluk.gov.tr; failure not reproduced"
-            exit 1
-          }
-          if ($p.ExitCode -ne 0 -or -not $r.ok) { exit 1 }
-
       - name: Collect self-test reports
         if: always()
         run: |
