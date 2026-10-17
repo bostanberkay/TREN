@@ -18,6 +18,9 @@ driven programmatically, not by real mouse/keyboard input.
 --tdk-https runs only the real sozluk.gov.tr HTTPS check (tdk_https_report.*)
 and nothing else: it needs the network, so it is kept apart from the regular
 self-test, whose TDK check uses a mock dictionary and must pass offline.
+A request that stalls or drops is repeated a few times within a fixed time
+budget (TDK_HTTPS_PAUSES, TDK_HTTPS_RETRY_BUDGET); one that still fails fails the
+check, and certificate verification is never relaxed.
 """
 import csv
 import hashlib
@@ -54,6 +57,16 @@ ISRG_ROOTS = {
 }
 # The terms from the failing manual run: full token, root, segment.
 TDK_HTTPS_TERMS = ("abiler", "abi", "ler")
+# Single requests to sozluk.gov.tr sometimes stall (the TCP/TLS connection never completes) until the request
+# timeout while the next identical one succeeds; answers normally arrive in under 4 s. A real request is
+# repeated after a transient failure (timeout, dropped connection, HTTP 429/5xx) with these pauses (seconds
+# before the 2nd to 5th attempt); no repeat starts later than the budget (seconds into the run), so even if every
+# request hangs the whole check ends in about 3 minutes, inside verify_windows_package.ps1's 300 s limit.
+# Certificate failures and other HTTP statuses are never repeated; a request that still fails fails the check.
+TDK_HTTPS_TIMEOUT = 10
+TDK_HTTPS_PAUSES = (2, 4, 6, 8)
+TDK_HTTPS_RETRY_BUDGET = 150
+TRANSIENT_HTTP = (429, 500, 502, 503, 504)
 
 
 class Report:
@@ -321,18 +334,43 @@ def _windows_store_info():
     return info
 
 
-def _fetch(url, context):
+def _is_transient(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in TRANSIENT_HTTP
+    reason = getattr(exc, "reason", exc)
+    return isinstance(reason, OSError) and not isinstance(reason, ssl.SSLCertVerificationError)
+
+
+def _retry(op, transient, deadline):
+    """op(), then again after each pause in TDK_HTTPS_PAUSES while transient(result) holds and the repeat
+    would start before `deadline` (a time.monotonic() value; None: no repeats). Returns (result, attempts)."""
+    result, attempts = op(), 1
+    for pause in TDK_HTTPS_PAUSES:
+        if deadline is None or not transient(result) or time.monotonic() + pause >= deadline:
+            break
+        time.sleep(pause)
+        result, attempts = op(), attempts + 1
+    return result, attempts
+
+
+def _fetch_once(url, context):
     req = urllib.request.Request(url, headers={"User-Agent": "TREN-TDK-Checker/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=15, context=context) as resp:
+        with urllib.request.urlopen(req, timeout=TDK_HTTPS_TIMEOUT, context=context) as resp:
             return {"result": "ok", "http": resp.status, "bytes": len(resp.read())}
     except urllib.error.URLError as e:
         if isinstance(e.reason, ssl.SSLCertVerificationError):
             return {"result": "cert_verify_failed", "error": repr(e),
                     "verify_code": e.reason.verify_code, "verify_message": e.reason.verify_message}
-        return {"result": "error", "error": repr(e)}
+        return {"result": "error", "error": repr(e), "transient": _is_transient(e)}
     except Exception as e:
-        return {"result": "error", "error": repr(e)}
+        return {"result": "error", "error": repr(e), "transient": _is_transient(e)}
+
+
+def _fetch(url, context, deadline=None):
+    result, attempts = _retry(lambda: _fetch_once(url, context), lambda r: r.get("transient", False), deadline)
+    result["attempts"] = attempts
+    return result
 
 
 def _tdk_https_diagnosis(info):
@@ -348,12 +386,15 @@ def _tdk_https_diagnosis(info):
     return "connection failed before certificate checks: DNS, firewall or proxy"
 
 
-def _missing_root_scenario(tdk, certifi, probe, out_dir):
+def _missing_root_scenario(tdk, certifi, probe, out_dir, deadline=None):
     """The Windows 365 failure, without touching any system store: a context
     trusting only certifi's bundle minus the ISRG roots must fail verification
     on sozluk.gov.tr, and the same context must verify once
     tdk.add_certifi_bundle (what tls_context does on Windows) has run on it.
-    A network/service error is a failure of the check, never a pass."""
+    Transient network errors are repeated (see TDK_HTTPS_PAUSES); one that
+    persists is a failure of the check, never a pass, and says whether the
+    request that got no result came before or after the roots were added."""
+    _check(certifi is not None, "certifi is not importable, so the scenario could not run")
     with open(certifi.where(), encoding="ascii") as f:
         blocks = re.findall(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", f.read(), re.S)
     isrg = set(ISRG_ROOTS.values())
@@ -369,18 +410,20 @@ def _missing_root_scenario(tdk, certifi, probe, out_dir):
     _check(ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname, "verification is off")
     _check(ctx.cert_store_stats()["x509_ca"] == len(kept), "controlled CA list not loaded as written")
 
-    without = _fetch(probe, ctx)
+    without = _fetch(probe, ctx, deadline)
     if without["result"] == "error":
-        raise AssertionError(f"network/service error, not a certificate result: {without['error']}")
+        raise AssertionError(f"incomplete, before the ISRG roots were added: no certificate result after "
+                             f"{without['attempts']} attempt(s), network/service error: {without['error']}")
     _check(without["result"] == "cert_verify_failed",
            f"CA list without ISRG roots still verified sozluk.gov.tr: {without}")
     _check(tdk.add_certifi_bundle(ctx), "tdk.add_certifi_bundle could not load certifi")
-    with_certifi = _fetch(probe, ctx)
+    with_certifi = _fetch(probe, ctx, deadline)
     if with_certifi["result"] == "error":
-        raise AssertionError(f"network/service error, not a certificate result: {with_certifi['error']}")
+        raise AssertionError(f"incomplete, after the ISRG roots were added: no verified response after "
+                             f"{with_certifi['attempts']} attempt(s), network/service error: {with_certifi['error']}")
     _check(with_certifi["result"] == "ok", f"still failing after tdk.add_certifi_bundle: {with_certifi}")
-    return (f"without ISRG roots: {without['verify_message']}; "
-            f"after tdk.add_certifi_bundle: HTTP {with_certifi['http']}")
+    return (f"without ISRG roots: {without['verify_message']} ({without['attempts']} attempt(s)); "
+            f"after tdk.add_certifi_bundle: HTTP {with_certifi['http']} ({with_certifi['attempts']} attempt(s))")
 
 
 def run_tdk_https(out_dir):
@@ -412,29 +455,40 @@ def run_tdk_https(out_dir):
             certifi = None
         report.info["tls_context_ca_count"] = tdk.tls_context().cert_store_stats()["x509_ca"]
         probe = f"{tdk.DEFAULT_TDK_URL}?ara=abi"
-        report.info["diagnostic_default_context"] = _fetch(probe, ssl.create_default_context())
+        report.info["retry"] = {"request_timeout_s": TDK_HTTPS_TIMEOUT, "pauses_s": list(TDK_HTTPS_PAUSES),
+                                "budget_s": TDK_HTTPS_RETRY_BUDGET}
+        deadline = time.monotonic() + TDK_HTTPS_RETRY_BUDGET
+        report.info["diagnostic_default_context"] = _fetch(probe, ssl.create_default_context(), deadline)
         if certifi is not None:
-            report.info["diagnostic_certifi_only"] = _fetch(probe, ssl.create_default_context(cafile=certifi.where()))
-        report.info["diagnostic_tren_context"] = _fetch(probe, tdk.tls_context())
+            report.info["diagnostic_certifi_only"] = _fetch(
+                probe, ssl.create_default_context(cafile=certifi.where()), deadline)
+        report.info["diagnostic_tren_context"] = _fetch(probe, tdk.tls_context(), deadline)
         report.info["diagnosis"] = _tdk_https_diagnosis(report.info)
 
-        if certifi is not None:
-            report.run("missing-root scenario (controlled CA list, verified TLS)",
-                       lambda: _missing_root_scenario(tdk, certifi, probe, out_dir))
+        report.run("missing-root scenario (controlled CA list, verified TLS)",
+                   lambda: _missing_root_scenario(tdk, certifi, probe, out_dir, deadline))
 
-        provider = tdk.TDKProvider(timeout=15)
+        def lookup_failed_transiently(r):
+            http = re.match(r"HTTP error (\d+)", r.message)
+            return (r.status == tdk.STATUS_NETWORK_ERROR and "CERTIFICATE_VERIFY_FAILED" not in r.message
+                    and (http is None or int(http.group(1)) in TRANSIENT_HTTP))
+
+        provider = tdk.TDKProvider(timeout=TDK_HTTPS_TIMEOUT)
         for term in TDK_HTTPS_TERMS:
             def lookup(term=term):
-                r = provider.lookup(term)
+                def once():
+                    provider.clear_cache()  # failures are cached too; a repeat has to reach the network
+                    return provider.lookup(term)
+                r, attempts = _retry(once, lookup_failed_transiently, deadline)
                 if r.status == tdk.STATUS_NETWORK_ERROR:
                     kind = ("certificate verification failed" if "CERTIFICATE_VERIFY_FAILED" in r.message
-                            else "network/service error, not a certificate result")
-                    raise AssertionError(f"{kind}: {r.message}")
+                            else "incomplete, network/service error, not a certificate result")
+                    raise AssertionError(f"{kind}, after {attempts} attempt(s): {r.message}")
                 _check(r.status in (tdk.STATUS_FOUND, tdk.STATUS_NOT_FOUND),
                        f"{r.status}: {r.message}")
                 if term == "abi":
                     _check(r.status == tdk.STATUS_FOUND, "'abi' not FOUND: response is not real TDK data")
-                return f"{r.status} ({len(r.entries)} entries)"
+                return f"{r.status} ({len(r.entries)} entries, {attempts} attempt(s))"
             report.run(f"TDK HTTPS lookup {term!r} (real sozluk.gov.tr, verified TLS)", lookup)
     except Exception:
         report.checks.append({"name": "TDK HTTPS harness", "status": "fail", "detail": traceback.format_exc()})
