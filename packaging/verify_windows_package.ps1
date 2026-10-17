@@ -70,6 +70,11 @@ foreach ($f in @("tren\resources\lid.176.ftz", "tren\resources\frequent_tr_words
                  "tren\resources\models\model.joblib", "tren\resources\models\vectorizer.joblib", "tren\resources\models\metadata.json")) {
     if (Test-Path (Join-Path $InstallDir "TREN\_internal\$f")) { Pass "bundled $f" } else { Fail "missing bundled $f" }
 }
+foreach ($f in @("LICENSE.txt", "THIRD_PARTY_NOTICES.md")) {
+    if (Test-Path (Join-Path $InstallDir "TREN\$f")) { Pass "package contains $f" } else { Fail "package lacks $f" }
+}
+$LicenseIndex = "TREN\_internal\licenses\third_party\PACKAGES.txt"
+if (Test-Path (Join-Path $InstallDir $LicenseIndex)) { Pass "package contains $LicenseIndex" } else { Fail "package lacks $LicenseIndex" }
 $Leaked = Get-ChildItem -Recurse -Directory (Join-Path $InstallDir "TREN\_internal") |
     Where-Object { $_.Name -in @("pytest", "_pytest", "PyInstaller") }
 if ($Leaked) { Fail "development packages bundled: $($Leaked.FullName -join ', ')" } else { Pass "no pytest/PyInstaller in the bundle" }

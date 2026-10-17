@@ -4,7 +4,7 @@
 [![Tests](https://img.shields.io/github/actions/workflow/status/bostanberkay/TREN/ci.yml?branch=main&label=Tests)](https://github.com/bostanberkay/TREN/actions/workflows/ci.yml?query=branch%3Amain)
 [![Build](https://img.shields.io/github/actions/workflow/status/bostanberkay/TREN/windows-package.yml?branch=main&label=Build)](https://github.com/bostanberkay/TREN/actions/workflows/windows-package.yml?query=branch%3Amain)
 
-TREN is a semi-automatic desktop application for annotating and analyzing Turkish–English code-switching data in corpus-based linguistic research. You load raw text, TREN proposes token-level language labels and glosses, and you review and correct them in a spreadsheet-like grid before exporting the annotated corpus.
+TREN is a semi-automatic desktop application for annotating and analyzing Turkish–English code-switching data in corpus-based linguistic research. You load raw text and **Run** proposes a language label for every token; you review and correct the labels in a spreadsheet-like grid. For tokens labeled `MIXED`, a separate **Auto-Glossing Tool** suggests an editable morphological gloss. Then you export the annotated corpus.
 
 It is intended for researchers working on bilingual and multilingual data who need transparent annotation of code-switching, including intra-word switches such as `meeting'e` (English stem + Turkish suffix).
 
@@ -12,7 +12,7 @@ TREN’s features include, for instance:
 
 - semi-automatic token-level language identification for Turkish and English
 - detection of intra-word code-switching (English stem + Turkish suffixes)
-- morphological glossing based on the Leipzig Glossing Rules
+- Leipzig-style morphological gloss suggestions for `MIXED` tokens, from a separate Auto-Glossing Tool (editable)
 - manual review and correction of every automatic label
 - concordance (KWIC), sentence context, and word frequency tools
 - sentence-level Matrix Language and Embedded Language
@@ -63,6 +63,10 @@ TREN for Windows is a portable build for **x64**: no installer, and Python does 
 
 The build is **not code-signed**, so Windows SmartScreen may warn on first launch: click <strong>More info ▸ Run anyway</strong>. Shortcuts use <strong>Ctrl</strong> (⌘ on macOS); right-click opens the table's context menu. Project saves and the error log (`tren.log`) are kept in `%USERPROFILE%\.cs_annotator`. `.trenproj` projects and TXT/CSV/CoNLL/JSONL exports are the same on Windows and macOS. The NER models are downloaded on the first run with NER on; TREN asks before starting the download (see Requirements below).
 
+### Internet use
+
+TREN uses the internet in two cases only. The first time you run with **NER** on, TREN asks before downloading Stanza's Turkish models (about 200 MB); after that NER works offline. The optional **TDK Checker** sends a single token, root, or suffix to the TDK online dictionary, and only when you ask it to (see [TDK Checker](#tdk-checker)). Everything else, including annotation, the other tools, and export, works offline.
+
 ## Run from Source (Python)
 
 ```bash
@@ -85,7 +89,7 @@ The bundled MIXED-token reranker needs `scikit-learn>=1.8`. If it cannot be used
 
 ## Example Usage
 
-A minimal, non-interactive example runs the annotation pipeline without the GUI:
+A minimal, non-interactive example runs `Annotator.annotate()` without the GUI. It is a deterministic demonstration: it uses small built-in example word lists and a stubbed fastText prediction, with NER off. It does not load fastText, Stanza, or the reranker, so it is not an end-to-end check with the real models.
 
 ```bash
 python examples/quickstart.py
@@ -107,10 +111,11 @@ A successful run ends with `OK: quickstart annotation matches the expected outpu
 ### Basic workflow
 
 1. Paste text into the input panel, or use **Open** (one sentence per line).
-2. Click **Run** to annotate.
+2. Click **Run** to propose a language label for every token.
 3. Review and correct labels in the grid, using the relabel buttons and the Tools menu.
-4. Save your work with **Project ▸ Save Project Progress**.
-5. Export with **Export** (TXT, CSV, CoNLL-style, or JSONL).
+4. For `MIXED` tokens, open **Tools ▸ Auto-Glossing Tool** to get an editable gloss suggestion for each one.
+5. Save your work with **Project ▸ Save Project Progress**.
+6. Export with **Export** (TXT, CSV, CoNLL-style, or JSONL).
 
 ## Version Log
 
@@ -340,7 +345,7 @@ Looks up a token, its root, and each suffix in the online dictionary of the Turk
 - **Check TDK** shows `FOUND` / `NOT_FOUND` / `UNAVAILABLE` / `NETWORK_ERROR` per term, and the full dictionary entry for the selected row.
 - It never changes a token's label or gloss; **Apply Correction** saves only the segmentation.
 
-**Network and privacy:** this is the only feature that uses the internet, and only when you click **Check TDK** or **Open in TDK Checker**. Only the token, root, or suffix is sent, never the sentence. The TDK service is unofficial and may be unavailable.
+**Network and privacy:** apart from the one-time NER model download (see [Internet use](#internet-use)), this is the only feature that uses the internet, and only when you click **Check TDK** or **Open in TDK Checker**. Only the token, root, or suffix is sent, never the sentence. The TDK service is unofficial and may be unavailable.
 
 ## Concordance (KWIC)
 
@@ -378,7 +383,7 @@ TREN was developed within an ongoing TÜBİTAK research project on Turkish–Eng
 
 ## License
 
-TREN is licensed under the [GNU General Public License v3.0](LICENSE).
+TREN's own code is licensed under the [GNU General Public License v3.0](LICENSE). Third-party components keep their own licenses: the bundled fastText language-identification model `lid.176.ftz` is licensed under CC BY-SA 3.0, the fastText library is MIT-licensed, and the bundled word lists match those of FrequencyWords, which that project licenses under CC BY-SA 4.0; neither the model nor the word lists are under the GPL. Source, copyright, license, and attribution notices, and the points that could not be confirmed, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The packaging recipes are set up so that a packaged app also carries the license files of the Python packages it bundles (`licenses/third_party/`); no package has been built with them yet.
 
 ## Citation
 
@@ -393,10 +398,12 @@ The developer assumes no responsibility for any errors, inaccuracies, or analyti
 
 ## Contact
 
-For questions about TREN not answered in this documentation, or to report an issue, you may contact:
+To report a bug or suggest an improvement, open an [issue on GitHub](https://github.com/bostanberkay/TREN/issues). For other questions about TREN not answered in this documentation, you may contact:
 **bostanberkay@outlook.com**
 
 ## References
+
+Joulin, A., Grave, E., Bojanowski, P., Douze, M., Jégou, H., & Mikolov, T. (2016). FastText.zip: Compressing text classification models. *arXiv preprint arXiv:1612.03651*. https://arxiv.org/abs/1612.03651
 
 Joulin, A., Grave, E., Bojanowski, P., & Mikolov, T. (2017). Bag of tricks for efficient text classification. *Proceedings of the 15th Conference of the European Chapter of the Association for Computational Linguistics (EACL 2017)*, 427–431. https://doi.org/10.18653/v1/E17-2068
 

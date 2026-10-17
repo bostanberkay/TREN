@@ -32,6 +32,7 @@ try {
     $AppDir = Join-Path $Tmp "dist\TREN"
     if (-not (Test-Path (Join-Path $AppDir "TREN.exe"))) { throw "TREN.exe was not produced" }
     Copy-Item (Join-Path $Root "LICENSE") (Join-Path $AppDir "LICENSE.txt")
+    Copy-Item (Join-Path $Root "THIRD_PARTY_NOTICES.md") (Join-Path $AppDir "THIRD_PARTY_NOTICES.md")
     Set-Content -Path (Join-Path $AppDir "VERSION.txt") -Value "TREN $Version (Windows x64, unsigned portable build)" -Encoding utf8
 
     if (Test-Path $Zip) { Remove-Item $Zip }

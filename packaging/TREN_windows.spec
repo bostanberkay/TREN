@@ -1,10 +1,13 @@
 # PyInstaller spec for the portable Windows x64 build (a TREN folder with
 # TREN.exe; one-folder, not one-file). Build with packaging/build_windows.ps1.
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
+sys.path.insert(0, os.path.join(ROOT, "packaging"))
+import collect_licenses
 
 a = Analysis(
     [os.path.join(ROOT, "src", "tren", "__main__.py")],
@@ -25,6 +28,10 @@ a = Analysis(
     excludes=["pytest", "_pytest", "PyInstaller"],
     noarchive=False,
 )
+# Licenses of what this build actually bundles, found from the analysis, not from requirements.txt.
+LICENSES_DIR = os.path.join(workpath, "third_party_licenses")
+collect_licenses.collect_from_analysis(a, LICENSES_DIR)
+a.datas += collect_licenses.data_entries(LICENSES_DIR, os.path.join("licenses", "third_party"))
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
