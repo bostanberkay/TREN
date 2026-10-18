@@ -68,8 +68,8 @@ def test_word_lists_still_match_what_the_notices_say_about_them():
 def test_notices_reproduce_the_license_texts_that_must_accompany_the_bundled_runtime():
     text = _read(NOTICES)
     assert "OpenSSL License" in text and "Original SSLeay License" in text
-    assert "SIL OPEN FONT LICENSE Version 1.1" in text
     assert "Permission is hereby granted, free of charge" in text.split("### ncurses license")[1]
+    assert "Astloch" not in text and "Liberation" not in text
 
 
 def test_notices_say_where_the_generated_package_licenses_are():

@@ -9,13 +9,17 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 sys.path.insert(0, os.path.join(ROOT, "packaging"))
 import collect_licenses
 
+# The only data files Stanza ships are its web demo (scripts, a stylesheet, an image, three fonts); TREN and
+# Stanza's pipeline code never use them, so they stay out of the package.
+STANZA_DATA = [d for d in collect_data_files("stanza") if not d[1].replace("\\", "/").startswith("stanza/pipeline/demo")]
+
 a = Analysis(
     [os.path.join(ROOT, "src", "tren", "__main__.py")],
     # packaging/ holds tren_selftest.py, which `TREN.exe --self-test` imports.
     pathex=[os.path.join(ROOT, "src"), os.path.join(ROOT, "packaging")],
     # Bundled at tren/resources, next to the package's modules, as in the source tree.
     datas=[(os.path.join(ROOT, "src", "tren", "resources"), os.path.join("tren", "resources"))]
-    + collect_data_files("stanza")
+    + STANZA_DATA
     + collect_data_files("emoji"),
     # scikit-learn is never imported by TREN's code; it is needed only to
     # unpickle tren/resources/models/*.joblib, so analysis cannot find it.

@@ -78,6 +78,8 @@ if (Test-Path (Join-Path $InstallDir $LicenseIndex)) { Pass "package contains $L
 $Leaked = Get-ChildItem -Recurse -Directory (Join-Path $InstallDir "TREN\_internal") |
     Where-Object { $_.Name -in @("pytest", "_pytest", "PyInstaller") }
 if ($Leaked) { Fail "development packages bundled: $($Leaked.FullName -join ', ')" } else { Pass "no pytest/PyInstaller in the bundle" }
+$StanzaDemo = Join-Path $InstallDir "TREN\_internal\stanza\pipeline\demo"
+if (Test-Path $StanzaDemo) { Fail "Stanza demo folder bundled: $StanzaDemo" } else { Pass "no Stanza demo folder in the bundle" }
 
 # Isolate the packaged app from any Python on this machine.
 $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\WindowsPowerShell\v1.0"

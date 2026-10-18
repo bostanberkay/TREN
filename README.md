@@ -383,7 +383,7 @@ TREN was developed within an ongoing TÜBİTAK research project on Turkish–Eng
 
 ## License
 
-TREN's own code is licensed under the [GNU General Public License v3.0](LICENSE). Third-party components keep their own licenses: the bundled fastText language-identification model `lid.176.ftz` is licensed under CC BY-SA 3.0, the fastText library is MIT-licensed, and the bundled word lists match those of FrequencyWords, which that project licenses under CC BY-SA 4.0; neither the model nor the word lists are under the GPL. Source, copyright, license, and attribution notices, and the points that could not be confirmed, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The packaging recipes are set up so that a packaged app also carries the license files of the Python packages it bundles (`licenses/third_party/`); no package has been built with them yet.
+TREN is licensed under the [GNU General Public License v3.0](LICENSE). Third-party components keep their own licenses: the bundled fastText language-identification model `lid.176.ftz` is licensed under CC BY-SA 3.0, the fastText library is MIT-licensed, and the bundled word lists were taken from FrequencyWords, which that project licenses under CC BY-SA 4.0; neither the model nor the word lists are under the GPL. Source, copyright, license, and attribution notices, and the points that could not be confirmed, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Packages built after v1.4.1 also carry the license files of the Python packages they bundle (`licenses/third_party/`); this has been checked for the Windows package, not yet for the macOS one.
 
 ## Citation
 
