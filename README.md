@@ -1,21 +1,25 @@
-## TREN: A Corpus Annotation Tool for Code-Switching Data
+# TREN: A Corpus Annotation Tool for Code-Switching Data
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/bostanberkay/TREN/blob/main/LICENSE)
 [![Tests](https://img.shields.io/github/actions/workflow/status/bostanberkay/TREN/ci.yml?branch=main&label=Tests)](https://github.com/bostanberkay/TREN/actions/workflows/ci.yml?query=branch%3Amain)
 [![Build](https://img.shields.io/github/actions/workflow/status/bostanberkay/TREN/windows-package.yml?branch=main&label=Build)](https://github.com/bostanberkay/TREN/actions/workflows/windows-package.yml?query=branch%3Amain)
 
-TREN is a semi-automatic desktop application for annotating and analyzing Turkish–English code-switching data in corpus-based linguistic research. You load raw text and **Run** proposes a language label for every token; you review and correct the labels in a spreadsheet-like grid. For tokens labeled `MIXED`, a separate **Auto-Glossing Tool** suggests an editable morphological gloss. Then you export the annotated corpus.
+TREN is a semi-automatic desktop application for annotating and analyzing Turkish–English code-switching data in corpus-based linguistic research. **Run** proposes a language label for every token, and you review and correct the labels in a spreadsheet-like grid. For tokens labeled `MIXED`, a separately opened **Auto-Glossing Tool** suggests an editable morphological gloss. You can then export the annotated corpus.
 
 It is intended for researchers working on bilingual and multilingual data who need transparent annotation of code-switching, including intra-word switches such as `meeting'e` (English stem + Turkish suffix).
 
-TREN’s features include, for instance:
+**Language scope:** built-in automatic labeling supports Turkish–English only. The word lists, suffix rules, NER models, and reranker are specific to this pair. The workflow could serve other language pairs, particularly those with agglutinative morphology, but adapting it requires language-specific word lists, suffix rules, and dictionary resources, which TREN does not include.
+
+**Quick links:** [Installation](#installation) · [Basic workflow](#basic-workflow) · [Architecture](#architecture-and-tests) · [Technical documentation](docs/TECHNICAL.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
+
+Main features:
 
 - semi-automatic token-level language identification for Turkish and English
 - detection of intra-word code-switching (English stem + Turkish suffixes)
 - Leipzig-style morphological gloss suggestions for `MIXED` tokens, from a separate Auto-Glossing Tool (editable)
 - manual review and correction of every automatic label
 - concordance (KWIC), sentence context, and word frequency tools
-- sentence-level Matrix Language and Embedded Language
+- Matrix Language and Embedded Language for each annotation block
 - several independent datasets in one project, switchable via tabs
 - export to `.txt`, `.csv`, TREN CoNLL-style, and `.jsonl`
 
@@ -29,15 +33,15 @@ TREN is available as a packaged application for macOS and Windows. On any platfo
 
 ### Release status
 
-The latest packaged release is **v1.4.1**, for macOS (`TREN_v1.4.1.dmg`, **Apple silicon Macs (arm64)** only; on an Intel Mac, run TREN from source) and Windows (`TREN_v1.4.1_windows_x64.zip`, **x64**). See [CHANGELOG.md](CHANGELOG.md) for what changed.
+The latest packaged release is **v1.4.2**, for macOS (`TREN_v1.4.2.dmg`, **Apple silicon Macs (arm64), macOS 14 or later**; on an Intel Mac, run TREN from source) and Windows (`TREN_v1.4.2_windows_x64.zip`, **x64**). See [CHANGELOG.md](CHANGELOG.md) for what changed.
 
-### macOS (packaged v1.4.1)
+### macOS (packaged v1.4.2)
 
 <ol>
  <li>
-  Download <a href="https://github.com/bostanberkay/TREN/releases/download/v1.4.1/TREN_v1.4.1.dmg"><code>TREN_v1.4.1.dmg</code></a> (also listed on the
-  <a href="https://github.com/bostanberkay/TREN/releases/tag/v1.4.1" target="_blank">
-    v1.4.1 release page
+  Download <a href="https://github.com/bostanberkay/TREN/releases/download/v1.4.2/TREN_v1.4.2.dmg"><code>TREN_v1.4.2.dmg</code></a> (also listed on the
+  <a href="https://github.com/bostanberkay/TREN/releases/tag/v1.4.2" target="_blank">
+    v1.4.2 release page
   </a>).
 </li>
   <li>Open the DMG and drag the <strong>TREN</strong> application into the <strong>Applications</strong> folder.</li>
@@ -51,21 +55,31 @@ The app is not signed or notarized, so macOS blocks it on first launch:
   <li>On earlier macOS versions: right-click (or Ctrl-click) the <strong>TREN</strong> app, select <strong>Open</strong>, and confirm.</li>
 </ul>
 
-### Windows (packaged v1.4.1)
+### Windows (packaged v1.4.2)
 
 TREN for Windows is a portable build for **x64**: no installer, and Python does not need to be installed. All features have been tested manually on Windows. ARM64 Windows has not been tested.
 
 <ol>
-  <li>Download <a href="https://github.com/bostanberkay/TREN/releases/download/v1.4.1/TREN_v1.4.1_windows_x64.zip"><code>TREN_v1.4.1_windows_x64.zip</code></a> (also listed on the <a href="https://github.com/bostanberkay/TREN/releases/tag/v1.4.1" target="_blank">v1.4.1 release page</a>).</li>
+  <li>Download <a href="https://github.com/bostanberkay/TREN/releases/download/v1.4.2/TREN_v1.4.2_windows_x64.zip"><code>TREN_v1.4.2_windows_x64.zip</code></a> (also listed on the <a href="https://github.com/bostanberkay/TREN/releases/tag/v1.4.2" target="_blank">v1.4.2 release page</a>).</li>
   <li>Extract the whole ZIP to a folder (do not run TREN from inside the ZIP).</li>
   <li>Run <code>TREN\TREN.exe</code>. Keep the files and folders next to it: TREN needs them to run.</li>
 </ol>
 
-The build is **not code-signed**, so Windows SmartScreen may warn on first launch: click <strong>More info ▸ Run anyway</strong>. Shortcuts use <strong>Ctrl</strong> (⌘ on macOS); right-click opens the table's context menu. Project saves and the error log (`tren.log`) are kept in `%USERPROFILE%\.cs_annotator`. `.trenproj` projects and TXT/CSV/CoNLL/JSONL exports are the same on Windows and macOS. The NER models are downloaded on the first run with NER on; TREN asks before starting the download (see Requirements below).
+The build is **not code-signed**, so Windows SmartScreen may warn on first launch: click <strong>More info ▸ Run anyway</strong>.
+
+- Shortcuts use **Ctrl** (⌘ on macOS); right-click opens the table's context menu.
+- Project saves and the error log (`tren.log`) are kept in `%USERPROFILE%\.cs_annotator`.
+- `.trenproj` projects and TXT/CSV/CoNLL-style/JSONL exports are the same on Windows and macOS.
+- The NER models are downloaded on the first run with NER on; TREN asks before starting the download (see [Requirements](#requirements)).
 
 ### Internet use
 
-TREN uses the internet in two cases only. The first time you run with **NER** on, TREN asks before downloading Stanza's Turkish models (about 200 MB); after that NER works offline. The optional **TDK Checker** sends a single token, root, or suffix to the TDK online dictionary, and only when you ask it to (see [TDK Checker](#tdk-checker)). Everything else, including annotation, the other tools, and export, works offline.
+TREN uses the internet in two cases only:
+
+- **NER model download:** the first time you run with **NER** on, TREN asks before downloading Stanza's Turkish models (about 200 MB). After that, NER works offline.
+- **TDK Checker (optional):** it sends a single token, root, or suffix to the TDK online dictionary, and only when you ask it to (see [TDK Checker](#tdk-checker)).
+
+Everything else, including annotation, the other tools, and export, works offline.
 
 ## Run from Source (Python)
 
@@ -82,14 +96,14 @@ python -m tren
 
 - **Python 3.11 or higher**, with Tk support.
 - The packages in `requirements.txt`: `fasttext`, `numpy<2`, `stanza`, `tksheet`, `joblib`, `scipy`, `scikit-learn>=1.8`, `certifi`.
-- **Internet on first NER run.** Named Entity Recognition (on by default) uses Stanza's Turkish models (about 200 MB), which are not bundled. The first time NER runs, TREN asks before downloading them into Stanza's user cache folder (on Windows under `%LOCALAPPDATA%\StanfordNLP\stanza`; set `STANZA_RESOURCES_DIR` to use another folder). After that TREN works offline. If the models cannot be downloaded, Run shows an error; untick **NER** in the toolbar to annotate without it.
+- **Internet on first NER run.** Named Entity Recognition (on by default) uses Stanza's Turkish models (about 200 MB), which are not bundled. The first time NER runs, TREN asks before downloading them into Stanza's user cache folder (on Windows under `%LOCALAPPDATA%\StanfordNLP\stanza`; set `STANZA_RESOURCES_DIR` to use another folder). After that, TREN works offline. If the models cannot be downloaded, Run shows an error; untick **NER** in the toolbar to annotate without it.
 - **Windows:** `fasttext==0.9.3` has no Windows wheel, and its published source does not compile with MSVC on Python 3.10+ (two lines use `ssize_t`, which Windows does not define). Instead of `pip install .`, run `powershell -ExecutionPolicy Bypass -File packaging\install_windows_deps.ps1` and then `pip install --no-deps .`. The script builds fasttext 0.9.3 from the PyPI source (checked against its published SHA-256) with that two-line fix, installs `requirements.txt`, and checks the language-ID model. It needs the Microsoft C++ Build Tools.
 
-The bundled MIXED-token reranker needs `scikit-learn>=1.8`. If it cannot be used, TREN still annotates with rule-based MIXED detection and the toolbar shows **MIXED reranker: unavailable** (hover for the reason).
+The bundled MIXED-token reranker needs `scikit-learn>=1.8`. If it cannot be used, all three post-processing stages (see [Architecture and Tests](#architecture-and-tests)) are skipped, the first-pass labels stand, and the toolbar shows **MIXED reranker: unavailable** (hover for the reason).
 
 ## Example Usage
 
-A minimal, non-interactive example runs `Annotator.annotate()` without the GUI. It is a deterministic demonstration: it uses small built-in example word lists and a stubbed fastText prediction, with NER off. It does not load fastText, Stanza, or the reranker, so it is not an end-to-end check with the real models.
+A minimal, non-interactive example runs `Annotator.annotate()` without the GUI. It uses small built-in example word lists and a stubbed fastText prediction, with NER off. It does not load fastText, Stanza, or the reranker, so it is not an end-to-end check with the real models.
 
 ```bash
 python examples/quickstart.py
@@ -110,12 +124,12 @@ A successful run ends with `OK: quickstart annotation matches the expected outpu
 
 ### Basic workflow
 
-1. Paste text into the input panel, or use **Open** (one sentence per line).
+1. Paste text into the input panel, or use **Open**. Each non-empty line becomes one annotation block.
 2. Click **Run** to propose a language label for every token.
 3. Review and correct labels in the grid, using the relabel buttons and the Tools menu.
-4. For `MIXED` tokens, open **Tools ▸ Auto-Glossing Tool** to get an editable gloss suggestion for each one.
-5. Save your work with **Project ▸ Save Project Progress**.
-6. Export with **Export** (TXT, CSV, CoNLL-style, or JSONL).
+4. Optionally, open **Tools ▸ Auto-Glossing Tool** to get an editable gloss suggestion for each `MIXED` token.
+5. Save your work at any time with **Project ▸ Save Project Progress**.
+6. Export with **Export** (TXT, CSV, CoNLL-style, or JSONL). Glossing is not required before export.
 
 ## Version Log
 
@@ -127,11 +141,39 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for developmen
 
 ## Architecture and Tests
 
-TREN is a Tkinter GUI (`cs_annotator_app.py`, in the `tren` package under `src/tren/`) on top of a rule-based annotation pipeline (`cs_pipeline.py`). After the rule-based pass, a frozen statistical MIXED-token reranker and a conservative UID→TR resolver (`reranking.py`) can refine some labels; `confidence.py` computes read-only confidence scores for review. An automated test suite (`python -m pytest`) runs in GitHub Actions CI.
+TREN's code is the `tren` package in `src/tren/`:
+
+| Module | Responsibility | Start reading at |
+|---|---|---|
+| `__main__.py` | Entry point for `python -m tren` | `main()` in `cs_annotator_app.py` |
+| `cs_annotator_app.py` | Tkinter GUI (`App`): calls the pipeline, holds the annotation state, and implements the grid, tool windows, Auto-Glossing suffix rules, project saving, and export | `App.run_pipeline()` |
+| `cs_pipeline.py` | `Annotator`: annotation blocks, tokenization, NER, word lists, fastText, suffix rules, Matrix/Embedded Language | `Annotator.annotate()` |
+| `reranking.py` | Post-processing: MIXED reranker, mixed-verb check, UID-to-TR resolver | `apply_reranker()` |
+| `confidence.py` | Read-only confidence records for the Confidence Review Tool | `attach_confidence_to_blocks()` |
+| `annotation_model.py` | Annotation rows, grid view, project payloads, CoNLL-style and JSONL serializers | `parse_annotated_text_to_blocks()` |
+| `tdk.py` | TDK Checker: dictionary lookup and morphological parser | `parse_token()` |
+
+The modules other than `cs_annotator_app.py` do not import Tk, so the labeling code can be run and tested without a window. The application is not fully separated, however: `App` runs the pipeline stages in sequence and contains the state-management code.
+
+What happens when you click **Run**:
+
+```
+App.run_pipeline()
+  App._run_annotation_pipeline()
+    Annotator.annotate()                      blocks, tokens, first-pass labels, Matrix/Embedded
+    reranking.apply_reranker()                reranker -> mixed-verb check -> UID-to-TR resolver
+    App._ensure_matrix_embed_consistency()    adds a missing MatrixLang row
+  App._populate_table()                       fills the grid
+  App._attach_confidence()                    computes read-only confidence records
+```
+
+The Auto-Glossing Tool, TDK Checker, project saving, and export are separate user actions and are not part of Run.
+
+The test suite (`python -m pytest`) runs in GitHub Actions CI.
 
 **Known limitation:** the reranker can relabel a proper name with a Turkish case suffix (e.g. `İstanbul'a`, `Ankara'da`) as `MIXED` instead of `NE`. Review suffixed proper names in the Confidence Review Tool or the grid.
 
-The pipeline stages, reranker design and benchmarks, evaluation metrics, file-format specifications, and the formal description of the labeling logic are in **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.
+The detailed module map, pipeline rules, reranker design and benchmarks, evaluation metrics, and file-format specifications are in **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.
 
 # Documentation of TREN
 
@@ -159,7 +201,7 @@ A toolbar sits at the top, and a dataset tab bar sits above the grid.
 
 A free-text editor where you paste or load raw text. It stays editable and is linked to the KWIC and sentence context tools.
 
-- **Each non-empty line is one sentence** (one `SentenceID` block). Sentences are not split at `.`, `?`, or `!`.
+- **Each non-empty line is one annotation block** (one `SentenceID` row). TREN does not detect sentence boundaries: `.`, `?`, and `!` do not split a block.
 - Punctuation marks (`.`, `,`, `!`, `?`, ...) are dropped and do not appear in the grid.
 - Numbers, URLs, `@mentions`, `#hashtags`, and emoji are kept and labeled `OTHER`.
 - An apostrophe inside a word is kept (`meeting'e` is one token).
@@ -223,7 +265,7 @@ The toolbar contains:
 - Checkboxes for **Language per item**, **MatrixLang**, **EmbedLang**, and **NER**.
 - After the first run, a status label showing whether the MIXED reranker is **active** or **unavailable (rule-based only)**.
 
-**Matrix and Embedded Language.** For each sentence, TREN counts `TR` and `EN` tokens; each `MIXED` token counts 0.6 toward Turkish and 0.4 toward English. The higher score is the Matrix Language (ties go to `TR`); the other language, if present, is the Embedded Language (`-` if absent). `NE`, `OTHER`, and `UID` do not count.
+**Matrix and Embedded Language.** These values are computed for each annotation block from weighted token-label counts. Each `TR` or `EN` token counts 1 for its language; each `MIXED` token counts 0.6 toward Turkish and 0.4 toward English. The higher score is the Matrix Language (ties go to `TR`). The other language, if present, is the Embedded Language (`-` if absent). `NE`, `OTHER`, and `UID` do not count. **Run**, **Apply** and **Undo** in the Confidence Review Tool, and **Merge Cells** and **Undo Merge Cells** update the values. Other edits do not; you can correct the two rows by hand.
 
 ## Menu Bar
 
@@ -246,11 +288,11 @@ The toolbar contains:
 
 - **New Project**: start with an empty workspace.
 - **Open Project Save**: open a `.trenproj` file.
-- **Save Project Progress**: save all datasets to a `.trenproj` file.
+- **Save Project Progress**: save all datasets to a `.trenproj` file in the `.cs_annotator` folder of your home directory.
 
 A project file stores every dataset, the active dataset, settings, and the cursor position. Undo history for Merge Cells and the Confidence Review Tool is not saved.
 
-If there are unsaved changes, New Project, Open Project Save, and closing TREN ask you to **Save**, **Discard**, or **Cancel**. Projects saved by older TREN versions still open (as a single dataset `Data 1`). Exported TXT/CSV files cannot be loaded back; use `.trenproj` to resume work.
+If there are unsaved changes, New Project, Open Project Save, and closing TREN ask you to **Save**, **Discard**, or **Cancel**. Projects saved by older TREN versions still open (as a single dataset `Data 1`). Exported files cannot be loaded back as annotations; use `.trenproj` to resume work.
 
 ---
 
@@ -261,7 +303,7 @@ If there are unsaved changes, New Project, Open Project Save, and closing TREN a
 - **Add New Column**: add a custom annotation column.
 - **Cut / Copy / Paste / Clear Selected Cell(s)**: edit selected cells.
 - **Insert Row Before** / **Remove Row**: add or delete a row.
-- **Merge Cells**: merge adjacent token rows of the same sentence into one token.
+- **Merge Cells**: merge adjacent token rows of the same annotation block into one token.
 - **Undo Merge Cells**: reverse the last merge.
 
 ---
@@ -293,10 +335,10 @@ If there are unsaved changes, New Project, Open Project Save, and closing TREN a
 
 | Format | Content |
 |---|---|
-| **TXT** (`.txt`) | Tab-separated rows in grid order: `Token`, `Item`, `Label`, `Gloss`, extra columns; blank line between sentences. The format used for the published corpus. |
+| **TXT** (`.txt`) | Tab-separated rows in grid order: `Token`, `Item`, `Label`, `Gloss`, extra columns; blank line between annotation blocks. The format used for the published corpus. |
 | **CSV** (`.csv`) | Header row with the grid's column names, then one row per grid row. |
-| **TREN CoNLL-style** (`.conll`) | Per-sentence comments (`sent_id`, `matrix_lang`, `embedded_lang`) and `TokenIndex Token Label Gloss` lines. Not CoNLL-U. |
-| **JSONL** (`.jsonl`) | One JSON object per sentence with its tokens, labels, and glosses. |
+| **TREN CoNLL-style** (`.conll`, listed as `CoNLL` in the dialog) | Per-block comments (`sent_id`, `matrix_lang`, `embedded_lang`) and `TokenIndex Token Label Gloss` lines. Not CoNLL-U. |
+| **JSONL** (`.jsonl`) | One JSON object per annotation block with its tokens, labels, and glosses. |
 
 TXT example:
 
@@ -315,9 +357,9 @@ Full format specifications: [docs/TECHNICAL.md › Export Formats](docs/TECHNICA
 
 ![Auto-Glossing Tool](images/ui-autogloss.png)
 
-Steps through all tokens labeled **MIXED** so you can review their label and gloss.
+Steps through all tokens labeled **MIXED** so you can review their label and gloss. It is separate from language labeling and runs only when you open it.
 
-- **Auto-Gloss** (or Cmd/Ctrl+Enter) suggests a Leipzig-style gloss; you can edit it freely.
+- **Auto-Gloss** (or Cmd/Ctrl+Enter) suggests a Leipzig-style gloss from a fixed table of case, plural, possessive, derivational, and nominalizing suffixes. Verbal tense and person endings are not covered. You can edit the suggestion freely.
 - Label buttons set the label; **Leipzig Gloss Appendix** lists standard abbreviations.
 - **◀ / ▶** or the arrow keys move between items; changes are saved to the main grid when you move on.
 
@@ -332,7 +374,7 @@ Reviews tokens the pipeline is uncertain about, one by one. Every token gets a c
 - **Evidence** shows why the token was flagged.
 - Edit **Label** / **Gloss**, then **Apply** (or **Undo**). The main grid and Matrix/Embedded Language update immediately.
 
-The tool works offline. Its score is a rule-based estimate, not a calibrated probability.
+The tool works offline and changes a label or gloss only when you click **Apply**. Its score is a rule-based estimate, not a calibrated probability.
 
 ## TDK Checker
 
@@ -343,7 +385,7 @@ Looks up a token, its root, and each suffix in the online dictionary of the Turk
 - Open it from the grid's right-click menu (**Open in TDK Checker**) or from **Tools ▸ TDK Checker**.
 - TREN proposes a root and suffix segmentation, which you can edit; **Re-parse** recomputes it.
 - **Check TDK** shows `FOUND` / `NOT_FOUND` / `UNAVAILABLE` / `NETWORK_ERROR` per term, and the full dictionary entry for the selected row.
-- It never changes a token's label or gloss; **Apply Correction** saves only the segmentation.
+- It never changes a token's label or gloss. **Apply Correction** saves only the segmentation, which is kept in the project file and not exported.
 
 **Network and privacy:** apart from the one-time NER model download (see [Internet use](#internet-use)), this is the only feature that uses the internet, and only when you click **Check TDK** or **Open in TDK Checker**. Only the token, root, or suffix is sent, never the sentence. The TDK service is unofficial and may be unavailable.
 
@@ -363,7 +405,7 @@ The tool is read-only.
 
 Shows the sentence around the selected grid token, with the token highlighted. Read-only; it splits sentences at `.`, `?`, `!`, and line breaks for display only.
 
-### Word Frequency List
+## Word Frequency List
 
 ![Word Frequency List](images/ui-frequency.png)
 
@@ -375,7 +417,7 @@ Counts tokens in the current annotation (lowercased, punctuation stripped, meta 
 
 ## Computational Design & Formalization
 
-TREN combines lexicon lookups, a fastText language-ID model, rule-based Turkish morphology, and Stanza NER in a staged, rule-ordered pipeline, followed by the post-processing stages described in [Architecture and Tests](#architecture-and-tests). The formal model, pipeline order, and evaluation results are in [TECHNICAL.md](docs/TECHNICAL.md#computational-design--formalization).
+TREN combines word-list lookups, a fastText language-ID model, rule-based Turkish morphology, and Stanza NER in a staged, rule-ordered pipeline, followed by the post-processing stages described in [Architecture and Tests](#architecture-and-tests). The labeling rules and evaluation results are in [TECHNICAL.md](docs/TECHNICAL.md#computational-design--formalization).
 
 ## Acknowledgement
 
@@ -383,13 +425,19 @@ TREN was developed within an ongoing TÜBİTAK research project on Turkish–Eng
 
 ## License
 
-TREN is licensed under the [GNU General Public License v3.0](LICENSE). Third-party components keep their own licenses: the bundled fastText language-identification model `lid.176.ftz` is licensed under CC BY-SA 3.0, the fastText library is MIT-licensed, and the bundled word lists were taken from FrequencyWords, which that project licenses under CC BY-SA 4.0; neither the model nor the word lists are under the GPL. Source, copyright, license, and attribution notices, and the points that could not be confirmed, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Packages built after v1.4.1 also carry the license files of the Python packages they bundle (`licenses/third_party/`); this has been checked for the Windows package, not yet for the macOS one.
+TREN is licensed under the [GNU General Public License v3.0](LICENSE). Third-party components keep their own licenses, and neither the model nor the word lists below are under the GPL:
+
+- the bundled fastText language-identification model `lid.176.ftz`: CC BY-SA 3.0;
+- the fastText library: MIT;
+- the bundled word lists, taken from FrequencyWords: CC BY-SA 4.0, as licensed by that project.
+
+Source, copyright, license, and attribution notices, and the points that could not be confirmed, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Packaged applications also carry the license files of the Python packages they bundle (`licenses/third_party/`).
 
 ## Citation
 
 If you use TREN in your research, please cite the software and the version you used, for example:
 
-> Bostan, B. (2026). *TREN: A corpus annotation tool for code-switching data* (Version 1.4.1) [Computer software]. https://github.com/bostanberkay/TREN
+> Bostan, B. (2026). *TREN: A corpus annotation tool for code-switching data* (Version 1.4.2) [Computer software]. https://github.com/bostanberkay/TREN
 
 ## Disclaimer
 

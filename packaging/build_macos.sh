@@ -16,7 +16,7 @@
 # bundles (licenses/third_party/, collected by packaging/collect_licenses.py).
 set -euo pipefail
 
-VERSION="${1:-1.4.1}"
+VERSION="${1:-1.4.2}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="${2:-$ROOT/dist}"
 PYTHON="$ROOT/.venv/bin/python"

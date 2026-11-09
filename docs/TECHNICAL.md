@@ -5,7 +5,7 @@ This file collects the detailed technical material for TREN: the annotation pipe
 ## Contents
 
 - [Architecture](#architecture)
-- [Production Status (v1.4.1)](#production-status-v141)
+- [Production Status (v1.4.2)](#production-status-v142)
 - [MIXED-Token Reranker](#mixed-token-reranker)
 - [Input and Tokenization](#input-and-tokenization)
 - [Multiple Data Sets](#multiple-data-sets)
@@ -19,26 +19,56 @@ This file collects the detailed technical material for TREN: the annotation pipe
 
 ## Architecture
 
-TREN's code is the `tren` package in `src/tren/` (started with `python -m tren`; `src/tren/__main__.py` is also the PyInstaller entry script):
+### Module map
 
-| Module | Role |
-|---|---|
-| `cs_annotator_app.py` | Tkinter GUI (`App`) and its `main()`: UI, project save/load, grid editing, tools, export |
-| `cs_pipeline.py` | `Annotator`: rule-based language ID (fastText + frequency lexicons), MIXED detection, Turkish suffix segmentation, NER (Stanza), Matrix/Embedded Language. No GUI imports |
-| `reranking.py` | Post-processing stages run after `Annotator.annotate()`: the frozen MIXED-token reranker, the residual verbal MIXED detector, and the UID→TR resolver (single entry point `apply_reranker()`) |
-| `confidence.py` | Read-only confidence/uncertainty scores used by the Confidence Review Tool; never changes a label |
-| `annotation_model.py` | GUI-independent annotation-state helpers and the TXT/CoNLL/JSONL serializers |
-| `tdk.py` | TDK dictionary lookup provider and the morphological parser used only by the TDK Checker |
+TREN's code is the `tren` package in `src/tren/`. `python -m tren` runs `__main__.py` (also the PyInstaller entry script), which calls `cs_annotator_app.main()`; `main()` creates `App` and starts the Tk main loop. The `cs_annotator_app.py` file in the repository root is only a launcher for source checkouts.
 
-Resources (`src/tren/resources/frequent_tr_words.txt`, `frequent_en_words.txt`, `lid.176.ftz`, `models/`) are package data, loaded at runtime from the `resources/` folder next to the modules, in a source checkout, an installed package, and the packaged apps alike. Scripts for rebuilding the reranker dataset and retraining it are in `tools/`.
+| Module | Role | Start reading at |
+|---|---|---|
+| `cs_annotator_app.py` | Tkinter GUI (`App`) and `main()`: calls the pipeline, holds the annotation state, and implements the grid, tool windows, Auto-Glossing suffix rules, project save/load, and export | `App.run_pipeline()`, `App._run_annotation_pipeline()` |
+| `cs_pipeline.py` | `Annotator`: annotation blocks, tokenization, NER (Stanza), word lists, fastText, MIXED suffix rules, Turkish suffix segmentation, Matrix/Embedded Language | `Annotator.annotate()` |
+| `reranking.py` | Post-processing after `Annotator.annotate()`: the frozen MIXED-token reranker, the mixed-verb check (called the residual verbal MIXED detector in the code), and the UID-to-TR resolver | `apply_reranker()` |
+| `confidence.py` | Read-only confidence/uncertainty records used by the Confidence Review Tool; never changes a label | `attach_confidence_to_blocks()` |
+| `annotation_model.py` | Annotation rows, grid view, project payloads, and the CoNLL-style and JSONL serializers | `parse_annotated_text_to_blocks()`, `build_grid_view()`, `datasets_to_payload()` |
+| `tdk.py` | TDK dictionary lookup provider and the morphological parser used only by the TDK Checker | `parse_token()`, `TDKProvider` |
 
-## Production Status (v1.4.1)
+Only `cs_annotator_app.py` imports Tk, so the other modules can be run and tested without a window. The application is not fully separated: the call sequence of the pipeline stages, the annotation state, and the Auto-Glossing suffix rules are methods of `App`.
+
+Resources (`src/tren/resources/frequent_tr_words.txt`, `frequent_en_words.txt`, `lid.176.ftz`, `models/`) are package data, loaded at runtime from the `resources/` folder next to the modules, in a source checkout, an installed package, and the packaged apps alike. `Annotator()` opens the word lists and the fastText model by relative path, so `App._set_runtime_workdir()` changes to that folder first. Scripts for rebuilding the reranker dataset and retraining it are in `tools/`.
+
+### Annotation flow
+
+**Run** and **Add New Data** share `App._run_annotation_pipeline()`:
+
+1. `App.run_pipeline()` reads the input panel and asks before replacing existing annotations. Add New Data reaches the same method through `App._create_dataset_from_text()`.
+2. `App._ensure_annotator_ready()` creates the `Annotator` and loads the reranker bundle, once per session. `App._confirm_ner_model_download()` asks before Stanza's models are downloaded.
+3. `Annotator.annotate()` makes one annotation block per non-empty line, tokenizes it, assigns first-pass labels (see [First-Pass Labeling Order](#4-first-pass-labeling-order)), and computes Matrix/Embedded Language.
+4. `reranking.apply_reranker()` runs three stages over each block: the reranker (`UID`/`NE`/`TR` candidates to `MIXED`), the mixed-verb check (`UID`/`TR` to `MIXED`), and the UID-to-TR resolver (`UID` to `TR`). It recomputes Matrix/Embedded Language in blocks it changed. If the reranker bundle could not be loaded, all three stages are skipped and the first-pass output is returned unchanged.
+5. `App._ensure_matrix_embed_consistency()` adds a `MatrixLang` row to a block that has `EmbedLang` but no `MatrixLang`.
+6. `App._populate_table()` parses the output (`parse_annotated_text_to_blocks()`, `renumber_tokens()`), builds the grid rows (`build_grid_view()`), and fills the grid. Add New Data parses the output into a new dataset instead.
+7. `App._attach_confidence()` calls `confidence.attach_confidence_to_blocks()`, which compares the final labels with the first-pass output and adds a confidence record to each row without changing any label.
+
+### Actions started by the user
+
+These do not run as part of the annotation flow:
+
+| Action | Starts at | What it does |
+|---|---|---|
+| Auto-Glossing Tool | `App.open_auto_glossing_tool()` | Lists `MIXED` rows (`_collect_mixed_rows()`). **Auto-Gloss** fills the editable gloss field (`_auto_gloss_mixed_token()`, suffix table in `_suffix_registry()`). `_ag_commit_current_to_model()` writes the label and gloss fields to the model when you move to another item or close the window. |
+| Confidence Review Tool | `App.open_uid_review_tool()` | Lists rows by confidence record. `_uid_apply()` writes the label and gloss you entered and recomputes Matrix/Embedded Language for that block. |
+| TDK Checker | `App.open_tdk_checker_tool()`, `App.open_tdk_checker_from_grid()` | Proposes a segmentation (`tdk.parse_token()`) and looks up terms (`App._tdk_check_all()`, `tdk.TDKProvider`). `_tdk_apply_correction()` writes only `tdk_segmentation`, never a label or gloss. |
+| Project save and open | `App.save_project_progress()`, `App.open_project_save()` | Writes or reads a JSON `.trenproj` file through `annotation_model.datasets_to_payload()` and `datasets_from_payload()`. Saves go to `~/.cs_annotator`. |
+| Export | `App.open_export_dialog()`, `App._write_dataset_export()` | Writes one dataset per file. TXT and CSV use the displayed rows for the active dataset and stored rows for others; CoNLL-style and JSONL use `blocks_to_conll()` and `blocks_to_jsonl()`. |
+
+A project file keeps the annotation rows, including confidence records and `tdk_segmentation`, and can be reopened. Exports are output only and do not include those two fields.
+
+## Production Status (v1.4.2)
 
 ### Pipeline
 
 ```
-Input -> tokenizer -> rule-based annotator -> NE Policies C/D -> frozen Phase 5F reranker
-      -> strict residual verbal MIXED detector -> UID->TR resolver -> Matrix/Embedded consistency -> output
+Input lines -> annotation blocks -> tokenizer -> first-pass labels (NE Policies C/D applied inside) -> frozen Phase 5F reranker
+      -> mixed-verb check (strict residual verbal MIXED detector) -> UID-to-TR resolver -> Matrix/Embedded consistency -> output
 ```
 
 ### Active components
@@ -49,44 +79,44 @@ Input -> tokenizer -> rule-based annotator -> NE Policies C/D -> frozen Phase 5F
 | NE Policy C | Withholds NE status from `TIME`-subtype-only entity matches | Active |
 | NE Policy D | Withholds NE status from guarded English-lexical/compound-entity matches | Active |
 | Frozen Phase 5F reranker | Promotes eligible `UID`/`NE`/`TR` candidates to `MIXED` at threshold 0.85 | Active, frozen |
-| Residual verbal MIXED detector | Promotes eligible `UID`/`TR` verbal candidates to `MIXED`, strict-lexicon evidence only | Active |
-| UID→TR resolver (`reranking.py`) | Promotes eligible, still-`UID` tokens to `TR` using a conservative, multi-signal, explainable evidence model — after both stages above, `UID`→`TR` only | **Active**, behind `reranking.UID_TR_RESOLVER_ENABLED` (default `True`; set `False` to restore the exact pre-integration output) |
+| Mixed-verb check (residual verbal MIXED detector) | Promotes eligible `UID`/`TR` verbal candidates to `MIXED`, strict-lexicon evidence only | Active |
+| UID-to-TR resolver (`reranking.py`) | Promotes eligible, still-`UID` tokens to `TR` using a conservative, multi-signal, explainable evidence model — after both stages above, `UID`→`TR` only | **Active**, behind `reranking.UID_TR_RESOLVER_ENABLED` (default `True`; set `False` to restore the exact pre-integration output) |
 
 ### Real-corpus metrics (primary evidence)
 
-**Historical baseline** (measured at commit `5d644ae`, 2026-08-02, before the UID→TR resolver):
+**Historical baseline** (measured at commit `5d644ae`, 2026-08-02, before the UID-to-TR resolver):
 
 | Accuracy | Weighted F1 | Auto macro F1 | Lexical macro F1 | MIXED P/R/F1 |
 |---:|---:|---:|---:|---|
 | 0.8725 | 0.9041 | 0.6877 | 0.8698 | 0.8661 / 0.8899 / 0.8778 |
 
-**Re-measured, 2026-08-09** (same unchanged pipeline code/corpus files — see the UID→TR resolver section below for why this differs from the row above by ~0.3pp; the exact original prediction file no longer exists, so this is a from-scratch, methodology-reconciled re-measurement, not a replacement of the historical number):
+**Re-measured, 2026-08-09** (same unchanged pipeline code/corpus files — see the UID-to-TR resolver section below for why this differs from the row above by ~0.3pp; the exact original prediction file no longer exists, so this is a from-scratch, methodology-reconciled re-measurement, not a replacement of the historical number):
 
 | Condition | Accuracy | Weighted F1 | Auto macro F1 | Lexical macro F1 | MIXED P/R/F1 |
 |---|---:|---:|---:|---:|---|
-| Without UID→TR resolver | 0.8751 | 0.9070 | 0.6916 | 0.8684 | 0.8655 / 0.8935 / 0.8793 |
-| **With UID→TR resolver (current production)** | **0.8846** | **0.9121** | **0.6950** | 0.8684 (MIXED F1 unchanged) | 0.8655 / 0.8935 / 0.8793 (unchanged) |
+| Without UID-to-TR resolver | 0.8751 | 0.9070 | 0.6916 | 0.8684 | 0.8655 / 0.8935 / 0.8793 |
+| **With UID-to-TR resolver (current production)** | **0.8846** | **0.9121** | **0.6950** | 0.8684 (MIXED F1 unchanged) | 0.8655 / 0.8935 / 0.8793 (unchanged) |
 
 ### Synthetic benchmarks (secondary, diagnostic — not external validation)
 
 | Benchmark | Condition | Accuracy | Weighted F1 | MIXED P/R/F1 |
 |---|---|---:|---:|---|
-| First synthetic (100 sent.) | Without UID→TR resolver | 0.8655 | 0.8894 | 0.7907 / 0.6800 / 0.7312 |
-| First synthetic (100 sent.) | **With UID→TR resolver** | **0.8828** | **0.8987** | 0.7907 / 0.6800 / 0.7312 (unchanged) |
-| Synthetic v2, adjudicated gold (100 sent., 622 tok.) | Without UID→TR resolver | 0.9212 | 0.9406 | 0.8000 / 0.9231 / 0.8571 |
-| Synthetic v2, adjudicated gold (100 sent., 622 tok.) | **With UID→TR resolver** | **0.9341** | **0.9476** | 0.8000 / 0.9231 / 0.8571 (unchanged) |
+| First synthetic (100 sent.) | Without UID-to-TR resolver | 0.8655 | 0.8894 | 0.7907 / 0.6800 / 0.7312 |
+| First synthetic (100 sent.) | **With UID-to-TR resolver** | **0.8828** | **0.8987** | 0.7907 / 0.6800 / 0.7312 (unchanged) |
+| Synthetic v2, adjudicated gold (100 sent., 622 tok.) | Without UID-to-TR resolver | 0.9212 | 0.9406 | 0.8000 / 0.9231 / 0.8571 |
+| Synthetic v2, adjudicated gold (100 sent., 622 tok.) | **With UID-to-TR resolver** | **0.9341** | **0.9476** | 0.8000 / 0.9231 / 0.8571 (unchanged) |
 
-Both benchmarks are synthetic and LLM-authored — diagnostic secondary evidence, not external validation. Benchmark v2's frozen original gold was preserved unchanged; three high-confidence gold corrections (`soundtrack` MIXED→EN, `dress` TR→EN, `code` TR→EN) live only in a separate adjudicated-gold file, never in the frozen original. (First-synthetic numbers above were re-measured together with the UID→TR resolver work after fixing a gold-alignment bug in the evaluation harness itself — see CHANGELOG.)
+Both benchmarks are synthetic and LLM-authored — diagnostic secondary evidence, not external validation. Benchmark v2's frozen original gold was preserved unchanged; three high-confidence gold corrections (`soundtrack` MIXED→EN, `dress` TR→EN, `code` TR→EN) live only in a separate adjudicated-gold file, never in the frozen original. (First-synthetic numbers above were re-measured together with the UID-to-TR resolver work after fixing a gold-alignment bug in the evaluation harness itself — see CHANGELOG.)
 
-### UID→TR resolver
+### UID-to-TR resolver
 
-Integrated after offline validation across the real corpus and both synthetic benchmarks above: **zero harmful `UID`→`TR` changes and zero regression on any other label (`NE`/`EN`/`OTHER`/`LANG3`/`MIXED` all byte-identical) on every data source measured.** Scope is deliberately narrow — `UID → TR` only, never `UID → EN` — using an additive, explainable, multi-signal evidence model (trusted-lexicon match, valid Turkish suffix-chain analysis, strong fastText support, Turkish orthographic evidence, plus a capped sentence-level `MatrixLang` bonus that alone is never sufficient) behind a conservative promotion threshold, with hard exclusion gates for URLs/mentions/hashtags/emails/codes/numbers/punctuation/emoji/apostrophe-bearing tokens/acronyms/probable proper names/direct English matches, and — critically — for any token with an English-root-plus-Turkish-suffix analysis, so it can never pre-empt a MIXED promotion the way an earlier, reverted Turkish-stem fallback once did. Runs strictly after the residual verbal detector, on whatever is still `UID`, inside `reranking.apply_reranker()`. See `reranking.py`'s UID→TR resolver section (its module docstring) for the full design and `tests/test_uid_resolver.py` / `tests/test_reranker_integration.py` for its test coverage (46 + 15 tests).
+Integrated after offline validation across the real corpus and both synthetic benchmarks above: **zero harmful `UID`→`TR` changes and zero regression on any other label (`NE`/`EN`/`OTHER`/`LANG3`/`MIXED` all byte-identical) on every data source measured.** Scope is deliberately narrow — `UID → TR` only, never `UID → EN` — using an additive, explainable, multi-signal evidence model (trusted-lexicon match, valid Turkish suffix-chain analysis, strong fastText support, Turkish orthographic evidence, plus a capped sentence-level `MatrixLang` bonus that alone is never sufficient) behind a conservative promotion threshold, with hard exclusion gates for URLs/mentions/hashtags/emails/codes/numbers/punctuation/emoji/apostrophe-bearing tokens/acronyms/probable proper names/direct English matches, and — critically — for any token with an English-root-plus-Turkish-suffix analysis, so it can never pre-empt a MIXED promotion the way an earlier, reverted Turkish-stem fallback once did. Runs strictly after the residual verbal detector, on whatever is still `UID`, inside `reranking.apply_reranker()`. See `reranking.py`'s UID-to-TR resolver section (its module docstring) for the full design and `tests/test_uid_resolver.py` / `tests/test_reranker_integration.py` for its test coverage (46 + 15 tests).
 
 ### Production guarantees
 
 - Frozen Phase 5F model and threshold (0.85) unchanged.
 - Residual verbal detection runs after the reranker, strict-lexicon evidence only, and can only promote `UID`/`TR` to `MIXED` — it never touches `NE`/`EN`/`OTHER`/`LANG3`/an already-`MIXED` token.
-- The UID→TR resolver runs after the residual verbal detector, only ever promotes `UID`→`TR`, and never touches `TR`/`EN`/`MIXED`/`NE`/`OTHER`/`LANG3`/`SentenceID`/`MatrixLang`/`EmbedLang` otherwise; a resolver exception for one token leaves that token unchanged and never interrupts the rest of the block; disabling `UID_TR_RESOLVER_ENABLED` restores the exact prior output.
+- The UID-to-TR resolver runs after the residual verbal detector, only ever promotes `UID`→`TR`, and never touches `TR`/`EN`/`MIXED`/`NE`/`OTHER`/`LANG3`/`SentenceID`/`MatrixLang`/`EmbedLang` otherwise; a resolver exception for one token leaves that token unchanged and never interrupts the rest of the block; disabling `UID_TR_RESOLVER_ENABLED` restores the exact prior output.
 - `LANG3` remains manual-only. No benchmark-specific rules are present anywhere in production.
 
 ### Known limitations
@@ -97,10 +127,10 @@ The frozen reranker can promote a proper name carrying a Turkish case suffix fro
 
 ## MIXED-Token Reranker
 
-TREN's annotation pipeline includes a statistical reranker that runs automatically after the rule-based annotator, on every annotation request, to catch MIXED intra-word code-switching calls the rule-based pass missed. `Annotator.annotate()` (`cs_pipeline.py`) remains the primary rule-based annotation engine — its core labeling flow is unchanged by the reranker below, though NE arbitration within it was subsequently updated by Policies C/D (see "Production Status" above); the reranker (`reranking.py`, which also holds the MIXED-candidate generation logic it calls into) is a post-processing stage that runs after it, in `cs_annotator_app.py`'s `run_pipeline()`:
+TREN's annotation pipeline includes a statistical reranker that runs automatically after the rule-based annotator, on every annotation request, to catch MIXED intra-word code-switching calls the rule-based pass missed. `Annotator.annotate()` (`cs_pipeline.py`) remains the primary rule-based annotation engine — its core labeling flow is unchanged by the reranker below, though NE arbitration within it was subsequently updated by Policies C/D (see "Production Status" above); the reranker (`reranking.py`, which also holds the MIXED-candidate generation logic it calls into) is a post-processing stage that runs after it, in `App._run_annotation_pipeline()` (`cs_annotator_app.py`):
 
 ```
-Annotator.annotate() -> apply_reranker() -> _ensure_matrix_embed_consistency() -> _populate_table()
+Annotator.annotate() -> apply_reranker() -> _ensure_matrix_embed_consistency()
 ```
 
 The reranker may only **promote** an already-produced `UID`, `NE`, or `TR` label to `MIXED` when its frozen model's probability clears the validated threshold — it never invents a label the rule-based pass didn't already consider, and it cannot alter `TR`/`EN`/`MIXED`/`OTHER`/`LANG3` labels otherwise. A token's final label may therefore come from either the rule-based annotator alone or from this reranking stage. It was developed under a strict experimental protocol before being integrated — every candidate feature group ("batch") was benchmarked in isolation against a frozen train/dev/test split before being considered for adoption, and negative results were recorded, not discarded (see below).
@@ -168,9 +198,9 @@ Batch C is included by default; pass `--exclude-batch-c-features` to disable it.
 
 ## Input and Tokenization
 
-**Sentence units and tokenization.** The annotation pipeline treats **each non-empty line** of the input as one sentence (one `SentenceID` block); it does not split sentences at `.`, `?`, or `!`, so put one sentence per line if you want sentence-level Matrix/Embedded Language values. Blank lines only separate blocks. Punctuation marks such as `.`, `,`, `!`, `?`, and `:)` are **not emitted as tokens**; they are dropped during tokenization, so they never appear in the grid or in exports. Numbers (`100`, `3.5`), URLs, `@mentions`, `#hashtags`, emoji, and a stand-alone apostrophe are kept as tokens and labeled `OTHER`. An apostrophe inside a word is kept (`meeting'e` is one token).
+**Annotation blocks and tokenization.** The annotation pipeline treats **each non-empty line** of the input as one annotation block (one `SentenceID` row). It does not detect sentence boundaries or split at `.`, `?`, or `!`. To get one Matrix/Embedded Language value per sentence, put one sentence on each line. Blank lines only separate blocks. Punctuation marks such as `.`, `,`, `!`, `?`, and `:)` are **not emitted as tokens**; they are dropped during tokenization, so they never appear in the grid or in exports. Numbers (`100`, `3.5`), URLs, `@mentions`, `#hashtags`, emoji, and a stand-alone apostrophe are kept as tokens and labeled `OTHER`. An apostrophe inside a word is kept (`meeting'e` is one token).
 
-The **Label** column of a token row only accepts the seven schema labels (`TR`, `EN`, `MIXED`, `UID`, `NE`, `LANG3`, `OTHER`), typed in any letter case (`mixed` is stored as `MIXED`), or an empty value (the same as Clear). Any other typed or pasted value is rejected and the previous label is kept. Meta rows keep their own values: the `SentenceID` row's Label cell holds the sentence number, and `MatrixLang`/`EmbedLang` rows accept only `TR` or `EN` (a `-` written by the pipeline for "no embedded language" is preserved).
+The **Label** column of a token row only accepts the seven schema labels (`TR`, `EN`, `MIXED`, `UID`, `NE`, `LANG3`, `OTHER`), typed in any letter case (`mixed` is stored as `MIXED`), or an empty value (the same as Clear). Any other typed or pasted value is rejected and the previous label is kept. Meta rows keep their own values: the `SentenceID` row's Label cell holds the block number, and `MatrixLang`/`EmbedLang` rows accept only `TR` or `EN` (a `-` written by the pipeline for "no embedded language" is preserved).
 
 **Running the pipeline again** on a dataset that already has annotations replaces all of them (labels, glosses, extra-column values, and reviewed marks) and cannot be undone, so **Run** asks for confirmation first; Cancel leaves the current annotations untouched. To keep them and annotate the text again, use **Add New Data ▸ Re-run Current Text**, which creates a separate dataset.
 
@@ -202,13 +232,13 @@ New Project, Open Project Save, and closing the application (the window's close 
 
 ## Export Formats
 
-Choose which dataset to export (defaulting to the currently active one) and a format — **TXT**, **CSV**, **TREN CoNLL-style**, or **JSONL** — then choose a destination file. Exactly one dataset is written per export; datasets are never merged into a single file. The suggested filename is derived from the dataset's name (sanitized for the filesystem). Cancelling at any point creates no file, and exporting never modifies the annotation data or re-runs the annotation pipeline. TXT, CoNLL and JSONL files (and `.trenproj` saves) always use `\n` line endings, so the same data exports to byte-identical files on Windows and macOS; CSV rows end with the `csv` module's `\r\n` on every platform.
+Choose which dataset to export (defaulting to the currently active one) and a format — **TXT**, **CSV**, **TREN CoNLL-style** (listed as `CoNLL` in the dialog), or **JSONL** — then choose a destination file. Exactly one dataset is written per export; datasets are never merged into a single file. The suggested filename is derived from the dataset's name (sanitized for the filesystem). Cancelling at any point creates no file, and exporting never modifies the annotation data or re-runs the annotation pipeline. TXT, CoNLL and JSONL files (and `.trenproj` saves) always use `\n` line endings, so the same data exports to byte-identical files on Windows and macOS; CSV rows end with the `csv` module's `\r\n` on every platform.
 
 ### TXT and CSV
 
-Unchanged from previous versions. Exporting the active dataset reflects exactly what the grid currently displays; exporting any other dataset is built from its stored annotation data.
+Exporting the active dataset reflects exactly what the grid currently displays; exporting any other dataset is built from its stored annotation data.
 
-**TXT** (`.txt`): UTF-8 plain text, one grid row per line, fields separated by a tab, in grid column order: `Token` (running index), `Item`, `Label`, `Gloss`, then any user-added columns. A blank line separates sentence blocks.
+**TXT** (`.txt`): UTF-8 plain text, one grid row per line, fields separated by a tab, in grid column order: `Token` (running index), `Item`, `Label`, `Gloss`, then any user-added columns. A blank line separates annotation blocks.
 
 - Token rows start with the running index: `3	boss'um	MIXED	boss-POSS.1SG`.
 - Meta rows have no index, so their line starts with the row name: `SentenceID	1`, `MatrixLang	TR`, `EmbedLang	EN`.
@@ -233,7 +263,7 @@ TXT and CSV are export-only: **Open Input** always treats a file as raw text to 
 
 ### TREN CoNLL-style (`.conll`)
 
-A deterministic, TREN-specific export format — **not** CoNLL-U and not compatible with any particular external shared-task format. A file-level header, then one comment block plus one tab-separated line per token for each sentence, with token indices restarting at `1` in every sentence:
+A deterministic, TREN-specific export format — **not** CoNLL-U and not compatible with any particular external shared-task format. A file-level header, then one comment block plus one tab-separated line per token for each annotation block, with token indices restarting at `1` in every block:
 
 ```
 # TREN CoNLL export
@@ -247,23 +277,23 @@ A deterministic, TREN-specific export format — **not** CoNLL-U and not compati
 3	katıldım	TR	_
 ```
 
-- `sent_id` comes from the sentence's `SentenceID` row when present, otherwise its 1-based position in the dataset.
+- `sent_id` comes from the block's `SentenceID` row when present, otherwise its 1-based position in the dataset.
 - `matrix_lang` / `embedded_lang` comment lines are included only when the corresponding `MatrixLang`/`EmbedLang` row is present (never fabricated).
 - An empty gloss is written as `_`. A stray tab or newline inside a token/label/gloss is replaced with a space so it can never split or extend a line.
-- Sentences are separated by a single blank line; `SentenceID`/`MatrixLang`/`EmbedLang` are never emitted as token lines. The file is valid UTF-8 with Unicode preserved exactly.
+- Blocks are separated by a single blank line; `SentenceID`/`MatrixLang`/`EmbedLang` are never emitted as token lines. The file is valid UTF-8 with Unicode preserved exactly.
 
 ### JSONL (`.jsonl`)
 
-One JSON object per sentence, one physical line per object, produced with Python's standard `json` module (`ensure_ascii=False`, so Unicode is written directly rather than escaped):
+One JSON object per annotation block, one physical line per object, produced with Python's standard `json` module (`ensure_ascii=False`, so Unicode is written directly rather than escaped):
 
 ```json
 {"sentence_id": "1", "dataset": "Data 1", "source_text": "Bugün meetinge katıldım", "matrix_lang": "TR", "embedded_lang": "EN", "tokens": [{"index": 1, "token": "Bugün", "label": "TR", "gloss": ""}, {"index": 2, "token": "meetinge", "label": "MIXED", "gloss": "meeting-DAT"}, {"index": 3, "token": "katıldım", "label": "TR", "gloss": ""}]}
 ```
 
-- `source_text` is the sentence's token sequence joined with spaces (reflecting current annotation state, not necessarily the original raw input line).
+- `source_text` is the block's token sequence joined with spaces (reflecting current annotation state, not necessarily the original raw input line).
 - `matrix_lang`/`embedded_lang` are empty strings, not omitted, when their meta row is absent.
 - Empty glosses are empty strings (`""`), not `_`. `SentenceID`/`MatrixLang`/`EmbedLang` rows are excluded from `tokens`.
-- Token indices also restart at `1` per sentence, matching the CoNLL-style export.
+- Token indices also restart at `1` per block, matching the CoNLL-style export.
 
 Both `blocks_to_conll` and `blocks_to_jsonl` (in `annotation_model.py`) are pure functions with no GUI or pipeline dependency, and are deterministic for identical input.
 
@@ -292,7 +322,7 @@ A **View** combobox above the label/confidence filters selects between three pre
 
 - **Search**: filter the list by typing part of a token; press Return or click **Search**.
 - **Find All Occurrences**: locate every occurrence of the selected (or searched) token, regardless of its current label.
-- **Evidence**: shows the selected token's current label, confidence score/band, uncertainty reasons, and the relevant pipeline evidence behind them (lexicon/fastText/morphology signals, frozen-reranker or UID→TR-resolver evidence, MatrixLang/EmbedLang consistency, etc., as applicable).
+- **Evidence**: shows the selected token's current label, confidence score/band, uncertainty reasons, and the relevant pipeline evidence behind them (lexicon/fastText/morphology signals, frozen-reranker or UID-to-TR-resolver evidence, MatrixLang/EmbedLang consistency, etc., as applicable).
 - **Label** and **Gloss** fields: edit the current token's label and gloss.
 - **First / Previous / Next / Last**: move through the list.
 - **Apply**: commit the edited label and gloss.
@@ -301,7 +331,7 @@ A **View** combobox above the label/confidence filters selects between three pre
 ### Synchronization
 
 - Applying an edit updates the shared annotation model and the main annotation grid immediately, and marks the token reviewed.
-- `MatrixLang`/`EmbedLang` for the affected sentence are recomputed automatically after each applied label change.
+- `MatrixLang`/`EmbedLang` for the affected block are recomputed automatically after each applied label change.
 - A token edited so it no longer matches the active view/filter (e.g. no longer flagged uncertain, or given a label outside the active filter) drops out of the list, and the tool advances to the next remaining item.
 - Switching datasets closes the tool; reopening it for the newly active dataset resets to the **All Uncertain** default and never shows another dataset's tokens.
 
@@ -371,9 +401,7 @@ sort by: (-f(w), w)
 
 ## Computational Design & Formalization
 
-This section formalizes the **language labeling and annotation mechanisms** implemented in TREN. The formulations below describe the principles underlying the system’s decisions. TREN implements a **symbolically constrained, probabilistic, and morphologically informed** annotation framework. Language labels emerge from hybrid decision mechanisms rather than purely statistical or purely rule-based processes, ensuring transparency, interpretability, and linguistic validity.
-
-**Note on this formalization:** Sections 2–4 below describe an idealized model of TREN's language-identification logic, intended to communicate the underlying linguistic principles. They do not describe the literal control flow of the implementation. In the actual pipeline, a label is produced by a staged, priority-ordered sequence of checks — lexicon/frequency-list membership is consulted first, and a statistical language-model confidence score is only consulted as a last resort — rather than by evaluating a single function over a normalized two-way probability distribution.
+This section describes the labeling rules applied by `Annotator.annotate()`. Post-processing is described under [Production Status](#production-status-v142) and in `reranking.py`.
 
 ---
 
@@ -389,7 +417,7 @@ Each token tᵢ is assigned a label ℓᵢ from the finite label set:
 
 L = { TR, EN, MIXED, UID, NE, OTHER, LANG3 }
 
-Meta tokens used for sentence- or block-level information are excluded from token-level labeling:
+Meta tokens used for block-level information are excluded from token-level labeling:
 
 T_meta = { SentenceID, MatrixLang, EmbedLang }
 
@@ -397,86 +425,58 @@ T_valid = T \ T_meta
 
 ---
 
-### 2. Probabilistic Word-Level Language Identification
+### 2. Word Lists
 
-For each token t ∈ T_valid, the language identification model produces a probability distribution:
-
-P(t) = { P_TR(t), P_EN(t) }
-
-with the constraint:
-
-P_TR(t) + P_EN(t) = 1
-
-where:
-• P_TR(t) denotes the probability that token t is Turkish  
-• P_EN(t) denotes the probability that token t is English  
+Let Lex_TR and Lex_EN denote the Turkish and English frequency word lists, and let Top_TR be the first 1,000 entries of Lex_TR.
 
 ---
 
-### 3. Lexicon Membership Constraints
+### 3. fastText Language Identification
 
-Let Lex_TR and Lex_EN denote the Turkish and English lexicons, respectively.
+For a token t, the fastText model `lid.176.ftz` returns its top language and that language's probability:
 
-Lexicon membership is defined as:
+ft(t) = (lang(t), p(t))
 
-t ∈ Lex_TR  ⇔  t is attested in the Turkish lexicon  
-t ∈ Lex_EN  ⇔  t is attested in the English lexicon  
-
-Lexicons function as symbolic constraints in the labeling decision.
+Only `TR` and `EN` predictions at or above θ = 0.80 are used.
 
 ---
 
-### 4. Hybrid Language Labeling Function
+### 4. First-Pass Labeling Order
 
-Final language labels are assigned using a **hybrid decision function** combining probabilistic confidence and lexicon membership:
+Each token is checked in this order, and the first matching step decides its label:
 
-label(t) =
-
-• TR  
-  if P_TR(t) ≥ θ ∧ t ∈ Lex_TR  
-
-• EN  
-  if P_EN(t) ≥ θ ∧ t ∈ Lex_EN  
-
-• MIXED  
-  if EN_stem(t) ∧ TR_suffix(t)  
-
-• UID  
-  otherwise  
-
-where:
-• θ is a confidence threshold  
-• EN_stem(t) denotes the presence of an English lexical stem  
-• TR_suffix(t) denotes one or more Turkish morphological suffixes  
+1. `OTHER` if `is_other_token(t)` holds (URLs, mentions, hashtags, numbers, codes, emoji, and tokens with no word characters).
+2. `NE` if NER is enabled and t matches an entity kept after NE Policies C and D.
+3. Otherwise a language label ℓ(t) is chosen, in this order:
+   - `TR` if t ∈ Top_TR
+   - `EN` if t ∈ Lex_EN
+   - `TR` if t ∈ Lex_TR
+   - `EN` or `TR` if fastText predicts that language with p(t) ≥ θ
+   - `UID` otherwise
+4. If t has an apostrophe, the apostrophe rule in section 5 can decide `MIXED` or `TR`.
+5. If ℓ(t) ≠ `TR`, the no-apostrophe rule in section 5 can decide `MIXED`.
+6. Otherwise the label is ℓ(t).
 
 ---
 
-### 5. Intra-Word Code-Switching (MIXED) Condition
+### 5. Intra-Word Code-Switching (MIXED) Rules
 
-A token t is labeled as MIXED if it satisfies the following structural condition:
+**With an apostrophe.** For t = b ' s, where s is not an English contraction, the base b gets a language label by step 3 of section 4:
 
-t = s + σ₁ + σ₂ + … + σₖ
+- `MIXED` if ℓ(b) = `EN` and the suffix parser returns any analysis for s
+- `TR` if ℓ(b) = `TR`
 
-such that:
+**Without an apostrophe.** Applied only when ℓ(t) ≠ `TR` and t ∉ Lex_TR. For suffixes s from the closed tables, longest first, with |s| ≥ 2 and t = b + s with |b| ≥ 2, t is `MIXED` when all of these hold:
 
-s ∈ Lex_EN  
-σᵢ ∈ Morph_TR  for all i ≥ 1  
-
-where Morph_TR is the set of licensed Turkish morphological suffixes.
-
-This captures English–Turkish intra-word code-switching.
+- b ∈ Lex_EN, or fastText predicts `EN` for b with p ≥ θ
+- if s starts with `y` or `n`, b ends in a vowel
+- b ∉ Lex_TR (`MIXED_STRICT`, on by default)
 
 ---
 
-### 6. Morphological Validity Constraint
+### 6. Suffix Analysis
 
-Suffix sequences must conform to Turkish morphotactic constraints:
-
-{ σ₁, σ₂, …, σₖ } ⊆ Σ_TR
-
-where Σ_TR is the inventory of morphologically valid Turkish suffixes.
-
-Tokens violating morphotactic constraints are excluded from MIXED labeling.
+`_parse_tr_suffixes_full()` strips suffixes from right to left in fixed groups: case, possessive, plural, then derivational. A remainder it cannot strip is recorded as `Unparsed=Leftover` rather than rejected. The first pass therefore does not enforce full Turkish morphotactics: on the apostrophe path, an English base followed by an unrecognized suffix is still labeled `MIXED`.
 
 ---
 
@@ -490,7 +490,7 @@ then its label is overridden as:
 
 label(t) = NE
 
-Named Entity recognition takes precedence over language-based labeling.
+Named Entity recognition takes precedence over language-based labeling, but not over `OTHER`. Entity matches removed by NE Policies C and D are labeled as if they had not matched. The reranker can later promote an `NE` token to `MIXED`.
 
 ---
 
@@ -515,26 +515,25 @@ a human annotator relabels them.
 
 ---
 
-### 9. Sentence-Level Matrix Language
+### 9. Block-Level Matrix Language
 
-For a sentence S consisting of tokens { t₁, …, tₘ }, define:
+Matrix and Embedded Language values are computed from weighted token-label counts. For an annotation block B, define:
 
-count_L(S) = | { t ∈ S : label(t) = L } |
+count_L(B) = | { t ∈ B : label(t) = L } |
 
 for L ∈ { TR, EN, MIXED }.
 
-MIXED tokens contribute weighted partial votes to both languages, reflecting
-that a MIXED token combines a Turkish suffix with an English stem:
+Each MIXED token contributes to both languages:
 
-score_TR(S) = count_TR(S) + w_TR · count_MIXED(S)  
-score_EN(S) = count_EN(S) + w_EN · count_MIXED(S)
+score_TR(B) = count_TR(B) + w_TR · count_MIXED(B)\
+score_EN(B) = count_EN(B) + w_EN · count_MIXED(B)
 
 with w_TR = 0.6 and w_EN = 0.4 by default. NE, OTHER, and UID tokens do not
 contribute to either score.
 
 The Matrix Language is defined as:
 
-ML(S) = TR  if score_TR(S) ≥ score_EN(S)  
+ML(B) = TR  if score_TR(B) ≥ score_EN(B)\
       = EN  otherwise
 
 (ties are resolved in favor of TR)
@@ -543,14 +542,20 @@ ML(S) = TR  if score_TR(S) ≥ score_EN(S)
 
 ### 10. Embedded Language
 
-The Embedded Language is defined as the non-matrix language, present if at
-least one token in S is labeled as that language or as MIXED:
+The Embedded Language is the non-matrix language, present if at least one token
+in B is labeled as that language or as MIXED:
 
-EL(S) = the language in { TR, EN } \ { ML(S) } that occurs (directly or via
-a MIXED token) in S
+EL(B) = the language in { TR, EN } \ { ML(B) } that occurs (directly or via
+a MIXED token) in B
 
-If no such token occurs, EL(S) is undefined, rendered as "-" in the
+If no such token occurs, EL(B) is undefined, rendered as "-" in the
 annotation grid.
+
+---
+
+### 11. When the Values Are Computed
+
+`Annotator.annotate()` computes both values for every block. `apply_reranker()` recomputes them only in blocks where post-processing changed a label. **Apply** and **Undo** in the Confidence Review Tool and **Merge Cells** and **Undo Merge Cells** recompute the affected block. Other edits, including direct grid edits, paste, clear, and label changes in the Auto-Glossing Tool, leave the stored values unchanged; the `MatrixLang` and `EmbedLang` rows can be edited by hand.
 
 ---
 

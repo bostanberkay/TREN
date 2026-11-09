@@ -27,7 +27,7 @@ Thank you for your interest in contributing to TREN.
 
    On Windows, use `powershell -ExecutionPolicy Bypass -File packaging\install_windows_deps.ps1 -Dev` instead of these two commands: `fasttext` has no Windows wheel and does not build with plain `pip`. The script also installs `requirements.txt` and `requirements-dev.txt`; see [Requirements in the README](README.md#requirements) for what it does and needs.
 
-   The code is the `tren` package in `src/tren/`. Tests import it from `src/` (`pyproject.toml` sets this for pytest); to start the app with `python -m tren` from your checkout, also run `pip install --no-deps -e .`.
+   The code is the `tren` package in `src/tren/`. Tests import it from `src/` (`pyproject.toml` sets this for pytest); to start the app with `python -m tren` from your checkout, also run `pip install --no-deps -e .`. For a map of the modules and where to start reading, see [Architecture and Tests](README.md#architecture-and-tests).
 
 ## Running tests
 

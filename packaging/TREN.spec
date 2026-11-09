@@ -5,7 +5,7 @@ import sys
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 sys.path.insert(0, os.path.join(ROOT, "packaging"))
 import collect_licenses
-VERSION = os.environ.get("TREN_VERSION", "1.4.1")
+VERSION = os.environ.get("TREN_VERSION", "1.4.2")
 
 a = Analysis(
     [os.path.join(ROOT, "src", "tren", "__main__.py")],
@@ -52,6 +52,7 @@ app = BUNDLE(
     info_plist={
         "CFBundleDisplayName": "TREN",
         "CFBundleVersion": VERSION,
+        "LSMinimumSystemVersion": "14.0",
         "NSHighResolutionCapable": True,
     },
 )
