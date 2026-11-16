@@ -387,7 +387,7 @@ Looks up a token, its root, and each suffix in the online dictionary of the Turk
 - **Check TDK** shows `FOUND` / `NOT_FOUND` / `UNAVAILABLE` / `NETWORK_ERROR` per term, and the full dictionary entry for the selected row.
 - It never changes a token's label or gloss. **Apply Correction** saves only the segmentation, which is kept in the project file and not exported.
 
-**Network and privacy:** apart from the one-time NER model download (see [Internet use](#internet-use)), this is the only feature that uses the internet, and only when you click **Check TDK** or **Open in TDK Checker**. Only the token, root, or suffix is sent, never the sentence. The TDK service is unofficial and may be unavailable.
+**Network and privacy:** apart from the one-time NER model download (see [Internet use](#internet-use)), this is the only feature that uses the internet, and only when you click **Check TDK** or **Open in TDK Checker**. Only the token, root, or suffix is sent, never the sentence.
 
 ## Concordance (KWIC)
 
